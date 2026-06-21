@@ -26,6 +26,7 @@ private slots:
     void onWorkerFinished();
     void onWorkerError(const QString& msg);
     void stopWorker();
+    void pollToolConfirmation();
 
 private:
     void setupUi();
@@ -45,4 +46,6 @@ private:
     QPushButton*       m_stopBtn;
 
     ChatWorker* m_worker = nullptr;
+    QTimer*     m_confirmTimer = nullptr;
+    bool        m_sudoDialogOpen = false;
 };

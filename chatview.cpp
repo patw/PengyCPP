@@ -24,6 +24,9 @@ ChatView::ChatView(QWidget* parent) : QTextBrowser(parent) {
         "table { border: 1px solid #ccc; margin: 6px 0; }"
         "th, td { border: 1px solid #ccc; padding: 4px 10px; }"
         "th { background: #f0f0f0; font-weight: bold; }"
+        "h1, h2, h3, h4, h5, h6 { margin: 10px 0 4px 0; }"
+        "h1 { font-size: 14pt; }  h2 { font-size: 13pt; }"
+        "h3 { font-size: 11pt; }  h4 { font-size: 10pt; }"
         "img { max-width: 600px; }"
     );
 }
@@ -254,6 +257,22 @@ QString ChatView::markdownToHtml(const QString& md) const {
 
     // Markdown tables
     result = convertMarkdownTables(result);
+
+    // Headings (# … ######) — must be at line start; process back-to-front
+    {
+        static QRegularExpression headingRx("^(#{1,6})\\s+(.+)$",
+                                            QRegularExpression::MultilineOption);
+        QList<QRegularExpressionMatch> matches;
+        QRegularExpressionMatchIterator it = headingRx.globalMatch(result);
+        while (it.hasNext()) matches.append(it.next());
+        for (int i = matches.size() - 1; i >= 0; --i) {
+            const QRegularExpressionMatch &m = matches[i];
+            int level = m.captured(1).length();
+            QString tag = QString("h%1").arg(level);
+            result.replace(m.capturedStart(), m.capturedLength(),
+                           "<" + tag + ">" + m.captured(2) + "</" + tag + ">");
+        }
+    }
 
     // **bold** and *italic*
     static QRegularExpression boldRx("\\*\\*(.+?)\\*\\*");

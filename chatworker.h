@@ -17,6 +17,10 @@ public:
     void cancel();
     void sendConfirmation(bool confirmed, bool yoloTurn);
 
+    bool isSudoPending() const;
+    void sendSudoPassword(const QString& password);
+    void cancelSudo();
+
 signals:
     void eventReceived(const QString& eventJson);
     void finished();
@@ -32,6 +36,12 @@ private:
     QMutex          m_mutex;
     QWaitCondition  m_cond;
     bool            m_cancelled = false;
+
+    // ── Sudo state ────────────────────────────────────────────────
+    mutable QMutex  m_sudoMutex;
+    QWaitCondition  m_sudoCond;
+    bool            m_sudoPending   = false;
+    QString         m_sudoPassword;
 
     QString    m_baseUrl, m_apiKey, m_model, m_toolConfirmation;
     QJsonArray m_messages;

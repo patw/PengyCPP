@@ -21,10 +21,17 @@
 #include <QMimeType>
 #include <QLabel>
 #include <QDialog>
+#include <QInputDialog>
+#include <QLineEdit>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_config = configLoad();
     setupUi();
+
+    // Poll for sudo password requests from the worker thread
+    m_confirmTimer = new QTimer(this);
+    m_confirmTimer->setInterval(100);
+    connect(m_confirmTimer, &QTimer::timeout, this, &MainWindow::pollToolConfirmation);
 
     Tools::setUserAgent(m_config.userAgent);
     Tools::setTimeout(m_config.toolTimeout);
@@ -212,11 +219,12 @@ void MainWindow::sendMessage(const QString& text, const QStringList& images) {
         apiMessages.append(sysObj);
     }
 
-    // Prior messages (all but last), cleaned
+    // Prior messages (all but last), cleaned + elided
     QJsonArray prior;
     for (int i = 0; i < messages.size() - 1; ++i)
         prior.append(messages[i]);
     QJsonArray cleaned = cleanDanglingToolCalls(prior);
+    cleaned = elideOldToolResults(cleaned, m_config.contextKeepTurns);
     for (const QJsonValue& v : cleaned)
         apiMessages.append(v);
 
@@ -268,8 +276,12 @@ void MainWindow::sendMessage(const QString& text, const QStringList& images) {
 
 void MainWindow::processResponse(const QJsonArray& apiMessages) {
     if (m_worker) {
+        disconnect(m_worker, &ChatWorker::eventReceived, this, nullptr);
+        disconnect(m_worker, &ChatWorker::errorOccurred, this, nullptr);
         m_worker->cancel();
-        m_worker->deleteLater();
+        // Don't delete — inner thread still holds 'this'. The finished
+        // signal (still connected) will trigger onWorkerFinished which
+        // calls deleteLater once the thread has actually exited.
         m_worker = nullptr;
     }
 
@@ -283,9 +295,13 @@ void MainWindow::processResponse(const QJsonArray& apiMessages) {
 
     m_worker->start(m_config.baseUrl, m_config.apiKey, m_config.model,
                     apiMessages, m_config.toolConfirmation);
+    m_confirmTimer->start();
 }
 
 void MainWindow::onWorkerEvent(const QString& eventJson) {
+    auto* s = qobject_cast<ChatWorker*>(sender());
+    if (s && s != m_worker) return;
+
     QJsonObject event = QJsonDocument::fromJson(eventJson.toUtf8()).object();
     QString     type  = event["type"].toString();
 
@@ -400,22 +416,65 @@ void MainWindow::handleToolConfirm(const QJsonObject& req) {
 }
 
 void MainWindow::onWorkerFinished() {
+    auto* w = qobject_cast<ChatWorker*>(sender());
+
+    if (w && w != m_worker) {
+        // Stale signal from an old cancelled worker whose inner thread
+        // just finished — safe to delete now that the thread is done.
+        w->deleteLater();
+        return;
+    }
+
     m_stopBtn->hide();
     m_chatHistory->setThinking(false);
+    m_confirmTimer->stop();
     if (m_worker) {
+        disconnect(m_worker, nullptr, this, nullptr);
         m_worker->deleteLater();
         m_worker = nullptr;
     }
 }
 
 void MainWindow::onWorkerError(const QString& msg) {
+    auto* s = qobject_cast<ChatWorker*>(sender());
+    if (s && s != m_worker) return;
+
     m_chatView->appendMessageText("assistant", "Error: " + msg);
     onWorkerFinished();
 }
 
+void MainWindow::pollToolConfirmation() {
+    if (!m_worker || !m_worker->isSudoPending()) return;
+    if (m_sudoDialogOpen) return;
+
+    m_sudoDialogOpen = true;
+
+    bool ok = false;
+    QString password = QInputDialog::getText(
+        this, "sudo Password", "Enter sudo password:",
+        QLineEdit::Password, QString(), &ok);
+
+    m_sudoDialogOpen = false;
+
+    if (ok && !password.isEmpty()) {
+        m_worker->sendSudoPassword(password);
+    } else {
+        m_worker->cancelSudo();
+    }
+}
+
 void MainWindow::stopWorker() {
-    if (m_worker) m_worker->cancel();
-    onWorkerFinished();
+    if (m_worker) {
+        disconnect(m_worker, &ChatWorker::eventReceived, this, nullptr);
+        disconnect(m_worker, &ChatWorker::errorOccurred, this, nullptr);
+        m_worker->cancel();
+        // Keep worker alive — inner thread still references it.
+        // onWorkerFinished will deleteLater when finished() fires.
+        m_worker = nullptr;
+    }
+    m_stopBtn->hide();
+    m_chatHistory->setThinking(false);
+    m_confirmTimer->stop();
     m_chatView->appendMessageText("assistant", "⏹ *Stopped*");
 }
 

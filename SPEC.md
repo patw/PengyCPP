@@ -144,7 +144,40 @@ LLM responds with tool_calls
               └── Decline              → "Tool execution was declined by user." → loop
 ```
 
-`ChatWorker` blocks on `QWaitCondition::wait()` while the dialog is shown. The main thread calls `sendConfirmation(confirmed, yoloTurn)` which sets `m_confirmed`/`m_yoloTurn` and calls `m_confirmWait.wakeAll()`.
+`ChatWorker` blocks on `QWaitCondition::wait()` while the dialog is shown. The main thread calls `sendConfirmation(confirmed, yoloTurn)` which sets the result fields and calls `m_cond.wakeAll()`.
+
+### Sudo Password Flow
+
+When `run_bash` detects `sudo` in the command:
+
+```
+Tool execution reaches run_bash
+       │
+       ├─ No "sudo" in command ──► execute normally
+       │
+       └─ "sudo" detected
+              │
+              ├─ Password cached? ──► use cached password
+              │
+              └─ No cache
+                     │
+                     ▼
+              ChatWorker blocks on sudo QWaitCondition
+                     │
+                     ▼
+              MainWindow::pollToolConfirmation() (100ms QTimer)
+                     │
+                     ▼
+              QInputDialog::getText (password mode)
+                     │
+                     ├── OK with password → ChatWorker::sendSudoPassword()
+                     └── Cancel → ChatWorker::cancelSudo()
+```
+
+The password is:
+1. Cached for the duration of the LLM run (`g_cachedSudoPassword`)
+2. Injected via stdin after rewriting `sudo` → `sudo -S`
+3. Cleared when `clearSudoPasswordProvider()` is called on worker completion
 
 ---
 
@@ -222,7 +255,7 @@ All 11 tools implemented in `tools.cpp` using Qt APIs:
 | `read_multiple_files` | ✅ | `QFile` × N |
 | `write_file` | ❌ | `QFile` + `QDir::mkpath` |
 | `replace_in_file` | ❌ | Read→exact-match→replace→write |
-| `run_bash` | ❌ | `QProcess` (sudo via `-S`) |
+| `run_bash` | ❌ | `QProcess` (sudo via `-S` + stdin, process-group kill on timeout) |
 | `run_python` | ❌ | Write to temp + `QProcess python3` |
 | `web_search` | ✅ | DuckDuckGo HTML scrape via `QNetworkAccessManager` + `QRegularExpression` |
 | `download_file` | ❌ | `QNetworkAccessManager` → `~/Downloads/` |
@@ -288,17 +321,27 @@ No Rust, no Python, no third-party C++ libraries.
 
 ---
 
-## Feature Gaps (vs Python Pengy)
+## Feature Parity (vs PengyR)
 
 | Feature | Status | Notes |
 |---------|:---:|---|
-| File attachments | ❌ | Not yet ported |
-| Image paste from clipboard | ❌ | Not yet ported |
-| CLI (rich-based terminal REPL) | ❌ | Python-only |
-| Web UI (Flask + SSE) | ❌ | Python-only |
-| Skills system | ❌ | Python-only |
-| Image download rendering | ❌ | `QTextBrowser::loadResource` not yet connected |
-| Context elision | ❌ | `elideOldToolResults` exists but not wired to config |
+| File attachments (📎 button + chips UI) | ✅ | Text files inlined as code blocks, images as base64 data URIs |
+| Image paste from clipboard | ✅ | Pasted images saved to temp file, sent as base64 |
+| Sudo password support | ✅ | `QInputDialog` password prompt, cached + injected via `sudo -S` stdin |
+| Process-group kill on timeout | ✅ | `kill -9 -PID` before `QProcess::kill()` |
+| Context elision | ✅ | `elideOldToolResults` wired to config `context_keep_turns` |
+| CLI (terminal REPL) | ❌ | PengyR-only; not applicable to Qt GUI |
+| Web UI (browser interface) | ❌ | PengyR-only; not applicable to Qt GUI |
+| Image download rendering | ✅ | `QTextBrowser::loadResource` fetches + caches HTTP images |
+| Skills system | ❌ | Not yet ported from Python |
+
+## Design Changes from PengyR
+
+**Sudo handling:** PengyR uses a global `SUDO_PASSWORD_PROVIDER` callback + volatile reads on a shared `SudoState` struct. PengyCPP uses a `std::function<QString()>` callback installed into `Tools` before each LLM run, backed by a `QWaitCondition` in `ChatWorker`. The main thread polls with a 100ms `QTimer` and shows `QInputDialog::getText()`.
+
+**Process-group kill:** On timeout or cancel, `run_bash` now issues `kill -9 -PID` (killing the entire process group) before calling `QProcess::kill()`. This prevents orphaned child processes from surviving after a timeout.
+
+**Context elision:** `elideOldToolResults()` is now called on the message history (after `cleanDanglingToolCalls`) before every API request, controlled by the `context_keep_turns` config setting (0 = keep all).
 
 ---
 

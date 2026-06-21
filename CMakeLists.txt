@@ -32,3 +32,19 @@ if(NOT APPLE AND NOT WIN32)
         INSTALL_RPATH "$ORIGIN/../lib"
     )
 endif()
+
+# ── Tests ──────────────────────────────────────────────────────────
+find_package(Qt6 COMPONENTS Test QUIET)
+if(Qt6Test_FOUND)
+    enable_testing()
+    add_executable(pengy_tests
+        tests.cpp
+        config.cpp
+        chatmanager.cpp
+        tools.cpp
+    )
+    target_link_libraries(pengy_tests PRIVATE
+        Qt6::Core Qt6::Widgets Qt6::Network Qt6::Test
+    )
+    add_test(NAME PengyTests COMMAND pengy_tests)
+endif()

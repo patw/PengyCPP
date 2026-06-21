@@ -22,6 +22,22 @@ static QString   g_userAgent = "PengyAgent/1.0";
 static int       g_timeout   = 60;
 static QMutex    g_mutex;
 
+// ── Sudo password provider (installed by the GUI before each LLM run) ─
+static Tools::SudoPasswordFn g_sudoProvider;
+static QString               g_cachedSudoPassword;
+static QMutex                g_sudoMutex;
+
+void setSudoPasswordProvider(SudoPasswordFn fn) {
+    QMutexLocker lock(&g_sudoMutex);
+    g_sudoProvider = std::move(fn);
+    g_cachedSudoPassword.clear();
+}
+void clearSudoPasswordProvider() {
+    QMutexLocker lock(&g_sudoMutex);
+    g_sudoProvider = nullptr;
+    g_cachedSudoPassword.clear();
+}
+
 void setUserAgent(const QString& ua) {
     QMutexLocker lock(&g_mutex);
     g_userAgent = ua;
@@ -335,13 +351,49 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
 
     int timeoutSecs = toolTimeout();
 
+    // ── sudo detection ──────────────────────────────────────────────
+    static QRegularExpression sudoRx("\\bsudo\\b");
+    bool needsSudo = sudoRx.match(command).hasMatch();
+
+    if (needsSudo) {
+        QMutexLocker lock(&g_sudoMutex);
+        if (g_cachedSudoPassword.isEmpty()) {
+            if (!g_sudoProvider) {
+                return "Error: sudo detected but no password provider is configured.";
+            }
+            auto provider = g_sudoProvider;
+            lock.unlock();
+            QString pw = provider();
+            lock.relock();
+            if (pw.isEmpty()) {
+                return "Cancelled: sudo password not provided.";
+            }
+            g_cachedSudoPassword = pw;
+        }
+        // Rewrite sudo → sudo -S so it reads the password from stdin
+        if (!command.contains("sudo -S")) {
+            command.replace(sudoRx, "sudo -S");
+        }
+    }
+
     QProcess proc;
     proc.setProgram("bash");
     proc.setArguments({"-c", command});
-    proc.setProcessChannelMode(QProcess::MergedChannels);
+    proc.setProcessChannelMode(QProcess::SeparateChannels);
     proc.start();
     if (!proc.waitForStarted(5000))
         return "Error running command: " + proc.errorString();
+
+    qint64 pid = proc.processId();
+
+    // Write sudo password to stdin if needed
+    if (needsSudo) {
+        QMutexLocker lock(&g_sudoMutex);
+        if (!g_cachedSudoPassword.isEmpty()) {
+            proc.write((g_cachedSudoPassword + "\n").toUtf8());
+        }
+    }
+    proc.closeWriteChannel();
 
     int waitMs = timeoutSecs > 0 ? timeoutSecs * 1000 : -1;
 
@@ -351,12 +403,14 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
         int step    = 100;
         while (!proc.waitForFinished(step)) {
             if (cancel->load()) {
+                QProcess::execute("kill", {"-9", QString("-%1").arg(pid)});
                 proc.kill();
                 proc.waitForFinished(2000);
                 return "Error: Command was cancelled.";
             }
             elapsed += step;
             if (waitMs > 0 && elapsed >= waitMs) {
+                QProcess::execute("kill", {"-9", QString("-%1").arg(pid)});
                 proc.kill();
                 proc.waitForFinished(2000);
                 return QString("Error: Command timed out after %1 seconds.").arg(timeoutSecs);
@@ -364,6 +418,7 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
         }
     } else {
         if (!proc.waitForFinished(waitMs)) {
+            QProcess::execute("kill", {"-9", QString("-%1").arg(pid)});
             proc.kill();
             proc.waitForFinished(2000);
             return QString("Error: Command timed out after %1 seconds.").arg(timeoutSecs);

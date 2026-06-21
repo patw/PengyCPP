@@ -1,5 +1,6 @@
 #include "chatworker.h"
 #include "llmclient.h"
+#include "tools.h"
 #include <QThread>
 #include <QJsonDocument>
 
@@ -19,6 +20,23 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
         QMutexLocker lock(&m_mutex);
         m_confirmState = ConfirmState{};
     }
+    {
+        QMutexLocker lock(&m_sudoMutex);
+        m_sudoPending = false;
+        m_sudoPassword.clear();
+    }
+
+    // Install a sudo password provider that blocks on QWaitCondition
+    Tools::setSudoPasswordProvider([this]() -> QString {
+        QMutexLocker lock(&m_sudoMutex);
+        m_sudoPending = true;
+        // Wait for main thread to provide password or cancel
+        while (m_sudoPending && !m_cancelled) {
+            m_sudoCond.wait(&m_sudoMutex);
+        }
+        if (m_cancelled) return QString();
+        return m_sudoPassword;
+    });
 
     auto* thread = QThread::create([this] {
         LlmParams params{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation};
@@ -34,7 +52,6 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
 
         LlmClient::ConfirmFn onConfirm = [this]() -> std::pair<bool,bool> {
             QMutexLocker lock(&m_mutex);
-            // Wait until status is set by the main thread
             while (m_confirmState.status == 0 && !m_cancelled) {
                 m_cond.wait(&m_mutex);
             }
@@ -48,10 +65,8 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
         LlmClient client;
         client.run(params, onEvent, onConfirm, isCancelled);
 
-        if (!m_cancelled)
-            emit finished();
-        else
-            emit finished();
+        Tools::clearSudoPasswordProvider();
+        emit finished();
     });
 
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
@@ -60,9 +75,16 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
 
 void ChatWorker::cancel() {
     m_cancelled = true;
-    QMutexLocker lock(&m_mutex);
-    m_confirmState.status = 3;  // declined
-    m_cond.wakeAll();
+    {
+        QMutexLocker lock(&m_mutex);
+        m_confirmState.status = 3;  // declined
+        m_cond.wakeAll();
+    }
+    {
+        QMutexLocker lock(&m_sudoMutex);
+        m_sudoPending = false;
+        m_sudoCond.wakeAll();
+    }
 }
 
 void ChatWorker::sendConfirmation(bool confirmed, bool yoloTurn) {
@@ -70,4 +92,23 @@ void ChatWorker::sendConfirmation(bool confirmed, bool yoloTurn) {
     m_confirmState.status   = confirmed ? 2 : 3;
     m_confirmState.yoloTurn = yoloTurn;
     m_cond.wakeAll();
+}
+
+bool ChatWorker::isSudoPending() const {
+    QMutexLocker lock(&m_sudoMutex);
+    return m_sudoPending;
+}
+
+void ChatWorker::sendSudoPassword(const QString& password) {
+    QMutexLocker lock(&m_sudoMutex);
+    m_sudoPassword = password;
+    m_sudoPending  = false;
+    m_sudoCond.wakeAll();
+}
+
+void ChatWorker::cancelSudo() {
+    QMutexLocker lock(&m_sudoMutex);
+    m_sudoPassword.clear();
+    m_sudoPending = false;
+    m_sudoCond.wakeAll();
 }
