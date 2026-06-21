@@ -1,0 +1,29 @@
+#pragma once
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QString>
+#include <functional>
+#include <atomic>
+#include <utility>
+
+struct LlmParams {
+    QString   baseUrl;
+    QString   apiKey;
+    QString   model;
+    QJsonArray messages;
+    QString   toolConfirmation; // "all" | "safe" | "none"
+};
+
+class LlmClient {
+public:
+    using EventFn   = std::function<void(const QJsonObject&)>;
+    using CancelFn  = std::function<bool()>;
+    // Returns {confirmed, yoloTurn}
+    using ConfirmFn = std::function<std::pair<bool,bool>()>;
+
+    // Blocks the calling thread until the conversation ends or is cancelled.
+    void run(const LlmParams& params,
+             EventFn   onEvent,
+             ConfirmFn onConfirm,
+             CancelFn  isCancelled);
+};

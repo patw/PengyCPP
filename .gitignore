@@ -1,0 +1,47 @@
+# Build output
+build/
+build_macos/
+build_windows/
+Pengy.app/
+Pengy-Windows/
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+install_manifest.txt
+*.cmake
+!CMakeLists.txt
+
+# Qt MOC / autogen
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+*_autogen/
+
+# Compiled objects / libraries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dll
+*.exe
+*.dylib
+
+# IDE
+.vscode/
+.idea/
+*.user
+*.pro.user
+*.creator
+*.creator.user
+.clangd/
+.cache/
+compile_commands.json
+
+# OS
+.DS_Store
+Thumbs.db

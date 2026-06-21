@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(qt6-config --version)",
+      "Bash(qmake6 --version)",
+      "Bash(cmake --version)",
+      "Bash(pkg-config --modversion Qt6Core)",
+      "Bash(cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug)",
+      "Bash(DISPLAY=:0 /home/beholder/Personal/PengyCPP/build/pengy)",
+      "Bash(echo \"PID: $!\")",
+      "Bash(ldd *)",
+      "Bash(chmod +x *)"
+    ]
+  }
+}
