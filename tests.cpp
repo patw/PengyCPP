@@ -7,10 +7,19 @@
 #include <QFile>
 #include <QDir>
 #include <QSysInfo>
+#include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QTcpSocket>
+#include <QTimer>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QEventLoop>
 
 #include "config.h"
 #include "chatmanager.h"
 #include "tools.h"
+#include "web/webserver.h"
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -51,10 +60,92 @@ static QJsonObject toolMsg(const QString& toolCallId, const QString& content) {
 
 // ── Test class ──────────────────────────────────────────────────────
 
+// ── HTTP response helper ─────────────────────────────────────────────
+
+struct WebResp {
+    int        status = 0;
+    QByteArray body;
+    QString    location;
+    QString    contentType;
+};
+
+static WebResp webRequest(const QString& method, quint16 port,
+                           const QString& path,
+                           const QByteArray& body = {},
+                           const QString& ct = {})
+{
+    QNetworkAccessManager mgr;
+    QNetworkRequest req(QUrl("http://127.0.0.1:" + QString::number(port) + path));
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::ManualRedirectPolicy);
+    if (!ct.isEmpty()) req.setHeader(QNetworkRequest::ContentTypeHeader, ct);
+
+    QEventLoop loop;
+    QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+    QNetworkReply* reply = (method == "POST") ? mgr.post(req, body) : mgr.get(req);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    WebResp r;
+    r.status      = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    r.body        = reply->readAll();
+    // rawHeader works for relative Location values; parsed LocationHeader may be empty
+    r.location    = QString::fromUtf8(reply->rawHeader("Location"));
+    r.contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();
+    reply->deleteLater();
+    return r;
+}
+
+// ── CLI subprocess helper ────────────────────────────────────────────
+
+static QString cliBin() {
+    return QCoreApplication::applicationDirPath() + "/pengy_cli";
+}
+
+static QString runCli(const QStringList& commands, int timeoutMs = 5000) {
+    QProcess proc;
+    proc.setProgram(cliBin());
+    proc.setProcessEnvironment(QProcessEnvironment::systemEnvironment());
+    proc.start();
+    if (!proc.waitForStarted(2000)) return {};
+    for (const QString& cmd : commands)
+        proc.write((cmd + "\n").toUtf8());
+    proc.closeWriteChannel(); // EOF on stdin → CLI's while(!in.atEnd()) loop exits
+    if (!proc.waitForFinished(timeoutMs)) {
+        proc.kill();
+        proc.waitForFinished(1000);
+    }
+    return QString::fromUtf8(proc.readAllStandardOutput());
+}
+
+// ── Test class ──────────────────────────────────────────────────────
+
 class PengyTests : public QObject {
     Q_OBJECT
 
+private:
+    QTemporaryDir m_xdgDir; // test-isolated config directory
+
 private slots:
+    // ── Test lifecycle ───────────────────────────────────────────────
+
+    void initTestCase() {
+        QVERIFY(m_xdgDir.isValid());
+        // Override XDG config home so tests don't read/write ~/.config/pengy
+        qputenv("XDG_CONFIG_HOME", m_xdgDir.path().toUtf8());
+        QDir(m_xdgDir.path()).mkpath("pengy");
+    }
+
+    void cleanupTestCase() {
+        qunsetenv("XDG_CONFIG_HOME");
+    }
+
+    void init() {
+        // Fresh config/chat state before each test
+        QFile(m_xdgDir.path() + "/pengy/chats.json").remove();
+        QFile(m_xdgDir.path() + "/pengy/settings.json").remove();
+    }
+
     // ── Config ──────────────────────────────────────────────────────
 
     void configDefaultValues() {
@@ -584,6 +675,195 @@ private slots:
 
         QString result = Tools::execute("read_file", QJsonObject{{"path", path}});
         QCOMPARE(result, "dispatch content");
+    }
+
+    // ── Web server: startup ──────────────────────────────────────────
+
+    void webServerBindsPort() {
+        WebServer server(0);
+        QVERIFY(server.start());
+        QVERIFY(server.port() > 0);
+    }
+
+    // ── Web server: routing ──────────────────────────────────────────
+
+    void webGetRootRedirects() {
+        WebServer server(0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(), "/");
+        QCOMPARE(r.status, 302);
+        QVERIFY2(r.location.contains("/chat/"),
+                 qPrintable("Location was: " + r.location));
+    }
+
+    void webGetChatPage() {
+        QJsonObject chat = chatCreate("Web Test Chat");
+        QString chatId   = chat["id"].toString();
+
+        WebServer server(0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(), "/chat/" + chatId);
+        QCOMPARE(r.status, 200);
+        QVERIFY(r.contentType.startsWith("text/html"));
+        QVERIFY(r.body.contains("bootstrap"));
+        QVERIFY(r.body.contains(chatId.toUtf8()));
+    }
+
+    void webGetSettingsPage() {
+        WebServer server(0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(), "/settings");
+        QCOMPARE(r.status, 200);
+        QVERIFY(r.contentType.startsWith("text/html"));
+        QVERIFY(r.body.contains("base_url"));
+        QVERIFY(r.body.contains("api_key"));
+        QVERIFY(r.body.contains("tool_confirmation"));
+    }
+
+    void webPostSettingsSavesAndRedirects() {
+        WebServer server(0);
+        QVERIFY(server.start());
+        QByteArray form =
+            "base_url=http%3A%2F%2Flocalhost%3A8080%2Fv1"
+            "&api_key=sk-webtest"
+            "&model=web-test-model"
+            "&system_message=hi"
+            "&tool_confirmation=safe"
+            "&tool_timeout=45"
+            "&context_keep_turns=3";
+        WebResp r = webRequest("POST", server.port(), "/settings", form,
+                               "application/x-www-form-urlencoded");
+        QCOMPARE(r.status, 302);
+        QVERIFY(r.location.contains("/settings"));
+
+        Config cfg = configLoad();
+        QCOMPARE(cfg.model, "web-test-model");
+        QCOMPARE(cfg.toolConfirmation, "safe");
+        QCOMPARE(cfg.toolTimeout, 45);
+        QCOMPARE(cfg.contextKeepTurns, 3);
+    }
+
+    void webPostNewChatCreatesChat() {
+        WebServer server(0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(), "/chat/new");
+        QCOMPARE(r.status, 302);
+        QVERIFY(r.location.contains("/chat/"));
+
+        QJsonArray chats = chatsLoad();
+        QCOMPARE(chats.size(), 1);
+        QCOMPARE(chats.first().toObject()["title"].toString(), "New Chat");
+    }
+
+    void webSendEmptyContentReturns400() {
+        QJsonObject chat = chatCreate("Send Test");
+        WebServer server(0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/send",
+                               R"({"content":""})", "application/json");
+        QCOMPARE(r.status, 400);
+    }
+
+    void webUnknownRouteReturns404() {
+        WebServer server(0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(), "/no/such/path");
+        QCOMPARE(r.status, 404);
+    }
+
+    void webDeleteChatRemovesIt() {
+        QJsonObject chat = chatCreate("Delete Me");
+        QString chatId   = chat["id"].toString();
+        QCOMPARE(chatsLoad().size(), 1);
+
+        WebServer server(0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(), "/chat/" + chatId + "/delete");
+        QCOMPARE(r.status, 302);
+        QCOMPARE(chatsLoad().size(), 0);
+    }
+
+    void webStreamReturnsSSEHeaders() {
+        QJsonObject chat = chatCreate("Stream Test");
+
+        WebServer server(0);
+        QVERIFY(server.start());
+        QNetworkAccessManager mgr;
+        QNetworkRequest req(QUrl("http://127.0.0.1:" + QString::number(server.port()) +
+                                 "/chat/" + chat["id"].toString() + "/stream"));
+        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::ManualRedirectPolicy);
+        QNetworkReply* reply = mgr.get(req);
+
+        // metaDataChanged fires when response headers arrive, before the body closes.
+        // Perfect for SSE: we get the 200 + content-type without waiting for EOF.
+        QEventLoop loop;
+        QTimer::singleShot(4000, &loop, &QEventLoop::quit);
+        QObject::connect(reply, &QNetworkReply::metaDataChanged, &loop, &QEventLoop::quit);
+        loop.exec();
+
+        int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        QString ct = reply->header(QNetworkRequest::ContentTypeHeader).toString();
+        reply->abort();
+        reply->deleteLater();
+
+        QCOMPARE(status, 200);
+        QVERIFY2(ct.startsWith("text/event-stream"), qPrintable(ct));
+    }
+
+    // ── CLI tests (subprocess) ───────────────────────────────────────
+
+    void cliHelp() {
+        if (!QFile::exists(cliBin()))
+            QSKIP("pengy_cli not built yet");
+
+        QString out = runCli({"/help"});
+        QVERIFY2(!out.isEmpty(), "pengy_cli produced no output");
+        QVERIFY(out.contains("Commands:"));
+        QVERIFY(out.contains("/new"));
+        QVERIFY(out.contains("/model"));
+        QVERIFY(out.contains("/quit"));
+        QVERIFY(out.contains("/yolo"));
+    }
+
+    void cliConfig() {
+        if (!QFile::exists(cliBin()))
+            QSKIP("pengy_cli not built yet");
+
+        QString out = runCli({"/config"});
+        QVERIFY(!out.isEmpty());
+        QVERIFY(out.contains("Configuration:"));
+        QVERIFY(out.contains("base_url"));
+        QVERIFY(out.contains("model"));
+        QVERIFY(out.contains("tool_confirm"));
+        QVERIFY(out.contains("api_key"));
+    }
+
+    void cliNewAndList() {
+        if (!QFile::exists(cliBin()))
+            QSKIP("pengy_cli not built yet");
+
+        // Create a new chat, then list all
+        QString out = runCli({"/new", "/list"});
+        QVERIFY(!out.isEmpty());
+        QVERIFY(out.contains("Chats:"));
+        // At minimum the auto-created chat and the /new chat appear
+        QVERIFY(out.contains("New Chat"));
+    }
+
+    void cliQuitExitsCleanly() {
+        if (!QFile::exists(cliBin()))
+            QSKIP("pengy_cli not built yet");
+
+        QProcess proc;
+        proc.setProgram(cliBin());
+        proc.setProcessEnvironment(QProcessEnvironment::systemEnvironment());
+        proc.start();
+        QVERIFY(proc.waitForStarted(2000));
+        proc.write("/quit\n");
+        QVERIFY(proc.waitForFinished(4000));
+        QCOMPARE(proc.exitCode(), 0);
     }
 };
 

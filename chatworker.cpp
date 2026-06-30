@@ -75,6 +75,7 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
 
 void ChatWorker::cancel() {
     m_cancelled = true;
+    Tools::killActiveProcesses();
     {
         QMutexLocker lock(&m_mutex);
         m_confirmState.status = 3;  // declined

@@ -15,6 +15,16 @@
 #include <QMutex>
 #include <QSet>
 #include <QFileInfo>
+#include <QElapsedTimer>
+#include <QUuid>
+#include <QCoreApplication>
+#include <QThread>
+#include <QUrlQuery>
+
+#ifdef Q_OS_UNIX
+#include <unistd.h>
+#include <signal.h>
+#endif
 
 namespace Tools {
 
@@ -26,6 +36,15 @@ static QMutex    g_mutex;
 static Tools::SudoPasswordFn g_sudoProvider;
 static QString               g_cachedSudoPassword;
 static QMutex                g_sudoMutex;
+
+// ── Active process group tracking ─────────────────────────────────────
+static QSet<qint64>  g_activeProcessGroups;
+static QMutex        g_processMutex;
+
+// ── Rate limiter for web searches ─────────────────────────────────────
+static QElapsedTimer g_lastSearchTimer;
+static bool          g_lastSearchTimerStarted = false;
+static QMutex        g_searchTimerMutex;
 
 void setSudoPasswordProvider(SudoPasswordFn fn) {
     QMutexLocker lock(&g_sudoMutex);
@@ -53,6 +72,34 @@ static QString userAgent() {
 static int toolTimeout() {
     QMutexLocker lock(&g_mutex);
     return g_timeout;
+}
+
+// ── Process group management ──────────────────────────────────────────
+
+static void registerProcess(qint64 pid) {
+    QMutexLocker lock(&g_processMutex);
+    g_activeProcessGroups.insert(pid);
+}
+
+static void unregisterProcess(qint64 pid) {
+    QMutexLocker lock(&g_processMutex);
+    g_activeProcessGroups.remove(pid);
+}
+
+static void terminateProcessGroup(qint64 pid) {
+#ifdef Q_OS_UNIX
+    QProcess::execute("kill", {"-9", QString("-%1").arg(pid)});
+#else
+    QProcess::execute("taskkill", {"/PID", QString::number(pid), "/T", "/F"});
+#endif
+}
+
+void killActiveProcesses() {
+    QMutexLocker lock(&g_processMutex);
+    for (qint64 pid : g_activeProcessGroups) {
+        terminateProcessGroup(pid);
+    }
+    g_activeProcessGroups.clear();
 }
 
 // ── Tool schema helpers ───────────────────────────────────────────────
@@ -102,7 +149,9 @@ QJsonArray toolDefinitions() {
             QJsonObject{{"command", prop("string", "The bash command to execute")}},
             QJsonArray{"command"}),
 
-        td("web_search", "Search the web using DuckDuckGo",
+        td("web_search",
+            "Search the web using metasearch across multiple backends "
+            "(Brave, DuckDuckGo, Mojeek, Yahoo, Google, Startpage, Yandex)",
             QJsonObject{
                 {"query",       prop("string",  "The search query")},
                 {"max_results", prop("integer", "Maximum number of results to return (default: 5)")}},
@@ -182,7 +231,43 @@ static QString expandHome(const QString& path) {
     return path;
 }
 
-// ── Synchronous HTTP (safe to call from any thread via local QEventLoop) ──
+// ── Temp file output helpers ──────────────────────────────────────────
+
+struct TempOutputFiles {
+    QString stdoutPath;
+    QString stderrPath;
+    bool valid = false;
+};
+
+static TempOutputFiles createOutputFiles(const QString& prefix) {
+    TempOutputFiles f;
+    qint64 nanos = QDateTime::currentMSecsSinceEpoch();
+    qint64 pid   = QCoreApplication::applicationPid();
+    f.stdoutPath = QDir::tempPath() + QString("/pengy_%1_%2_%3.out").arg(prefix).arg(pid).arg(nanos);
+    f.stderrPath = QDir::tempPath() + QString("/pengy_%1_%2_%3.err").arg(prefix).arg(pid).arg(nanos);
+    QFile outFile(f.stdoutPath);
+    QFile errFile(f.stderrPath);
+    f.valid = outFile.open(QIODevice::WriteOnly) && errFile.open(QIODevice::WriteOnly);
+    return f;
+}
+
+static QString readAndRemove(const QString& path) {
+    QFile f(path);
+    QString text;
+    if (f.open(QIODevice::ReadOnly)) {
+        text = QString::fromUtf8(f.readAll());
+        f.close();
+    }
+    QFile::remove(path);
+    return text;
+}
+
+static void removeOutputFiles(const TempOutputFiles& f) {
+    QFile::remove(f.stdoutPath);
+    QFile::remove(f.stderrPath);
+}
+
+// ── Synchronous HTTP helpers ─────────────────────────────────────────
 
 static QByteArray httpGet(const QUrl& url, const QString& ua, int timeoutMs = 30000) {
     QNetworkAccessManager mgr;
@@ -221,7 +306,7 @@ static QByteArray httpGetWithRedirect(const QUrl& startUrl, const QString& ua, i
     return data;
 }
 
-// ── Simple HTML utilities ─────────────────────────────────────────────
+// ── HTML utilities ───────────────────────────────────────────────────
 
 static QString decodeEntities(QString s) {
     s.replace("&amp;",  "&");
@@ -232,7 +317,6 @@ static QString decodeEntities(QString s) {
     s.replace("&nbsp;", " ");
     s.replace("&#39;",  "'");
     s.replace("&#x27;", "'");
-    // Numeric HTML entities &#NNN;  (simplified — skip the lambda, just remove them)
     s.remove(QRegularExpression("&#\\d+;"));
     return s;
 }
@@ -247,7 +331,6 @@ static QString stripTags(const QString& html) {
     return decodeEntities(s).trimmed();
 }
 
-// Extract first text from element whose class contains `cls`
 static QString extractByClass(const QString& html, const QString& cls) {
     static QRegularExpression tagRx(
         "<[a-zA-Z][^>]*class=\"[^\"]*\\b%1\\b[^\"]*\"[^>]*>([\\s\\S]*?)</[a-zA-Z]+>",
@@ -257,6 +340,64 @@ static QString extractByClass(const QString& html, const QString& cls) {
     auto m = re.match(html);
     if (!m.hasMatch()) return {};
     return stripTags(m.captured(1)).trimmed();
+}
+
+static QString extractFirstHref(const QString& html) {
+    static QRegularExpression rx(R"RE(<a[^>]+href="([^"]+)")RE");
+    auto m = rx.match(html);
+    return m.hasMatch() ? decodeEntities(m.captured(1)) : QString();
+}
+
+static QString extractFirstHrefByClass(const QString& html, const QString& cls) {
+    QRegularExpression rx(
+        "<a[^>]*class=\"[^\"]*\\b" + QRegularExpression::escape(cls) +
+        "\\b[^\"]*\"[^>]*href=\"([^\"]+)\"");
+    auto m = rx.match(html);
+    if (m.hasMatch()) return decodeEntities(m.captured(1));
+    QRegularExpression rx2(
+        "<a[^>]*href=\"([^\"]+)\"[^>]*class=\"[^\"]*\\b" +
+        QRegularExpression::escape(cls) + "\\b[^\"]*\"");
+    auto m2 = rx2.match(html);
+    return m2.hasMatch() ? decodeEntities(m2.captured(1)) : QString();
+}
+
+static QString extractTextByTag(const QString& html, const QString& tag) {
+    QRegularExpression rx("<" + tag + "[^>]*>([\\s\\S]*?)</" + tag + ">",
+                          QRegularExpression::CaseInsensitiveOption);
+    auto m = rx.match(html);
+    return m.hasMatch() ? stripTags(m.captured(1)).trimmed() : QString();
+}
+
+static QString normalizeSearchText(const QString& s) {
+    QString result;
+    for (const QChar& c : s) {
+        if (!c.isNonCharacter() && c.category() != QChar::Other_Control)
+            result += c;
+    }
+    return result.simplified();
+}
+
+static QString urldecode(const QString& s) {
+    QString result;
+    int i = 0;
+    while (i < s.size()) {
+        if (s[i] == '%' && i + 2 < s.size()) {
+            bool ok;
+            int byte = s.mid(i + 1, 2).toInt(&ok, 16);
+            if (ok) {
+                result += QChar(byte);
+                i += 3;
+                continue;
+            }
+        }
+        if (s[i] == '+') {
+            result += ' ';
+        } else {
+            result += s[i];
+        }
+        i++;
+    }
+    return result;
 }
 
 // ── Tool implementations ─────────────────────────────────────────────
@@ -345,6 +486,8 @@ static QString toolReplaceInFile(const QJsonObject& args) {
            .arg(oldLines).arg(newLines);
 }
 
+// ── Bash (with temp file output & process groups) ────────────────────
+
 static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
     QString command = aStr(args, "command");
     if (command.isEmpty()) return "Error: command is required.";
@@ -370,23 +513,38 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
             }
             g_cachedSudoPassword = pw;
         }
-        // Rewrite sudo → sudo -S so it reads the password from stdin
         if (!command.contains("sudo -S")) {
             command.replace(sudoRx, "sudo -S");
         }
     }
 
+    // Create temp files for stdout/stderr to avoid pipe buffer deadlock
+    auto tmpFiles = createOutputFiles("bash");
+    if (!tmpFiles.valid) {
+        return "Error: Could not create temp output files.";
+    }
+
     QProcess proc;
     proc.setProgram("bash");
     proc.setArguments({"-c", command});
-    proc.setProcessChannelMode(QProcess::SeparateChannels);
+    proc.setStandardOutputFile(tmpFiles.stdoutPath);
+    proc.setStandardErrorFile(tmpFiles.stderrPath);
+
+#ifdef Q_OS_UNIX
+    proc.setChildProcessModifier([]() {
+        setsid();
+    });
+#endif
+
     proc.start();
-    if (!proc.waitForStarted(5000))
+    if (!proc.waitForStarted(5000)) {
+        removeOutputFiles(tmpFiles);
         return "Error running command: " + proc.errorString();
+    }
 
     qint64 pid = proc.processId();
+    registerProcess(pid);
 
-    // Write sudo password to stdin if needed
     if (needsSudo) {
         QMutexLocker lock(&g_sudoMutex);
         if (!g_cachedSudoPassword.isEmpty()) {
@@ -397,37 +555,57 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
 
     int waitMs = timeoutSecs > 0 ? timeoutSecs * 1000 : -1;
 
-    // Poll with cancel check
     if (cancel) {
         int elapsed = 0;
         int step    = 100;
         while (!proc.waitForFinished(step)) {
             if (cancel->load()) {
-                QProcess::execute("kill", {"-9", QString("-%1").arg(pid)});
+                terminateProcessGroup(pid);
                 proc.kill();
                 proc.waitForFinished(2000);
+                unregisterProcess(pid);
+                removeOutputFiles(tmpFiles);
                 return "Error: Command was cancelled.";
             }
             elapsed += step;
             if (waitMs > 0 && elapsed >= waitMs) {
-                QProcess::execute("kill", {"-9", QString("-%1").arg(pid)});
+                terminateProcessGroup(pid);
                 proc.kill();
                 proc.waitForFinished(2000);
-                return QString("Error: Command timed out after %1 seconds.").arg(timeoutSecs);
+                unregisterProcess(pid);
+                QString out = readAndRemove(tmpFiles.stdoutPath);
+                QString err = readAndRemove(tmpFiles.stderrPath);
+                QString result = out;
+                if (!err.isEmpty()) {
+                    result += "\n" + err;
+                }
+                result += QString("\n\nError: Command timed out after %1 seconds.").arg(timeoutSecs);
+                return result.trimmed();
             }
         }
     } else {
         if (!proc.waitForFinished(waitMs)) {
-            QProcess::execute("kill", {"-9", QString("-%1").arg(pid)});
+            terminateProcessGroup(pid);
             proc.kill();
             proc.waitForFinished(2000);
+            unregisterProcess(pid);
+            removeOutputFiles(tmpFiles);
             return QString("Error: Command timed out after %1 seconds.").arg(timeoutSecs);
         }
     }
 
-    QString out = QString::fromUtf8(proc.readAllStandardOutput());
-    // Strip sudo password prompt lines
-    out.remove(QRegularExpression("^\\[sudo[^\\]]*\\].*\\n?", QRegularExpression::MultilineOption));
+    unregisterProcess(pid);
+
+    QString out = readAndRemove(tmpFiles.stdoutPath);
+    QString err = readAndRemove(tmpFiles.stderrPath);
+
+    // Strip sudo password prompt lines from stderr only
+    err.remove(QRegularExpression("^\\[sudo[^\\]]*\\].*\\n?", QRegularExpression::MultilineOption));
+    err = err.trimmed();
+
+    if (!err.isEmpty()) {
+        out += "\n" + err;
+    }
 
     if (proc.exitCode() != 0)
         out += QString("\n[Exit code: %1]").arg(proc.exitCode());
@@ -435,81 +613,602 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
     return out.trimmed().isEmpty() ? "(No output)" : out;
 }
 
+// ── Web search metasearch ────────────────────────────────────────────
+
+struct WebSearchHit {
+    QString title;
+    QString href;
+    QString body;
+    QString engine;
+};
+
+static QString searchBrowserUa() {
+    return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
+}
+
+static QString googleMobileUa() {
+    return "Mozilla/5.0 (Linux; Android 8.0; Pixel 2 Build/OPD3.170816.012) "
+           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.1880 "
+           "Mobile Safari/537.36NST^WV";
+}
+
+// Find positions of all blocks matching an attribute pattern
+static QList<int> findBlockPositions(const QString& html, const QString& attrPattern) {
+    QRegularExpression rx(attrPattern);
+    QList<int> positions;
+    auto it = rx.globalMatch(html);
+    while (it.hasNext()) {
+        auto m = it.next();
+        positions.append(m.capturedStart());
+    }
+    return positions;
+}
+
+static QString blockBetween(const QString& html, int start, int end) {
+    return html.mid(start, qMin(end - start, 8000));
+}
+
+// ── Individual search backends ───────────────────────────────────────
+
+static QList<WebSearchHit> parseBrave(const QString& html, int maxResults) {
+    QList<WebSearchHit> hits;
+    auto positions = findBlockPositions(html, R"(data-type=["']web["'])");
+
+    for (int i = 0; i < positions.size() && hits.size() < maxResults; ++i) {
+        int end = (i + 1 < positions.size()) ? positions[i + 1] : html.size();
+        QString block = blockBetween(html, positions[i], end);
+
+        QString title = extractByClass(block, "title");
+        if (title.isEmpty()) title = extractByClass(block, "sitename-container");
+        if (title.isEmpty()) continue;
+
+        QString href = extractFirstHref(block);
+        if (!href.startsWith("http")) continue;
+
+        QString body = extractByClass(block, "content");
+        if (body.isEmpty()) body = extractByClass(block, "snippet");
+
+        hits.append({normalizeSearchText(title), href, normalizeSearchText(body), "brave"});
+    }
+    return hits;
+}
+
+static QList<WebSearchHit> parseDDG(const QString& html, int maxResults) {
+    QList<WebSearchHit> hits;
+    if (html.size() < 5000) return hits;
+
+    int pos = 0;
+    while (hits.size() < maxResults) {
+        int rStart = html.indexOf("class=\"result", pos);
+        if (rStart == -1) break;
+
+        int divStart = html.lastIndexOf('<', rStart);
+        if (divStart == -1) { pos = rStart + 1; continue; }
+
+        int nextResult = html.indexOf("class=\"result", rStart + 13);
+        QString block = (nextResult > 0)
+            ? html.mid(divStart, nextResult - divStart)
+            : html.mid(divStart, 5000);
+
+        if (block.contains("result--ad")) {
+            pos = (nextResult > 0) ? nextResult : html.size();
+            continue;
+        }
+
+        QString title = extractByClass(block, "result__a");
+        if (title.isEmpty()) title = extractByClass(block, "result__title");
+        if (title.isEmpty()) {
+            pos = (nextResult > 0) ? nextResult : html.size();
+            continue;
+        }
+
+        QString href = extractFirstHrefByClass(block, "result__a");
+        if (href.contains("uddg=")) {
+            int uddgPos = href.indexOf("uddg=");
+            href = urldecode(href.mid(uddgPos + 5));
+        }
+        if (href.contains("duckduckgo.com/y.js")) {
+            pos = (nextResult > 0) ? nextResult : html.size();
+            continue;
+        }
+
+        QString snippet = extractByClass(block, "result__snippet");
+
+        hits.append({normalizeSearchText(title), href, normalizeSearchText(snippet), "duckduckgo"});
+        pos = (nextResult > 0) ? nextResult : html.size();
+    }
+    return hits;
+}
+
+static QList<WebSearchHit> parseMojeek(const QString& html, int maxResults) {
+    QList<WebSearchHit> hits;
+    QRegularExpression liRx(R"(<li\b[^>]*>([\s\S]*?)</li>)",
+                            QRegularExpression::CaseInsensitiveOption);
+    auto it = liRx.globalMatch(html);
+    while (it.hasNext() && hits.size() < maxResults) {
+        auto m = it.next();
+        QString block = m.captured(1);
+
+        QString title = extractByClass(block, "title");
+        if (title.isEmpty()) title = extractTextByTag(block, "h2");
+        if (title.isEmpty()) continue;
+
+        QString href = extractFirstHrefByClass(block, "title");
+        if (href.isEmpty()) {
+            QRegularExpression rx(R"RE(<h2[^>]*>[\s\S]*?<a[^>]+href="([^"]+)")RE");
+            auto hm = rx.match(block);
+            if (hm.hasMatch()) href = decodeEntities(hm.captured(1));
+        }
+
+        QString body = extractByClass(block, "s");
+
+        if (!title.isEmpty()) {
+            hits.append({normalizeSearchText(title), href, normalizeSearchText(body), "mojeek"});
+        }
+    }
+    return hits;
+}
+
+static QString extractYahooUrl(const QString& raw) {
+    int ruPos = raw.indexOf("/RU=");
+    if (ruPos >= 0) {
+        QString rest = raw.mid(ruPos + 4);
+        int rkPos = rest.indexOf("/RK=");
+        int rsPos = rest.indexOf("/RS=");
+        int endPos = rest.size();
+        if (rkPos >= 0) endPos = qMin(endPos, rkPos);
+        if (rsPos >= 0) endPos = qMin(endPos, rsPos);
+        return urldecode(rest.left(endPos));
+    }
+    return raw;
+}
+
+static QList<WebSearchHit> parseYahoo(const QString& html, int maxResults) {
+    QList<WebSearchHit> hits;
+    auto positions = findBlockPositions(html, R"(class="[^"]*relsrch[^"]*")");
+
+    for (int i = 0; i < positions.size() && hits.size() < maxResults; ++i) {
+        int end = (i + 1 < positions.size()) ? positions[i + 1] : html.size();
+        QString block = blockBetween(html, positions[i], end);
+
+        QString title = extractTextByTag(block, "h3");
+        if (title.isEmpty()) continue;
+
+        QString href = extractFirstHref(block);
+        href = extractYahooUrl(href);
+        if (!href.startsWith("http")) continue;
+
+        QString body;
+        QRegularExpression pRx("<p[^>]*>([\\s\\S]*?)</p>", QRegularExpression::CaseInsensitiveOption);
+        auto pm = pRx.match(block);
+        if (pm.hasMatch()) body = stripTags(pm.captured(1));
+
+        hits.append({normalizeSearchText(title), href, normalizeSearchText(body), "yahoo"});
+    }
+    return hits;
+}
+
+static QList<WebSearchHit> parseGoogle(const QString& html, int maxResults) {
+    QList<WebSearchHit> hits;
+    auto positions = findBlockPositions(html, R"(data-hveid=)");
+
+    for (int i = 0; i < positions.size() && hits.size() < maxResults; ++i) {
+        int end = (i + 1 < positions.size()) ? positions[i + 1] : html.size();
+        QString block = blockBetween(html, positions[i], end);
+
+        QString title = extractTextByTag(block, "h3");
+        if (title.isEmpty()) continue;
+
+        // Extract href - look for /url?q= or direct http links
+        QString href;
+        QRegularExpression hrefRx(R"RE(<a[^>]+href="([^"]+)")RE");
+        auto hIt = hrefRx.globalMatch(block);
+        while (hIt.hasNext()) {
+            auto hm = hIt.next();
+            QString h = decodeEntities(hm.captured(1));
+            if (h.startsWith("/url?q=") || h.startsWith("http")) {
+                href = h;
+                break;
+            }
+        }
+        if (href.startsWith("/url?q=")) {
+            href = href.mid(7); // skip "/url?q="
+            int ampPos = href.indexOf('&');
+            if (ampPos >= 0) href = href.left(ampPos);
+            href = urldecode(href);
+        }
+        if (!href.startsWith("http")) continue;
+
+        // Body: all text in the block minus the title
+        QString allText = normalizeSearchText(stripTags(block));
+        QString body = allText;
+        int titlePos = body.indexOf(title);
+        if (titlePos >= 0) {
+            body = body.mid(titlePos + title.size()).trimmed();
+        }
+
+        hits.append({normalizeSearchText(title), href, body, "google"});
+    }
+    return hits;
+}
+
+static QList<WebSearchHit> parseStartpage(const QString& html, int maxResults) {
+    QList<WebSearchHit> hits;
+    auto positions = findBlockPositions(html, R"(class="[^"]*\bresult\b[^"]*")");
+
+    for (int i = 0; i < positions.size() && hits.size() < maxResults; ++i) {
+        int end = (i + 1 < positions.size()) ? positions[i + 1] : html.size();
+        QString block = blockBetween(html, positions[i], end);
+
+        QString title = extractTextByTag(block, "h2");
+        if (title.isEmpty()) title = extractTextByTag(block, "h3");
+        if (title.isEmpty()) continue;
+
+        QString href = extractFirstHref(block);
+        if (!href.startsWith("http")) continue;
+
+        QString body;
+        QRegularExpression pRx("<p[^>]*>([\\s\\S]*?)</p>", QRegularExpression::CaseInsensitiveOption);
+        auto pm = pRx.match(block);
+        if (pm.hasMatch()) body = stripTags(pm.captured(1));
+
+        hits.append({normalizeSearchText(title), href, normalizeSearchText(body), "startpage"});
+    }
+    return hits;
+}
+
+static QList<WebSearchHit> parseYandex(const QString& html, int maxResults) {
+    QList<WebSearchHit> hits;
+    auto positions = findBlockPositions(html, R"(class="[^"]*serp-item[^"]*")");
+
+    for (int i = 0; i < positions.size() && hits.size() < maxResults; ++i) {
+        int end = (i + 1 < positions.size()) ? positions[i + 1] : html.size();
+        QString block = blockBetween(html, positions[i], end);
+
+        QString title = extractTextByTag(block, "h3");
+        if (title.isEmpty()) continue;
+
+        QString href;
+        QRegularExpression rx(R"RE(<h3[^>]*>[\s\S]*?<a[^>]+href="([^"]+)")RE");
+        auto hm = rx.match(block);
+        if (hm.hasMatch()) {
+            href = decodeEntities(hm.captured(1));
+        } else {
+            href = extractFirstHref(block);
+        }
+        if (!href.startsWith("http")) continue;
+
+        QString body = extractByClass(block, "text");
+
+        hits.append({normalizeSearchText(title), href, normalizeSearchText(body), "yandex"});
+    }
+    return hits;
+}
+
+// ── Dedup, ranking, and formatting ───────────────────────────────────
+
+static QStringList queryTokens(const QString& query) {
+    QStringList tokens;
+    for (const QString& word : query.split(QRegularExpression("[^a-zA-Z0-9]+"))) {
+        QString lower = word.toLower();
+        if (lower.size() >= 3) tokens.append(lower);
+    }
+    return tokens;
+}
+
+static QString canonicalUrlKey(const QString& url) {
+    QString u = url.trimmed().toLower();
+    while (u.endsWith('/')) u.chop(1);
+    for (const QString& marker : {"?utm_", "&utm_", "?fbclid=", "&fbclid="}) {
+        int idx = u.indexOf(marker);
+        if (idx >= 0) u = u.left(idx);
+    }
+    return u;
+}
+
+static QString normalizeSearchUrl(const QString& s) {
+    return urldecode(s.trimmed()).replace(' ', '+');
+}
+
+static QList<WebSearchHit> rankAndDedupeHits(QList<WebSearchHit> hits, const QString& query) {
+    QSet<QString> seen;
+    QList<WebSearchHit> deduped;
+
+    for (auto& hit : hits) {
+        hit.title = normalizeSearchText(hit.title);
+        hit.body  = normalizeSearchText(hit.body);
+        hit.href  = normalizeSearchUrl(hit.href);
+        if (hit.title.isEmpty() || hit.href.isEmpty() || !hit.href.startsWith("http"))
+            continue;
+        QString key = canonicalUrlKey(hit.href);
+        if (!seen.contains(key)) {
+            seen.insert(key);
+            deduped.append(hit);
+        }
+    }
+
+    QStringList tokens = queryTokens(query);
+
+    auto score = [&](const WebSearchHit& hit) -> int {
+        QString hrefL  = hit.href.toLower();
+        QString titleL = hit.title.toLower();
+        QString bodyL  = hit.body.toLower();
+        int s = 0;
+        if (hrefL.contains("wikipedia.org")) s += 100;
+        if (hit.engine == "brave" || hit.engine == "google" ||
+            hit.engine == "yahoo" || hit.engine == "startpage")
+            s += 5;
+        int titleHits = 0, bodyHits = 0;
+        for (const QString& t : tokens) {
+            if (titleL.contains(t)) titleHits++;
+            if (bodyL.contains(t))  bodyHits++;
+        }
+        if (titleHits > 0 && bodyHits > 0)      s += 40;
+        else if (titleHits > 0)                  s += 25;
+        else if (bodyHits > 0)                   s += 10;
+        s += titleHits * 3 + bodyHits;
+        return s;
+    };
+
+    std::sort(deduped.begin(), deduped.end(), [&](const WebSearchHit& a, const WebSearchHit& b) {
+        return score(a) > score(b);
+    });
+
+    return deduped;
+}
+
+static QString formatHits(const QList<WebSearchHit>& hits, int maxResults) {
+    QStringList lines;
+    int count = 0;
+    for (const auto& hit : hits) {
+        if (count >= maxResults) break;
+        count++;
+        lines.append(QString("%1. %2").arg(count).arg(hit.title));
+        if (!hit.href.isEmpty()) lines.append("   URL: " + hit.href);
+        if (!hit.body.isEmpty()) lines.append("   " + hit.body);
+        lines.append(QString());
+    }
+    return lines.join("\n").trimmed();
+}
+
+// ── Web search main function ─────────────────────────────────────────
+
 static QString toolWebSearch(const QJsonObject& args) {
     QString query      = aStr(args, "query");
     int     maxResults = aInt(args, "max_results", 5);
     if (query.isEmpty()) return "Error: query is required.";
     if (maxResults <= 0) maxResults = 5;
+    if (maxResults > 25) maxResults = 25;
 
-    QString ua = userAgent();
+    // Rate-limit between searches
+    {
+        QMutexLocker lock(&g_searchTimerMutex);
+        if (g_lastSearchTimerStarted) {
+            qint64 elapsed = g_lastSearchTimer.elapsed();
+            if (elapsed < 800) {
+                QThread::msleep(800 - elapsed);
+            }
+        }
+        g_lastSearchTimer.start();
+        g_lastSearchTimerStarted = true;
+    }
 
-    // URL-encode: spaces become +
-    QString encoded;
-    for (const QChar& c : query) {
-        uchar u = c.toLatin1();
-        if ((u >= 'A' && u <= 'Z') || (u >= 'a' && u <= 'z') ||
-            (u >= '0' && u <= '9') || u == '-' || u == '_' || u == '.' || u == '~') {
-            encoded += c;
-        } else if (u == ' ') {
-            encoded += '+';
+    QString browserUa = searchBrowserUa();
+    QString mobileUa  = googleMobileUa();
+    QString encoded   = QString(QUrl::toPercentEncoding(query));
+
+    // Fire all search backends in parallel
+    QNetworkAccessManager mgr;
+    mgr.setRedirectPolicy(QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    struct PendingSearch {
+        QString engine;
+        QNetworkReply* reply;
+    };
+    QList<PendingSearch> pending;
+
+    auto makeReq = [](const QUrl& url, const QString& ua, int timeout = 8000) {
+        QNetworkRequest req(url);
+        req.setHeader(QNetworkRequest::UserAgentHeader, ua);
+        req.setTransferTimeout(timeout);
+        return req;
+    };
+
+    // Brave
+    {
+        auto req = makeReq(QUrl("https://search.brave.com/search?q=" + encoded + "&source=web"), browserUa);
+        req.setRawHeader("Cookie", "useLocation=0; safesearch=off; us=us");
+        pending.append({"brave", mgr.get(req)});
+    }
+
+    // DuckDuckGo (POST)
+    {
+        QNetworkRequest req(QUrl("https://html.duckduckgo.com/html/"));
+        req.setHeader(QNetworkRequest::UserAgentHeader, browserUa);
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
+        req.setTransferTimeout(8000);
+        QByteArray postData = "q=" + QUrl::toPercentEncoding(query) + "&b=&l=us-en";
+        pending.append({"ddg", mgr.post(req, postData)});
+    }
+
+    // Mojeek
+    {
+        auto req = makeReq(QUrl("https://www.mojeek.com/search?q=" + encoded), browserUa);
+        req.setRawHeader("Cookie", "arc=us; lb=en");
+        pending.append({"mojeek", mgr.get(req)});
+    }
+
+    // Yahoo
+    {
+        QString tokenA = QUuid::createUuid().toString(QUuid::WithoutBraces).remove('-');
+        QString tokenB = QUuid::createUuid().toString(QUuid::WithoutBraces).remove('-');
+        QUrl yahooUrl(QString("https://search.yahoo.com/search;_ylt=%1;_ylu=%2?p=%3")
+                      .arg(tokenA, tokenB, encoded));
+        pending.append({"yahoo", mgr.get(makeReq(yahooUrl, browserUa))});
+    }
+
+    // Google (mobile UA)
+    {
+        QUrl googleUrl("https://www.google.com/search");
+        QUrlQuery gq;
+        gq.addQueryItem("q", query);
+        gq.addQueryItem("filter", "1");
+        gq.addQueryItem("start", "0");
+        gq.addQueryItem("hl", "en-US");
+        gq.addQueryItem("lr", "lang_en");
+        gq.addQueryItem("cr", "countryUS");
+        googleUrl.setQuery(gq);
+        auto req = makeReq(googleUrl, mobileUa);
+        req.setRawHeader("Cookie", "CONSENT=YES+");
+        pending.append({"google", mgr.get(req)});
+    }
+
+    // Startpage (two-step: GET homepage for sc token, then POST search)
+    // We'll do a simpler single GET approach that often works
+    {
+        pending.append({"startpage_home", mgr.get(makeReq(QUrl("https://www.startpage.com/"), browserUa))});
+    }
+
+    // Yandex
+    {
+        QString searchId = QString::number(QDateTime::currentMSecsSinceEpoch() % 9000000 + 1000000);
+        QUrl yandexUrl("https://yandex.com/search/site/");
+        QUrlQuery yq;
+        yq.addQueryItem("text", query);
+        yq.addQueryItem("web", "1");
+        yq.addQueryItem("searchid", searchId);
+        yandexUrl.setQuery(yq);
+        pending.append({"yandex", mgr.get(makeReq(yandexUrl, browserUa))});
+    }
+
+    // Wait for all with 12s global timeout
+    int remaining = pending.size();
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    timer.start(12000);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+
+    for (const auto& p : pending) {
+        QObject::connect(p.reply, &QNetworkReply::finished, [&]() {
+            --remaining;
+            if (remaining <= 0) loop.quit();
+        });
+    }
+
+    if (remaining > 0) loop.exec();
+
+    // Collect HTML from each backend
+    QMap<QString, QString> htmlMap;
+    for (const auto& p : pending) {
+        if (p.reply->isFinished() && p.reply->error() == QNetworkReply::NoError) {
+            htmlMap[p.engine] = QString::fromUtf8(p.reply->readAll());
+        }
+        p.reply->deleteLater();
+    }
+
+    // Handle Startpage two-step: if we got the homepage, extract sc token and do a POST
+    QString startpageHtml;
+    if (htmlMap.contains("startpage_home")) {
+        QString homeHtml = htmlMap["startpage_home"];
+        QRegularExpression scRx(R"RE(<input[^>]*name="sc"[^>]*value="([^"]*)")RE");
+        auto scm = scRx.match(homeHtml);
+        QString sc = scm.hasMatch() ? scm.captured(1) : "";
+
+        QNetworkRequest spReq(QUrl("https://www.startpage.com/sp/search"));
+        spReq.setHeader(QNetworkRequest::UserAgentHeader, browserUa);
+        spReq.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
+        spReq.setRawHeader("Referer", "https://www.startpage.com/");
+        spReq.setTransferTimeout(8000);
+
+        QByteArray spData;
+        spData += "query=" + QUrl::toPercentEncoding(query);
+        spData += "&cat=web&t=device&sc=" + QUrl::toPercentEncoding(sc);
+        spData += "&lui=english&language=english&abp=1&abd=0&abe=0";
+        spData += "&qsr=en_US&qadf=none&segment=organic";
+
+        QNetworkReply* spReply = mgr.post(spReq, spData);
+        QEventLoop spLoop;
+        QTimer spTimer;
+        spTimer.setSingleShot(true);
+        spTimer.start(5000);
+        QObject::connect(spReply, &QNetworkReply::finished, &spLoop, &QEventLoop::quit);
+        QObject::connect(&spTimer, &QTimer::timeout, &spLoop, &QEventLoop::quit);
+        spLoop.exec();
+
+        if (spReply->isFinished() && spReply->error() == QNetworkReply::NoError) {
+            startpageHtml = QString::fromUtf8(spReply->readAll());
+        }
+        spReply->deleteLater();
+    }
+
+    // Parse results from each backend
+    QList<WebSearchHit> allHits;
+    QStringList failures;
+
+    auto tryParse = [&](const QString& engine, const QString& html,
+                        std::function<QList<WebSearchHit>(const QString&, int)> parser) {
+        if (html.isEmpty()) {
+            failures.append(engine + ": no response");
+            return;
+        }
+        auto hits = parser(html, maxResults);
+        if (hits.isEmpty()) {
+            failures.append(engine + ": no results found");
         } else {
-            encoded += QString("%%1").arg(u, 2, 16, QChar('0')).toUpper();
+            allHits.append(hits);
         }
+    };
+
+    if (htmlMap.contains("brave"))
+        tryParse("Brave", htmlMap["brave"], parseBrave);
+    else
+        failures.append("Brave: request failed");
+
+    if (htmlMap.contains("ddg"))
+        tryParse("DuckDuckGo", htmlMap["ddg"], parseDDG);
+    else
+        failures.append("DuckDuckGo: request failed");
+
+    if (htmlMap.contains("mojeek"))
+        tryParse("Mojeek", htmlMap["mojeek"], parseMojeek);
+    else
+        failures.append("Mojeek: request failed");
+
+    if (htmlMap.contains("yahoo"))
+        tryParse("Yahoo", htmlMap["yahoo"], parseYahoo);
+    else
+        failures.append("Yahoo: request failed");
+
+    if (htmlMap.contains("google"))
+        tryParse("Google", htmlMap["google"], parseGoogle);
+    else
+        failures.append("Google: request failed");
+
+    if (!startpageHtml.isEmpty())
+        tryParse("Startpage", startpageHtml, parseStartpage);
+    else
+        failures.append("Startpage: request failed");
+
+    if (htmlMap.contains("yandex"))
+        tryParse("Yandex", htmlMap["yandex"], parseYandex);
+    else
+        failures.append("Yandex: request failed");
+
+    auto ranked = rankAndDedupeHits(allHits, query);
+    if (!ranked.isEmpty()) {
+        return formatHits(ranked, maxResults);
     }
 
-    QUrl url("https://html.duckduckgo.com/html/?q=" + encoded);
-    QByteArray html = httpGet(url, ua, 15000);
-    if (html.isEmpty()) return "Error: Failed to fetch search results.";
-
-    QString page = QString::fromUtf8(html);
-
-    // DuckDuckGo HTML: each result is a <div class="result ..."> block
-    QStringList lines;
-    int count = 0;
-    int pos   = 0;
-
-    while (count < maxResults) {
-        // Find next result block
-        int rStart = page.indexOf("class=\"result", pos);
-        if (rStart == -1) break;
-
-        // Find the start of the div tag containing this class
-        int divStart = page.lastIndexOf('<', rStart);
-        if (divStart == -1) { pos = rStart + 1; continue; }
-
-        // Find next result to delimit this block
-        int nextResult = page.indexOf("class=\"result", rStart + 13);
-        QString block = (nextResult > 0)
-            ? page.mid(divStart, nextResult - divStart)
-            : page.mid(divStart);
-
-        // Skip ads / sponsored (DDG marks them with result--ad)
-        if (block.contains("result--ad")) {
-            pos = (nextResult > 0) ? nextResult : page.length();
-            continue;
-        }
-
-        QString title   = extractByClass(block, "result__a");
-        if (title.isEmpty()) title = extractByClass(block, "result__title");
-        if (title.isEmpty()) {
-            pos = (nextResult > 0) ? nextResult : page.length();
-            continue;
-        }
-        QString url2    = extractByClass(block, "result__url");
-        QString snippet = extractByClass(block, "result__snippet");
-
-        count++;
-        lines.append(QString("%1. %2").arg(count).arg(title));
-        if (!url2.isEmpty())    lines.append("   URL: " + url2);
-        if (!snippet.isEmpty()) lines.append("   " + snippet);
-        lines.append(QString());
-
-        pos = (nextResult > 0) ? nextResult : page.length();
+    if (failures.isEmpty()) {
+        return QString("No results found for query: %1").arg(query);
     }
-
-    if (lines.isEmpty()) return "No results found.";
-    return lines.join("\n").trimmed();
+    return QString("Web search failed for query: %1\n\nBackends tried:\n- %2")
+           .arg(query, failures.join("\n- "));
 }
+
+// ── Download file ────────────────────────────────────────────────────
 
 static QString toolDownloadFile(const QJsonObject& args) {
     QString urlStr   = aStr(args, "url");
@@ -545,6 +1244,8 @@ static QString toolDownloadFile(const QJsonObject& args) {
     return QString("Downloaded to %1 (%2 bytes)").arg(dest).arg(data.size());
 }
 
+// ── Fetch URL (with improved HTML body extraction) ───────────────────
+
 static QString toolFetchUrl(const QJsonObject& args) {
     QString urlStr = aStr(args, "url");
     if (urlStr.isEmpty()) return "Error: url is required.";
@@ -555,19 +1256,44 @@ static QString toolFetchUrl(const QJsonObject& args) {
     if (scheme != "http" && scheme != "https")
         return QString("Error: Only http/https URLs are supported (got '%1').").arg(scheme);
 
-    QByteArray raw = httpGetWithRedirect(url, userAgent(), 30000);
-    if (raw.isEmpty()) return "Error: Failed to fetch URL or empty response.";
+    QNetworkAccessManager mgr;
+    mgr.setRedirectPolicy(QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::UserAgentHeader, userAgent());
+    req.setTransferTimeout(30000);
+
+    QNetworkReply* reply = mgr.get(req);
+    QEventLoop loop;
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    if (reply->error() != QNetworkReply::NoError) {
+        QString err = reply->errorString();
+        reply->deleteLater();
+        return "Error fetching URL: " + err;
+    }
+
+    QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString().toLower();
+    QByteArray raw = reply->readAll();
+    reply->deleteLater();
 
     const qsizetype maxRaw = 2 * 1024 * 1024;
     if (raw.size() > maxRaw) raw = raw.left(maxRaw);
 
     QString text = QString::fromUtf8(raw);
-    bool isHtml = text.toLower().contains("<html") || text.toLower().contains("<!doctype");
+    bool isHtml = contentType.contains("html") ||
+                  text.toLower().contains("<html") ||
+                  text.toLower().contains("<!doctype");
 
     if (isHtml) {
-        // Strip script/style, then all tags
-        text = stripTags(text);
+        // Extract <body> content for cleaner text
+        QRegularExpression bodyRx("<body[^>]*>([\\s\\S]*)</body>",
+                                  QRegularExpression::CaseInsensitiveOption);
+        auto bm = bodyRx.match(text);
+        QString bodyHtml = bm.hasMatch() ? bm.captured(1) : text;
+        text = stripTags(bodyHtml);
         text.replace(QRegularExpression("\\n{3,}"), "\n\n");
+        text = text.trimmed();
     }
 
     const int maxChars = 50000;
@@ -575,6 +1301,24 @@ static QString toolFetchUrl(const QJsonObject& args) {
         text = text.left(maxChars) + "\n\n[... truncated at 50,000 characters ...]";
     }
     return text;
+}
+
+// ── Run Python (with PENGY_PYTHON support & temp file output) ────────
+
+static QString pythonInterpreter() {
+    QString pengyPy = qEnvironmentVariable("PENGY_PYTHON");
+    if (!pengyPy.trimmed().isEmpty()) return pengyPy;
+
+    QString venv = qEnvironmentVariable("VIRTUAL_ENV");
+    if (!venv.trimmed().isEmpty()) {
+#ifdef Q_OS_WIN
+        return venv + "/Scripts/python.exe";
+#else
+        return venv + "/bin/python";
+#endif
+    }
+
+    return "python3";
 }
 
 static QString toolRunPython(const QJsonObject& args) {
@@ -589,22 +1333,58 @@ static QString toolRunPython(const QJsonObject& args) {
     tmp.flush();
     QString tmpPath = tmp.fileName();
 
+    auto tmpFiles = createOutputFiles("python");
+    if (!tmpFiles.valid) {
+        return "Error: Could not create temp output files.";
+    }
+
     QProcess proc;
-    proc.setProgram("python3");
+    proc.setProgram(pythonInterpreter());
     proc.setArguments({tmpPath});
-    proc.setProcessChannelMode(QProcess::MergedChannels);
+    proc.setStandardOutputFile(tmpFiles.stdoutPath);
+    proc.setStandardErrorFile(tmpFiles.stderrPath);
+
+#ifdef Q_OS_UNIX
+    proc.setChildProcessModifier([]() {
+        setsid();
+    });
+#endif
+
     proc.start();
 
-    int timeoutMs = toolTimeout() > 0 ? toolTimeout() * 1000 : -1;
-    if (!proc.waitForStarted(5000)) return "Error: Could not start python3.";
-    if (!proc.waitForFinished(timeoutMs))
-        return "Error: Python execution timed out.";
+    if (!proc.waitForStarted(5000)) {
+        removeOutputFiles(tmpFiles);
+        return "Error: Could not start " + pythonInterpreter();
+    }
 
-    QString out = QString::fromUtf8(proc.readAllStandardOutput());
+    qint64 pid = proc.processId();
+    registerProcess(pid);
+
+    int timeoutMs = toolTimeout() > 0 ? toolTimeout() * 1000 : -1;
+    if (!proc.waitForFinished(timeoutMs)) {
+        terminateProcessGroup(pid);
+        proc.kill();
+        proc.waitForFinished(2000);
+        unregisterProcess(pid);
+        removeOutputFiles(tmpFiles);
+        return "Error: Python execution timed out.";
+    }
+
+    unregisterProcess(pid);
+
+    QString out = readAndRemove(tmpFiles.stdoutPath);
+    QString err = readAndRemove(tmpFiles.stderrPath);
+
+    if (!err.trimmed().isEmpty()) {
+        out += "\n" + err;
+    }
+
     if (proc.exitCode() != 0)
         out += QString("\n[Exit code: %1]").arg(proc.exitCode());
     return out.trimmed().isEmpty() ? "(No output)" : out;
 }
+
+// ── Directory tree ───────────────────────────────────────────────────
 
 static const QSet<QString> ALWAYS_SKIP{
     "node_modules", ".git", ".svn", ".hg", "__pycache__",
@@ -683,6 +1463,8 @@ static QString toolDirectoryTree(const QJsonObject& args) {
     return result;
 }
 
+// ── Read multiple files ──────────────────────────────────────────────
+
 static QString toolReadMultipleFiles(const QJsonObject& args) {
     QJsonArray pathsArr = args["paths"].toArray();
     if (pathsArr.isEmpty()) return "Error: no paths provided.";
@@ -701,7 +1483,7 @@ static QString toolReadMultipleFiles(const QJsonObject& args) {
         QString rawPath = pv.toString();
         QString absPath = expandHome(rawPath);
         QString sep     = QString(60, '=');
-        QString header  = sep + "\n📄 " + rawPath;
+        QString header  = sep + "\n\U0001F4C4 " + rawPath;
 
         QFileInfo fi(absPath);
         if (!fi.exists()) {
@@ -744,6 +1526,8 @@ static QString toolReadMultipleFiles(const QJsonObject& args) {
     return parts.join("\n\n");
 }
 
+// ── Search content ───────────────────────────────────────────────────
+
 static bool isLikelyText(const QFileInfo& fi) {
     static const QSet<QString> TEXT_EXTS{
         "py","pyi","pyx","c","cpp","cc","cxx","h","hpp","hxx","rs",
@@ -763,7 +1547,6 @@ static bool isLikelyText(const QFileInfo& fi) {
 }
 
 static bool matchesGlob(const QString& name, const QString& glob) {
-    // Handle brace expansion like *.{js,ts}
     QRegularExpression braceRx(R"(^(.*)\{([^}]+)\}(.*)$)");
     auto m = braceRx.match(glob);
     if (m.hasMatch()) {
@@ -800,7 +1583,6 @@ static bool searchOneFile(const QString& filepath, const QRegularExpression& rx,
     }
     if (matched.isEmpty()) return false;
 
-    // Build regions
     QList<int> sorted = matched.values();
     std::sort(sorted.begin(), sorted.end());
 
@@ -818,7 +1600,7 @@ static bool searchOneFile(const QString& filepath, const QRegularExpression& rx,
 
     for (const Region& reg : regions) {
         if (results.size() >= maxResults) return true;
-        QStringList block{QString("📄 %1:").arg(displayPath)};
+        QStringList block{QString("\U0001F4C4 %1:").arg(displayPath)};
         for (int ln = reg.start; ln < reg.end; ++ln) {
             QString marker = matched.contains(ln) ? " ▸" : "  ";
             block.append(QString("%1%2 │ %3").arg(marker).arg(ln + 1, 5).arg(lines[ln]));
@@ -867,7 +1649,6 @@ static QString toolSearchContent(const QJsonObject& args) {
         QString name = fi.fileName();
         if (name == ".DS_Store" || name == "Thumbs.db") continue;
 
-        // Skip noise dirs
         bool skip = false;
         QString rel = QDir(path).relativeFilePath(fp);
         for (const QString& part : rel.split('/')) {

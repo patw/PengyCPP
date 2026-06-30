@@ -9,7 +9,15 @@
       "Bash(DISPLAY=:0 /home/beholder/Personal/PengyCPP/build/pengy)",
       "Bash(echo \"PID: $!\")",
       "Bash(ldd *)",
-      "Bash(chmod +x *)"
+      "Bash(chmod +x *)",
+      "Bash(cmake --build .)",
+      "Bash(./pengy_tests *)",
+      "Bash(QT_QPA_PLATFORM=offscreen ./pengy_tests *)",
+      "Bash(mkdir -p build)",
+      "Bash(cmake .. -DCMAKE_BUILD_TYPE=Debug -Wno-dev -DCMAKE_EXPORT_COMPILE_COMMANDS=OFF)",
+      "Bash(cmake -B build -DCMAKE_BUILD_TYPE=Debug -Wno-dev)",
+      "Bash(cmake --build /home/beholder/Personal/PengyCPP/build --target pengy_tests)",
+      "Bash(/home/beholder/Personal/PengyCPP/build/pengy_tests *)"
     ]
   }
 }

@@ -14,6 +14,8 @@ void       setTimeout(int secs);
 QString    execute(const QString& name, const QJsonObject& args,
                    std::atomic<bool>* cancel = nullptr);
 
+void       killActiveProcesses();
+
 /// Blocking callback that prompts the user for a sudo password.
 /// Returns the password, or an empty string if the user cancels.
 using SudoPasswordFn = std::function<QString()>;

@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QFont>
 #include <QFontDatabase>
+#include <QIcon>
 
 int main(int argc, char* argv[]) {
     // Read ui_scale before creating QApplication so we can set the env var first
@@ -15,6 +16,7 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Pengy");
     app.setOrganizationName("Pengy");
+    app.setWindowIcon(QIcon(":/pengy.png"));
 
     QFont font = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
     font.setPointSize(10);

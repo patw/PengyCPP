@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pengy — {{CHAT_TITLE}}</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+<style>
+html,body{height:100%;margin:0;overflow:hidden}
+body{display:flex}
+.sidebar{width:230px;min-width:230px;display:flex;flex-direction:column;border-right:1px solid #dee2e6;background:#f8f9fa}
+.sidebar-body{flex:1;overflow-y:auto;padding:.5rem}
+.sidebar-footer{padding:.5rem .75rem;border-top:1px solid #dee2e6;font-size:.73rem;color:#6c757d}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+#messages{flex:1;overflow-y:auto;padding:1rem 1.25rem}
+.input-bar{padding:.75rem;border-top:1px solid #dee2e6;background:#fff}
+.msg-user{text-align:right;margin-bottom:1rem}
+.msg-user .bubble{display:inline-block;background:#0d6efd;color:#fff;padding:.5rem .75rem;border-radius:1rem 1rem 0 1rem;max-width:80%;text-align:left;white-space:pre-wrap;word-break:break-word}
+.msg-asst{margin-bottom:1rem}
+.msg-asst .bubble{background:#f8f9fa;border:1px solid #e9ecef;padding:.75rem;border-radius:0 1rem 1rem 1rem;max-width:90%;display:inline-block;width:100%}
+.msg-asst .bubble p:last-child{margin-bottom:0}
+.msg-asst .bubble pre{background:#212529;color:#f8f9fa;padding:.75rem;border-radius:.25rem;overflow-x:auto;font-size:.8rem}
+.msg-asst .bubble pre code{background:transparent!important;padding:0}
+.msg-asst .bubble code{background:#e9ecef;padding:.1rem .25rem;border-radius:.2rem;font-size:.85em}
+.msg-asst .bubble table{font-size:.82rem;border-collapse:collapse;margin:.5rem 0;width:auto}
+.msg-asst .bubble th,.msg-asst .bubble td{border:1px solid #dee2e6;padding:.25rem .5rem}
+.msg-asst .bubble th{background:#e9ecef}
+.tool-card{font-size:.8rem;margin-bottom:.375rem}
+.tool-card .card-header{padding:.3rem .5rem;cursor:pointer;user-select:none}
+.tc-result pre{max-height:180px;overflow-y:auto;font-size:.75rem;background:#f8f9fa;border-radius:.25rem;padding:.4rem;margin:0;white-space:pre-wrap;word-break:break-all}
+#textarea-msg{resize:none;min-height:38px;max-height:160px;overflow-y:auto}
+.chat-item{display:block;padding:.35rem .5rem;border-radius:.25rem;color:#212529;text-decoration:none;font-size:.83rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.chat-item:hover{background:#e9ecef;color:#212529}
+.chat-item.active{background:#0d6efd;color:#fff}
+.chat-item.active:hover{background:#0b5ed7}
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+  <div class="p-2 border-bottom">
+    <a href="/chat/new" id="btn-new-chat"
+       onclick="event.preventDefault();fetch('/chat/new',{method:'POST'}).then(r=>r.ok&&(location.href=r.url))"
+       class="btn btn-primary btn-sm w-100 mb-1">+ New Chat</a>
+    <a href="/settings" class="btn btn-outline-secondary btn-sm w-100">⚙ Settings</a>
+  </div>
+  <div class="sidebar-body" id="sidebar-chats"></div>
+  <div class="sidebar-footer" id="sidebar-footer"></div>
+</div>
+
+<!-- Main -->
+<div class="main">
+  <div id="messages"></div>
+  <div class="input-bar">
+    <form id="form-send" class="d-flex gap-2 align-items-end">
+      <textarea id="textarea-msg" class="form-control"
+                placeholder="Message… (Shift+Enter for newline)" rows="1"></textarea>
+      <button type="submit" id="btn-send" class="btn btn-primary flex-shrink-0">Send</button>
+      <button type="button" id="btn-stop" class="btn btn-danger flex-shrink-0 d-none">■ Stop</button>
+    </form>
+  </div>
+</div>
+
+<!-- Tool confirmation modal -->
+<div class="modal fade" id="confirmModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h6 class="modal-title mb-0">🔧 Execute Tool: <span id="confirm-name" class="text-primary fw-bold"></span></h6>
+      </div>
+      <div class="modal-body py-2">
+        <pre id="confirm-args" class="bg-light p-2 rounded small mb-0" style="max-height:280px;overflow-y:auto"></pre>
+      </div>
+      <div class="modal-footer py-2">
+        <button class="btn btn-success btn-sm" onclick="submitConfirm(true,false)">Execute</button>
+        <button class="btn btn-warning btn-sm" onclick="submitConfirm(true,true)">Yes to All</button>
+        <button class="btn btn-danger btn-sm" onclick="submitConfirm(false,false)">Decline</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Sudo modal -->
+<div class="modal fade" id="sudoModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h6 class="modal-title mb-0">🔐 Sudo Password Required</h6>
+      </div>
+      <div class="modal-body py-2">
+        <input type="password" id="sudo-pwd" class="form-control"
+               placeholder="Enter sudo password…" autocomplete="current-password">
+      </div>
+      <div class="modal-footer py-2">
+        <button class="btn btn-primary btn-sm" onclick="submitSudo()">Submit</button>
+        <button class="btn btn-secondary btn-sm" onclick="cancelSudo()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Server data ────────────────────────────────────────────────────
+const CHAT_ID   = '{{CHAT_ID}}';
+const MODEL     = '{{MODEL}}';
+const TOOL_CONF = '{{TOOL_CONFIRMATION}}';
+const MESSAGES  = {{MESSAGES_JSON}};
+const ALL_CHATS = {{CHATS_JSON}};
+
+// ── State ──────────────────────────────────────────────────────────
+let es = null, processing = false, currentTurnDiv = null;
+let confirmModal, sudoModal;
+
+// ── Bootstrap init ─────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  confirmModal = new bootstrap.Modal(document.getElementById('confirmModal'));
+  sudoModal    = new bootstrap.Modal(document.getElementById('sudoModal'));
+
+  renderSidebar(ALL_CHATS, CHAT_ID);
+  renderInitMessages(MESSAGES);
+  document.getElementById('sidebar-footer').textContent =
+    MODEL + ' · tools: ' + TOOL_CONF;
+
+  const ta   = document.getElementById('textarea-msg');
+  const form = document.getElementById('form-send');
+
+  form.addEventListener('submit', e => {
+    e.preventDefault();
+    const msg = ta.value.trim();
+    if (msg && !processing) { ta.value = ''; autoGrow(ta); sendMessage(msg); }
+  });
+
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      form.dispatchEvent(new Event('submit'));
+    }
+  });
+  ta.addEventListener('input', () => autoGrow(ta));
+
+  document.getElementById('btn-stop').addEventListener('click', stopGeneration);
+
+  document.getElementById('sudo-pwd').addEventListener('keydown', e => {
+    if (e.key === 'Enter') submitSudo();
+  });
+});
+
+function autoGrow(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+}
+
+// ── Sidebar ────────────────────────────────────────────────────────
+function renderSidebar(chats, activeChatId) {
+  const el = document.getElementById('sidebar-chats');
+  el.innerHTML = '';
+  for (const c of chats) {
+    const a = document.createElement('a');
+    a.href = '/chat/' + c.id;
+    a.className = 'chat-item' + (c.id === activeChatId ? ' active' : '');
+    a.textContent = c.title || '(untitled)';
+    el.appendChild(a);
+  }
+}
+
+// ── HTML / Markdown helpers ────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function renderMd(raw) {
+  let s = esc(raw);
+  // fenced code blocks (must run before inline code)
+  s = s.replace(/```(?:\w+)?\n?([\s\S]*?)```/g, (_, c) =>
+    '<pre><code>' + c + '</code></pre>');
+  // inline code
+  s = s.replace(/`([^`\n]+)`/g, (_, c) => '<code>' + c + '</code>');
+  // GFM tables
+  s = s.replace(/((?:\|[^\n]+\|\n)+)/g, tbl => {
+    const rows = tbl.trim().split('\n').filter(r => !/^\|[-| :]+\|$/.test(r));
+    let out = '<table class="table table-sm table-bordered">';
+    rows.forEach((r, i) => {
+      const cells = r.split('|').slice(1,-1);
+      const t = i === 0 ? 'th' : 'td';
+      out += '<tr>' + cells.map(c => `<${t}>${c.trim()}</${t}>`).join('') + '</tr>';
+    });
+    return out + '</table>';
+  });
+  // headings
+  s = s.replace(/^###\s(.+)$/gm, '<h5>$1</h5>');
+  s = s.replace(/^##\s(.+)$/gm,  '<h4>$1</h4>');
+  s = s.replace(/^#\s(.+)$/gm,   '<h3>$1</h3>');
+  // bold / italic
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/\*([^*\n]+)\*/g,     '<em>$1</em>');
+  // links
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  // unordered lists (simple)
+  s = s.replace(/(?:^|\n)((?:- .+\n?)+)/g, (_, block) => {
+    const items = block.trim().split('\n').map(l => '<li>' + l.replace(/^- /, '') + '</li>');
+    return '<ul>' + items.join('') + '</ul>';
+  });
+  // paragraphs
+  s = s.replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br>');
+  return '<p>' + s + '</p>';
+}
+
+// ── Message DOM helpers ────────────────────────────────────────────
+function appendUserMsg(content) {
+  const d = document.createElement('div');
+  d.className = 'msg-user';
+  d.innerHTML = '<span class="bubble">' + esc(content) + '</span>';
+  document.getElementById('messages').appendChild(d);
+  scrollBottom();
+}
+
+function appendAssistantMsg(content) {
+  const d = document.createElement('div');
+  d.className = 'msg-asst';
+  d.innerHTML = '<div class="bubble">' +
+    (content ? renderMd(content) : '<em class="text-muted">(no text response)</em>') +
+    '</div>';
+  document.getElementById('messages').appendChild(d);
+  scrollBottom();
+}
+
+function startToolTurn() {
+  const d = document.createElement('div');
+  d.className = 'msg-asst';
+  document.getElementById('messages').appendChild(d);
+  return d;
+}
+
+function addToolCard(container, name, args, tcId, autoApproved) {
+  const bid = 'badge-' + tcId;
+  const bbid = 'tcb-' + tcId.replace(/[^a-zA-Z0-9]/g, '_');
+  const card = document.createElement('div');
+  card.className = 'card tool-card';
+  card.id = 'tc-' + tcId;
+  card.innerHTML =
+    '<div class="card-header d-flex align-items-center gap-2" data-bs-toggle="collapse" data-bs-target="#' + bbid + '">' +
+      '🔧 <strong>' + esc(name) + '</strong>' +
+      '<span id="' + bid + '">' +
+        (autoApproved
+          ? '<span class="badge bg-secondary">running</span>'
+          : '<span class="badge bg-warning text-dark">waiting</span>') +
+      '</span>' +
+      '<span class="ms-auto text-muted small">▾</span>' +
+    '</div>' +
+    '<div class="collapse show" id="' + bbid + '">' +
+      '<div class="card-body p-2">' +
+        '<small class="text-muted">Arguments</small>' +
+        '<pre class="mt-1 mb-2 small bg-light p-2 rounded">' + esc(JSON.stringify(args, null, 2)) + '</pre>' +
+        '<div id="tcr-' + tcId + '" style="display:none">' +
+          '<small class="text-muted">Output</small>' +
+          '<div class="tc-result mt-1"><pre id="tcp-' + tcId + '"></pre></div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  (container || document.getElementById('messages')).appendChild(card);
+  scrollBottom();
+  return card;
+}
+
+function completeToolCard(tcId, content, declined) {
+  const badge = document.getElementById('badge-' + tcId);
+  if (badge) badge.innerHTML = declined
+    ? '<span class="badge bg-danger">declined</span>'
+    : '<span class="badge bg-success">done</span>';
+  const rd = document.getElementById('tcr-' + tcId);
+  const rp = document.getElementById('tcp-' + tcId);
+  if (rd && rp) {
+    rd.style.display = '';
+    rp.textContent = content.length > 2000 ? content.slice(0,2000) + '\n…[truncated]' : content;
+  }
+}
+
+// ── Initial message render ─────────────────────────────────────────
+function renderInitMessages(messages) {
+  let i = 0;
+  while (i < messages.length) {
+    const msg = messages[i];
+    if (msg.role === 'system') { i++; continue; }
+    if (msg.role === 'user') {
+      appendUserMsg(typeof msg.content === 'string' ? msg.content : '');
+      i++;
+    } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+      const turn = startToolTurn();
+      for (const tc of msg.tool_calls) {
+        let a = {};
+        try { a = JSON.parse(tc.function.arguments || '{}'); } catch(_){}
+        addToolCard(turn, tc.function.name, a, tc.id, true);
+      }
+      i++;
+      while (i < messages.length && messages[i].role === 'tool') {
+        completeToolCard(messages[i].tool_call_id, messages[i].content || '', false);
+        i++;
+      }
+    } else if (msg.role === 'assistant') {
+      appendAssistantMsg(msg.content || '');
+      i++;
+    } else { i++; }
+  }
+  scrollBottom();
+}
+
+// ── Send / SSE ─────────────────────────────────────────────────────
+async function sendMessage(content) {
+  appendUserMsg(content);
+  setProcessing(true);
+  connectSSE();
+  const r = await fetch('/chat/' + CHAT_ID + '/send', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({content})
+  });
+  if (!r.ok) {
+    disconnectSSE();
+    setProcessing(false);
+    appendAssistantMsg('⚠️ Failed to send message.');
+  }
+}
+
+function connectSSE() {
+  if (es) { es.close(); es = null; }
+  currentTurnDiv = null;
+  es = new EventSource('/chat/' + CHAT_ID + '/stream');
+  es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(_){} };
+  es.onerror   = () => { if (processing) { disconnectSSE(); setProcessing(false); } };
+}
+
+function disconnectSSE() { if (es) { es.close(); es = null; } }
+
+function handleEvent(ev) {
+  if (ev.type === 'assistant_tool_calls') {
+    currentTurnDiv = startToolTurn();
+
+  } else if (ev.type === 'tool_request') {
+    if (!currentTurnDiv) currentTurnDiv = startToolTurn();
+    addToolCard(currentTurnDiv, ev.name, ev.args || {}, ev.tool_call_id, !!ev.auto_approved);
+    if (!ev.auto_approved) showConfirmModal(ev.name, ev.args || {});
+
+  } else if (ev.type === 'tool_result') {
+    completeToolCard(ev.tool_call_id, ev.content || '', !!ev.declined);
+
+  } else if (ev.type === 'final_response') {
+    appendAssistantMsg(ev.content || '');
+    if (ev.chat_title) {
+      document.title = 'Pengy — ' + ev.chat_title;
+      const link = document.querySelector('.chat-item.active');
+      if (link) link.textContent = ev.chat_title;
+    }
+    currentTurnDiv = null;
+    disconnectSSE();
+    setProcessing(false);
+
+  } else if (ev.type === 'sudo_request') {
+    showSudoModal();
+
+  } else if (ev.type === 'error') {
+    appendAssistantMsg('⚠️ ' + (ev.message || 'Unknown error'));
+    disconnectSSE();
+    setProcessing(false);
+  }
+}
+
+async function stopGeneration() {
+  await fetch('/chat/' + CHAT_ID + '/stop', {method:'POST'});
+  disconnectSSE();
+  setProcessing(false);
+}
+
+function setProcessing(on) {
+  processing = on;
+  document.getElementById('btn-send').disabled = on;
+  document.getElementById('textarea-msg').disabled = on;
+  document.getElementById('btn-stop').classList.toggle('d-none', !on);
+}
+
+function scrollBottom() {
+  const m = document.getElementById('messages');
+  m.scrollTop = m.scrollHeight;
+}
+
+// ── Confirm modal ──────────────────────────────────────────────────
+function showConfirmModal(name, args) {
+  document.getElementById('confirm-name').textContent = name;
+  document.getElementById('confirm-args').textContent = JSON.stringify(args, null, 2);
+  confirmModal.show();
+}
+
+async function submitConfirm(confirmed, yolo) {
+  confirmModal.hide();
+  await fetch('/chat/' + CHAT_ID + '/confirm', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({confirmed, yolo_turn: yolo})
+  });
+}
+
+// ── Sudo modal ─────────────────────────────────────────────────────
+function showSudoModal() {
+  document.getElementById('sudo-pwd').value = '';
+  sudoModal.show();
+  setTimeout(() => document.getElementById('sudo-pwd').focus(), 350);
+}
+
+async function submitSudo() {
+  const pwd = document.getElementById('sudo-pwd').value;
+  sudoModal.hide();
+  await fetch('/chat/' + CHAT_ID + '/sudo', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({password: pwd})
+  });
+}
+
+async function cancelSudo() {
+  sudoModal.hide();
+  await fetch('/chat/' + CHAT_ID + '/sudo', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({password:'', cancel:true})
+  });
+}
+</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

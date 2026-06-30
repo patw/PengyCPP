@@ -14,6 +14,10 @@ install_manifest.txt
 *.cmake
 !CMakeLists.txt
 
+# Claude stuff
+.claude  
+CLAUDE.md
+
 # Qt MOC / autogen
 moc_*.cpp
 qrc_*.cpp
