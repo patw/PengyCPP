@@ -17,15 +17,21 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake qt6-base-dev libgl-dev
+            build-essential cmake qt6-base-dev libgl-dev libegl-dev
+          # Check what Qt6 version we got
+          qmake6 --version 2>/dev/null || qmake --version 2>/dev/null || echo "qmake not found"
+          cmake --version | head -1
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON
 
       - name: Build
-        run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j$(nproc)
+        run: cmake --build build -j$(nproc) 2>&1
 
       - name: Verify binaries exist
         run: |
+          echo "=== Checking binaries ==="
+          ls -lh build/pengy build/pengy_cli build/pengy_web 2>&1
           test -f build/pengy && echo "pengy ✅"
           test -f build/pengy_cli && echo "pengy_cli ✅"
           test -f build/pengy_web && echo "pengy_web ✅"
