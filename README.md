@@ -70,8 +70,8 @@ cd appimage && ./build.sh
 
 ```bash
 ./build_deb.sh
-# → pengy_1.2.3_amd64.deb
-sudo dpkg -i pengy_1.2.3_amd64.deb
+# → pengy_1.2.4_amd64.deb
+sudo dpkg -i pengy_1.2.4_amd64.deb
 ```
 
 ### macOS
