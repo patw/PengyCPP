@@ -1,0 +1,110 @@
+# Build PengyCPP releases on version tags
+#
+# Produces and attaches to GitHub Release:
+#   Linux:   .deb + AppImage
+#   macOS:   .dmg
+#   Windows: Pengy-Windows.zip (Qt DLLs bundled)
+#
+# Usage:
+#   git tag v1.3.0 && git push --tags
+#
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  VERSION: ${{ github.ref_name }}   # e.g. v1.3.0
+
+jobs:
+  linux:
+    name: Linux (.deb + AppImage)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake qt6-base-dev libgl-dev dpkg-dev \
+            libfuse2 fuse3
+
+      - name: Build .deb package
+        run: |
+          # build_deb.sh always builds from source + creates .deb
+          ./build_deb.sh
+
+      - name: Build AppImage
+        run: |
+          # Ensure build directory exists (build_deb.sh already did this)
+          # but AppImage build script needs its own flow
+          mkdir -p appimage/tools
+          wget -q -P appimage/tools \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q -P appimage/tools \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x appimage/tools/*.AppImage
+          cd appimage && ./build.sh
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            pengy_*.deb
+            Pengy-x86_64.AppImage
+          fail_on_unmatched_files: false
+
+  macos:
+    name: macOS (DMG)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install qt@6 cmake
+
+      - name: Build DMG
+        run: ./build_macos.sh
+
+      - name: Upload DMG
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Pengy-macOS-*.dmg
+          fail_on_unmatched_files: false
+
+  windows:
+    name: Windows (Zip)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          aqtversion: '==3.*'
+          version: '6.7.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          modules: 'qtnetworkauth'  # lightweight, catches potential missing deps
+
+      - name: Build
+        shell: cmd
+        run: build_windows.bat
+
+      - name: Zip artifacts
+        shell: powershell
+        run: |
+          Compress-Archive -Path Pengy-Windows\* -DestinationPath Pengy-Windows-${{ github.ref_name }}.zip
+
+      - name: Upload Windows Zip
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Pengy-Windows-*.zip
+          fail_on_unmatched_files: false
