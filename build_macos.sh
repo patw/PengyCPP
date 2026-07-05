@@ -22,12 +22,12 @@ cmake .. \
 make -j$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
 echo ""
-echo "==> Done! Binary: build_macos/pengy"
+echo "==> Done! Binary: pengy (in build_macos/)"
 
 echo "==> Creating Pengy.app bundle..."
 APP_DIR="$ROOT/Pengy.app"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
-cp build_macos/pengy "$APP_DIR/Contents/MacOS/"
+cp pengy "$APP_DIR/Contents/MacOS/"
 cp "$ROOT/pengy.png" "$APP_DIR/Contents/Resources/"
 # Create an icns if the png is available (macOS prefers icns for dock/titlebar)
 if command -v sips &>/dev/null; then

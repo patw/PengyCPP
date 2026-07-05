@@ -16,10 +16,13 @@ set ROOT=%~dp0
 cd /d "%ROOT%"
 
 REM Set Qt6 path — adjust to your Qt installation
+REM install-qt-action sets Qt6_DIR; Windows cmd is case-insensitive
+if "%QT6_DIR%"=="" set QT6_DIR=%Qt6_DIR%
 if "%QT6_DIR%"=="" (
-    if exist "C:\Qt\6.10.0\msvc2022_64" set QT6_DIR=C:\Qt\6.10.0\msvc2022_64
     if exist "C:\Qt\6.10.1\msvc2022_64" set QT6_DIR=C:\Qt\6.10.1\msvc2022_64
+    if exist "C:\Qt\6.10.0\msvc2022_64" set QT6_DIR=C:\Qt\6.10.0\msvc2022_64
     if exist "C:\Qt\6.9.0\msvc2022_64"  set QT6_DIR=C:\Qt\6.9.0\msvc2022_64
+    if exist "C:\Qt\6.8.2\msvc2022_64"  set QT6_DIR=C:\Qt\6.8.2\msvc2022_64
 )
 
 if "%QT6_DIR%"=="" (
