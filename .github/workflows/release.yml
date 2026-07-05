@@ -102,10 +102,18 @@ jobs:
         shell: cmd
         run: |
           @echo on
-          REM Set up MSVC environment (cl.exe, nmake, etc.)
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" >nul
-          REM install-qt-action installs to ${{ github.workspace }}/../Qt/<version>/<arch>
-          set QT6_DIR=${{ github.workspace }}\..\Qt\6.8.2\msvc2022_64
+          REM Set up MSVC environment (try Enterprise then Community)
+          if exist "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" (
+            call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          ) else if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" (
+            call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+          ) else (
+            echo ERROR: Could not find vcvars64.bat
+            exit /b 1
+          )
+          where cl.exe
+          REM install-qt-action installs to workspace/../Qt/<version>/<arch>
+          set QT6_DIR=%GITHUB_WORKSPACE%\..\Qt\6.8.2\msvc2022_64
           if not exist "%QT6_DIR%\bin\qmake.exe" (
             echo ERROR: Qt6 not found at %QT6_DIR%
             exit /b 1
