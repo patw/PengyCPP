@@ -22,8 +22,9 @@
         <div class="mb-3">
           <label class="form-label fw-semibold">API Key</label>
           <input name="api_key" type="password" class="form-control"
-                 value="{{API_KEY}}" autocomplete="new-password"
-                 placeholder="Leave blank to keep existing key">
+                 autocomplete="new-password"
+                 placeholder="Leave blank to keep current key">
+          <div class="form-text">Current: {{API_KEY_STATUS}}</div>
         </div>
         <div class="mb-3">
           <label class="form-label fw-semibold">Model</label>

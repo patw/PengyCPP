@@ -496,6 +496,7 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
 
     // ── sudo detection ──────────────────────────────────────────────
     static QRegularExpression sudoRx("\\bsudo\\b");
+    static QRegularExpression sudoRewriteRx("\\bsudo\\b(?!\\s+-S)");
     bool needsSudo = sudoRx.match(command).hasMatch();
 
     if (needsSudo) {
@@ -513,8 +514,12 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
             }
             g_cachedSudoPassword = pw;
         }
-        if (!command.contains("sudo -S")) {
-            command.replace(sudoRx, "sudo -S");
+        // Only rewrite the first eligible "sudo" (not already followed by -S);
+        // the piped password is consumed once, so rewriting every occurrence
+        // would leave later `sudo` invocations blocking on an interactive prompt.
+        QRegularExpressionMatch m = sudoRewriteRx.match(command);
+        if (m.hasMatch()) {
+            command.replace(m.capturedStart(), m.capturedLength(), "sudo -S");
         }
     }
 
@@ -1511,7 +1516,8 @@ static QString toolReadMultipleFiles(const QJsonObject& args) {
         if (total + block.size() > MAX_TOTAL) {
             int remaining = MAX_TOTAL - total;
             if (remaining > 200) {
-                parts.append(header + "\n" + content.left(remaining - header.size() - 4) + "...");
+                int take = qMax(0, remaining - header.size() - 4);
+                parts.append(header + "\n" + content.left(take) + "...");
             } else {
                 parts.append(QString("\n[... output limit reached; %1 files skipped ...]")
                              .arg(pathsArr.size() - parts.size()));

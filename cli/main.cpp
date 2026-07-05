@@ -9,6 +9,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QDateTime>
+#include <QUuid>
 #include <QTextStream>
 #include <atomic>
 #include <cstdio>
@@ -122,16 +124,26 @@ public:
     QJsonObject chat;
     QJsonArray  m_runMsgs;
 
-    void exec(bool singleShot, const QString& singleShotMsg) {
+    void exec(bool singleShot, const QString& singleShotMsg, bool noSave = false) {
         cfg = configLoad();
         Tools::setUserAgent(cfg.userAgent);
         Tools::setTimeout(cfg.toolTimeout);
 
-        QJsonArray chats = chatsLoad();
-        chat = chats.isEmpty() ? chatCreate("New Chat") : chats.first().toObject();
+        if (singleShot && noSave) {
+            // Ephemeral chat: never touches chats.json.
+            chat = QJsonObject{
+                {"id",         QUuid::createUuid().toString(QUuid::WithoutBraces)},
+                {"title",      "New Chat"},
+                {"messages",   QJsonArray()},
+                {"created_at", QDateTime::currentDateTime().toString("yyyy-MM-ddTHH:mm:ss")}
+            };
+        } else {
+            QJsonArray chats = chatsLoad();
+            chat = chats.isEmpty() ? chatCreate("New Chat") : chats.first().toObject();
+        }
 
         if (singleShot) {
-            runLlm(singleShotMsg);
+            runLlm(singleShotMsg, noSave);
             return;
         }
 
@@ -154,7 +166,7 @@ public:
 private:
     // ── LLM run ─────────────────────────────────────────────────────
 
-    void runLlm(const QString& rawInput) {
+    void runLlm(const QString& rawInput, bool noSave = false) {
         const QString input = expandAttachments(rawInput);
         if (input.isEmpty()) return;
 
@@ -196,7 +208,7 @@ private:
         if (chat["title"].toString() == "New Chat" && msgs.size() <= 2)
             chat["title"] = input.left(60).replace('\n', ' ');
 
-        chatSave(chat);
+        if (!noSave) chatSave(chat);
     }
 
     void onEvent(const QJsonObject& ev) {
@@ -340,10 +352,15 @@ private:
             else { cfg.systemMessage = arg; configSave(cfg); outln(dim("System message updated.")); }
 
         } else if (cmd == "/compact") {
-            QJsonArray msgs = elideOldToolResults(chat["messages"].toArray(), 1);
+            int turns = cfg.contextKeepTurns > 0 ? cfg.contextKeepTurns : 3;
+            int oldCount = chat["messages"].toArray().size();
+            QJsonArray msgs = elideOldToolResults(chat["messages"].toArray(), turns);
             chat["messages"] = msgs;
+            int newCount = msgs.size();
             chatSave(chat);
-            outln(dim("Old tool results elided."));
+            outln(green("Compacted: ") + "elided tool results older than " +
+                  QString::number(turns) + " turns. (" +
+                  QString::number(oldCount) + " -> " + QString::number(newCount) + " messages)");
 
         } else if (cmd == "/list") {
             listChats();
@@ -438,10 +455,24 @@ int main(int argc, char* argv[]) {
 #endif
 
     const QStringList args = app.arguments().mid(1);
-    const bool singleShot  = !args.isEmpty() && !args.first().startsWith('-');
-    const QString msg      = singleShot ? args.join(' ') : QString();
+    bool noSave = false;
+    QStringList promptArgs;
+    for (const QString& a : args) {
+        if (a == "--no-save") {
+            noSave = true;
+        } else if (a == "-h" || a == "--help") {
+            outln("Usage: pengy_cli [prompt...] [--no-save]");
+            outln("  prompt      Optional prompt for single-shot mode. If omitted, starts interactive mode.");
+            outln("  --no-save   Don't persist single-shot chats to history.");
+            return 0;
+        } else {
+            promptArgs.append(a);
+        }
+    }
+    const bool singleShot = !promptArgs.isEmpty();
+    const QString msg     = singleShot ? promptArgs.join(' ') : QString();
 
     PengyCliApp cli;
-    cli.exec(singleShot, msg);
+    cli.exec(singleShot, msg, noSave);
     return 0;
 }

@@ -355,7 +355,7 @@ QByteArray WebServer::renderSettingsPage() {
 
     Config cfg = configLoad();
     html.replace("{{BASE_URL}}",         cfg.baseUrl.toHtmlEscaped());
-    html.replace("{{API_KEY}}",          cfg.apiKey.toHtmlEscaped());
+    html.replace("{{API_KEY_STATUS}}",   cfg.apiKey.isEmpty() ? "not set" : "set");
     html.replace("{{MODEL}}",            cfg.model.toHtmlEscaped());
     html.replace("{{SYSTEM_MESSAGE}}",   cfg.systemMessage.toHtmlEscaped());
     html.replace("{{TOOL_TIMEOUT}}",     QString::number(cfg.toolTimeout));

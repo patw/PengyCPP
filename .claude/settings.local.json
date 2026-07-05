@@ -17,7 +17,16 @@
       "Bash(cmake .. -DCMAKE_BUILD_TYPE=Debug -Wno-dev -DCMAKE_EXPORT_COMPILE_COMMANDS=OFF)",
       "Bash(cmake -B build -DCMAKE_BUILD_TYPE=Debug -Wno-dev)",
       "Bash(cmake --build /home/beholder/Personal/PengyCPP/build --target pengy_tests)",
-      "Bash(/home/beholder/Personal/PengyCPP/build/pengy_tests *)"
+      "Bash(/home/beholder/Personal/PengyCPP/build/pengy_tests *)",
+      "Read(//home/beholder/Personal/**)",
+      "Bash(timeout 3 ./pengy_cli --no-save \"-fix the bug\")",
+      "Bash(echo \"exit: $?\")",
+      "Bash(cp ~/.config/pengy/chats.json /tmp/chats_before.json)",
+      "Bash(timeout 5 ./pengy_cli --no-save \"-fix the bug\")",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(pkill -9 -f \"pengy_cli --no-save\")",
+      "Bash(timeout 2 bash -c 'echo \"\" | ./pengy_cli')",
+      "Bash(timeout 2 ./pengy_cli --help)"
     ]
   }
 }
