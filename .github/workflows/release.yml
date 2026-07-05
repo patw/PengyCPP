@@ -102,8 +102,8 @@ jobs:
         shell: cmd
         run: |
           @echo on
-          REM Set up MSVC environment
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          REM Set up MSVC environment (cl.exe, nmake, etc.)
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" >nul
           REM install-qt-action installs to ${{ github.workspace }}/../Qt/<version>/<arch>
           set QT6_DIR=${{ github.workspace }}\..\Qt\6.8.2\msvc2022_64
           if not exist "%QT6_DIR%\bin\qmake.exe" (
@@ -111,10 +111,10 @@ jobs:
             exit /b 1
           )
           echo Using Qt6: %QT6_DIR%
-          cmake -B build_windows -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QT6_DIR%"
-          cmake --build build_windows --config Release
+          cmake -B build_windows -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QT6_DIR%"
+          cmake --build build_windows
           mkdir Pengy-Windows
-          copy build_windows\Release\pengy.exe Pengy-Windows\
+          copy build_windows\pengy.exe Pengy-Windows\
           cd Pengy-Windows
           windeployqt pengy.exe
 
