@@ -31,7 +31,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake qt6-base-dev libgl-dev dpkg-dev \
-            libfuse2 fuse3
+            libfuse2 fuse3 imagemagick
 
       - name: Build .deb package
         run: |
@@ -98,7 +98,19 @@ jobs:
 
       - name: Build
         shell: cmd
-        run: build_windows.bat
+        run: |
+          @echo on
+          echo Qt6_DIR is: %Qt6_DIR%
+          if "%Qt6_DIR%"=="" (
+            echo ERROR: Qt6_DIR not set by install-qt-action
+            exit /b 1
+          )
+          cmake -B build_windows -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%Qt6_DIR%"
+          cmake --build build_windows --config Release
+          mkdir Pengy-Windows
+          copy build_windows\Release\pengy.exe Pengy-Windows\
+          cd Pengy-Windows
+          windeployqt pengy.exe
 
       - name: Zip artifacts
         shell: powershell

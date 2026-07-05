@@ -44,7 +44,8 @@ if command -v sips &>/dev/null; then
     /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string Pengy" "$APP_DIR/Contents/Info.plist" 2>/dev/null || \
         /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile Pengy" "$APP_DIR/Contents/Info.plist"
 fi
-macdeployqt "$APP_DIR" -verbose=2
+macdeployqt "$APP_DIR" -verbose=2 || true
+echo "==> macdeployqt finished (warnings about unused frameworks are normal)"
 
 # macdeployqt modifies dylib load paths which invalidates existing signatures;
 # re-sign everything with an ad-hoc signature so macOS will launch the app

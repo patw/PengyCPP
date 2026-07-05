@@ -29,8 +29,15 @@ make -j$(nproc)
 echo "==> Assembling AppDir..."
 cp "$PROJECT_ROOT/build/pengy" "$APPDIR/usr/bin/"
 cp "$APPIMAGE_DIR/pengy.desktop" "$APPDIR/usr/share/applications/"
-cp "$PROJECT_ROOT/pengy.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/pengy.png"
-cp "$PROJECT_ROOT/pengy.png" "$APPDIR/pengy.png"
+# Resize icon to 256x256 for linuxdeploy (which validates dimensions match path)
+if command -v convert &>/dev/null; then
+    convert "$PROJECT_ROOT/pengy.png" -resize 256x256 "$APPDIR/usr/share/icons/hicolor/256x256/apps/pengy.png"
+    cp "$APPDIR/usr/share/icons/hicolor/256x256/apps/pengy.png" "$APPDIR/pengy.png"
+else
+    echo "WARNING: ImageMagick not found, icon may fail validation"
+    cp "$PROJECT_ROOT/pengy.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/pengy.png"
+    cp "$PROJECT_ROOT/pengy.png" "$APPDIR/pengy.png"
+fi
 
 # 3. Copy Wayland platform plugin + libs (linuxdeploy-plugin-qt only
 #    bundles XCB by default; without wayland the AppImage falls back
