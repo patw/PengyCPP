@@ -102,12 +102,15 @@ jobs:
         shell: cmd
         run: |
           @echo on
-          echo Qt6_DIR is: %Qt6_DIR%
-          if "%Qt6_DIR%"=="" (
-            echo ERROR: Qt6_DIR not set by install-qt-action
+          REM install-qt-action installs to ${{ github.workspace }}/../Qt/<version>/<arch>
+          set QT6_DIR=${{ github.workspace }}\..\Qt\6.8.2\msvc2022_64
+          if not exist "%QT6_DIR%\bin\qmake.exe" (
+            echo ERROR: Qt6 not found at %QT6_DIR%
+            dir /s /b "%GITHUB_WORKSPACE%\..\Qt" 2>nul || echo No Qt directory found
             exit /b 1
           )
-          cmake -B build_windows -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%Qt6_DIR%"
+          echo Using Qt6: %QT6_DIR%
+          cmake -B build_windows -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QT6_DIR%"
           cmake --build build_windows --config Release
           mkdir Pengy-Windows
           copy build_windows\Release\pengy.exe Pengy-Windows\
