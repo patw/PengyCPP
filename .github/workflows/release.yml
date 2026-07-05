@@ -18,6 +18,9 @@ on:
 env:
   VERSION: ${{ github.ref_name }}   # e.g. v1.3.0
 
+permissions:
+  contents: write
+
 jobs:
   linux:
     name: Linux (.deb + AppImage)
@@ -89,7 +92,6 @@ jobs:
       - name: Install Qt6
         uses: jurplel/install-qt-action@v4
         with:
-          aqtversion: '==3.1.19'
           version: '6.8.2'
           host: 'windows'
           target: 'desktop'
