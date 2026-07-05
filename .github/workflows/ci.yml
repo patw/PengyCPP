@@ -16,15 +16,20 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential cmake qt6-base-dev libgl-dev
+          echo "=== Tool versions ==="
+          g++ --version | head -1
+          cmake --version | head -1
+          qmake6 --version 2>/dev/null || echo "no qmake6"
 
-      - name: Build all binaries
+      - name: Configure
         run: |
-          mkdir -p build
-          cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release 2>&1
+
+      - name: Build
+        run: |
+          cd build && make -j2 2>&1
 
       - name: Verify
         run: |
-          ls -lh build/pengy build/pengy_cli build/pengy_web
-          file build/pengy
+          ls build/pengy build/pengy_cli build/pengy_web 2>&1
