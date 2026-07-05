@@ -1560,17 +1560,17 @@ static bool matchesGlob(const QString& name, const QString& glob) {
         QString suf  = m.captured(3);
         for (const QString& choice : m.captured(2).split(',')) {
             QString pat = (pre + choice + suf)
-                .replace('.', "\\.")
-                .replace('*', ".*")
-                .replace('?', ".");
+                .replace(QChar('.'), QStringLiteral("\\."))
+                .replace(QChar('*'), QStringLiteral(".*"))
+                .replace(QChar('?'), QStringLiteral("."));
             if (QRegularExpression("^" + pat + "$").match(name).hasMatch())
                 return true;
         }
         return false;
     }
-    QString pat = QString(glob).replace('.', "\\.")
-                              .replace('*', ".*")
-                              .replace('?', ".");
+    QString pat = QString(glob).replace(QChar('.'), QStringLiteral("\\."))
+                              .replace(QChar('*'), QStringLiteral(".*"))
+                              .replace(QChar('?'), QStringLiteral("."));
     return QRegularExpression("^" + pat + "$").match(name).hasMatch();
 }
 
