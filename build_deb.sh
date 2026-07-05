@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="1.2.4"
+VERSION="${VERSION:-1.2.12}"
 ARCH="$(dpkg --print-architecture)"
 PKG_NAME="pengy_${VERSION}_${ARCH}"
 STAGING="$ROOT/.deb_staging/$PKG_NAME"
