@@ -98,28 +98,21 @@ jobs:
           arch: 'win64_msvc2022_64'
           modules: 'qtnetworkauth'  # lightweight, catches potential missing deps
 
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Build
         shell: cmd
         run: |
           @echo on
-          REM Set up MSVC environment (try Enterprise then Community)
-          if exist "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" (
-            call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          ) else if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" (
-            call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-          ) else (
-            echo ERROR: Could not find vcvars64.bat
-            exit /b 1
-          )
           where cl.exe
-          REM install-qt-action installs to workspace/../Qt/<version>/<arch>
-          set QT6_DIR=%GITHUB_WORKSPACE%\..\Qt\6.8.2\msvc2022_64
-          if not exist "%QT6_DIR%\bin\qmake.exe" (
-            echo ERROR: Qt6 not found at %QT6_DIR%
+          REM install-qt-action sets QT_ROOT_DIR
+          if "%QT_ROOT_DIR%"=="" (
+            echo ERROR: QT_ROOT_DIR not set
             exit /b 1
           )
-          echo Using Qt6: %QT6_DIR%
-          cmake -B build_windows -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QT6_DIR%"
+          echo Using Qt: %QT_ROOT_DIR%
+          cmake -B build_windows -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QT_ROOT_DIR%"
           cmake --build build_windows
           mkdir Pengy-Windows
           copy build_windows\pengy.exe Pengy-Windows\
