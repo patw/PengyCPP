@@ -12,7 +12,8 @@ public:
 
     void start(const QString& baseUrl, const QString& apiKey,
                const QString& model, const QJsonArray& messages,
-               const QString& toolConfirmation);
+               const QString& toolConfirmation, const QString& reasoningEffort,
+               bool preserveReasoning);
 
     void cancel();
     void sendConfirmation(bool confirmed, bool yoloTurn);
@@ -43,6 +44,7 @@ private:
     bool            m_sudoPending   = false;
     QString         m_sudoPassword;
 
-    QString    m_baseUrl, m_apiKey, m_model, m_toolConfirmation;
+    QString    m_baseUrl, m_apiKey, m_model, m_toolConfirmation, m_reasoningEffort;
+    bool       m_preserveReasoning = false;
     QJsonArray m_messages;
 };

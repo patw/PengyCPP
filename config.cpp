@@ -7,7 +7,9 @@
 #include <QSysInfo>
 
 static QString configFilePath() {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    QString base = qEnvironmentVariable("XDG_CONFIG_HOME");
+    if (base.isEmpty())
+        base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
     return base + "/pengy/settings.json";
 }
 
@@ -25,6 +27,8 @@ QJsonObject Config::toJson() const {
     o["model"]              = model;
     o["system_message"]     = systemMessage;
     o["tool_confirmation"]  = toolConfirmation;
+    o["reasoning_effort"]   = reasoningEffort;
+    o["preserve_reasoning"] = preserveReasoning;
     o["context_keep_turns"] = contextKeepTurns;
     o["ui_scale"]           = uiScale;
     o["user_agent"]         = userAgent;
@@ -39,6 +43,8 @@ Config Config::fromJson(const QJsonObject& o) {
     if (o.contains("model"))              c.model             = o["model"].toString(c.model);
     if (o.contains("system_message"))     c.systemMessage     = o["system_message"].toString(c.systemMessage);
     if (o.contains("tool_confirmation"))  c.toolConfirmation  = o["tool_confirmation"].toString(c.toolConfirmation);
+    if (o.contains("reasoning_effort"))   c.reasoningEffort   = o["reasoning_effort"].toString(c.reasoningEffort);
+    if (o.contains("preserve_reasoning")) c.preserveReasoning = o["preserve_reasoning"].toBool(false);
     if (o.contains("context_keep_turns")) c.contextKeepTurns  = o["context_keep_turns"].toInt(0);
     if (o.contains("ui_scale"))           c.uiScale           = o["ui_scale"].toInt(100);
     if (o.contains("user_agent"))         c.userAgent         = o["user_agent"].toString(c.userAgent);

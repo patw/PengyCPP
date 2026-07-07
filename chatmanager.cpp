@@ -9,7 +9,9 @@
 #include <QSet>
 
 static QString chatsFilePath() {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    QString base = qEnvironmentVariable("XDG_CONFIG_HOME");
+    if (base.isEmpty())
+        base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
     return base + "/pengy/chats.json";
 }
 

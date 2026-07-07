@@ -6,6 +6,7 @@
 #include <QSpinBox>
 #include <QTextEdit>
 #include <QPushButton>
+#include <QCheckBox>
 
 class SettingsDialog : public QDialog {
     Q_OBJECT
@@ -25,6 +26,8 @@ private:
     QLineEdit*  m_userAgent;
     QTextEdit*  m_systemMsg;
     QComboBox*  m_toolConfirm;
+    QComboBox*  m_reasoningEffort;
+    QCheckBox*  m_preserveReasoning;
     QSpinBox*   m_contextKeep;
     QComboBox*  m_uiScale;
     QSpinBox*   m_toolTimeout;

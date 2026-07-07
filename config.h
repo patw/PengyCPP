@@ -10,6 +10,8 @@ struct Config {
         "You are a helpful assistant named Pengy. "
         "The current date is {date} and the user is {username} on host {hostname} which is {osinfo}.";
     QString toolConfirmation = "none";
+    QString reasoningEffort;
+    bool preserveReasoning   = false;
     int  contextKeepTurns    = 0;
     int  uiScale             = 100;
     QString userAgent        = "PengyAgent/1.0";

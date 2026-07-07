@@ -6,6 +6,7 @@
 #include <QNetworkReply>
 #include <QEventLoop>
 #include <QUrl>
+#include <QStringList>
 
 static QJsonObject usage0() {
     return QJsonObject{
@@ -74,6 +75,9 @@ void LlmClient::run(const LlmParams& params,
             {"tools",       Tools::toolDefinitions()},
             {"tool_choice", "auto"},
         };
+        if (!params.reasoningEffort.isEmpty()) {
+            payload["reasoning_effort"] = params.reasoningEffort;
+        }
 
         QByteArray respData = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact),
                                        params.apiKey);
@@ -118,6 +122,12 @@ void LlmClient::run(const LlmParams& params,
             asstMsg["role"]       = "assistant";
             asstMsg["content"]    = content;
             asstMsg["tool_calls"] = toolCalls;
+            if (params.preserveReasoning) {
+                const QStringList reasoningKeys = {"reasoning_content", "reasoning", "reasoning_details"};
+                for (const QString& key : reasoningKeys) {
+                    if (msg.contains(key)) asstMsg[key] = msg[key];
+                }
+            }
 
             onEvent(QJsonObject{
                 {"type",    "assistant_tool_calls"},
@@ -191,9 +201,19 @@ void LlmClient::run(const LlmParams& params,
         }
 
         // No tool calls — final text response
+        QJsonObject finalMsg;
+        finalMsg["role"] = "assistant";
+        finalMsg["content"] = content;
+        if (params.preserveReasoning) {
+            const QStringList reasoningKeys = {"reasoning_content", "reasoning", "reasoning_details"};
+            for (const QString& key : reasoningKeys) {
+                if (msg.contains(key)) finalMsg[key] = msg[key];
+            }
+        }
         onEvent(QJsonObject{
             {"type",    "final_response"},
             {"content", content},
+            {"message", finalMsg},
             {"usage",   accUsage}
         });
         return;

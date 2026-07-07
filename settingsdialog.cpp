@@ -65,6 +65,29 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     }
     form->addRow("Tool Confirmation:", m_toolConfirm);
 
+    m_reasoningEffort = new QComboBox;
+    m_reasoningEffort->addItem("Provider default — do not send", "");
+    m_reasoningEffort->addItem("Off / none", "none");
+    m_reasoningEffort->addItem("Minimal", "minimal");
+    m_reasoningEffort->addItem("Low", "low");
+    m_reasoningEffort->addItem("Medium", "medium");
+    m_reasoningEffort->addItem("High", "high");
+    m_reasoningEffort->addItem("Extra high", "xhigh");
+    m_reasoningEffort->addItem("Max", "max");
+    for (int i = 0; i < m_reasoningEffort->count(); ++i) {
+        if (m_reasoningEffort->itemData(i).toString() == cfg.reasoningEffort) {
+            m_reasoningEffort->setCurrentIndex(i);
+            break;
+        }
+    }
+    m_reasoningEffort->setToolTip("Optional best-effort reasoning depth. Provider default omits the parameter.");
+    form->addRow("Reasoning effort:", m_reasoningEffort);
+
+    m_preserveReasoning = new QCheckBox("Preserve returned reasoning fields");
+    m_preserveReasoning->setChecked(cfg.preserveReasoning);
+    m_preserveReasoning->setToolTip("Keeps reasoning_content/reasoning/reasoning_details when providers return them.");
+    form->addRow("Reasoning preservation:", m_preserveReasoning);
+
     m_contextKeep = new QSpinBox;
     m_contextKeep->setRange(0, 999);
     m_contextKeep->setSpecialValueText("Keep all");
@@ -101,6 +124,8 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
         m_config.userAgent         = m_userAgent->text();
         m_config.systemMessage     = m_systemMsg->toPlainText();
         m_config.toolConfirmation  = m_toolConfirm->currentData().toString();
+        m_config.reasoningEffort   = m_reasoningEffort->currentData().toString();
+        m_config.preserveReasoning = m_preserveReasoning->isChecked();
         m_config.contextKeepTurns  = m_contextKeep->value();
         m_config.uiScale           = m_uiScale->currentData().toInt();
         m_config.toolTimeout       = m_toolTimeout->value();

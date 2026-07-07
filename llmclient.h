@@ -12,6 +12,8 @@ struct LlmParams {
     QString   model;
     QJsonArray messages;
     QString   toolConfirmation; // "all" | "safe" | "none"
+    QString   reasoningEffort;  // empty = provider default / omit
+    bool      preserveReasoning = false;
 };
 
 class LlmClient {

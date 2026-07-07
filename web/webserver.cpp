@@ -215,7 +215,7 @@ void WebServer::routeChatSend(const QString& chatId,
         worker->deleteLater();
     });
 
-    worker->start(cfg.baseUrl, cfg.apiKey, cfg.model, sendMsgs, cfg.toolConfirmation);
+    worker->start(cfg.baseUrl, cfg.apiKey, cfg.model, sendMsgs, cfg.toolConfirmation, cfg.reasoningEffort, cfg.preserveReasoning);
     sendJson(socket, 200, {{"status","started"}});
 }
 
@@ -292,6 +292,8 @@ void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {
         if (f.contains("model"))             cfg.model            = f["model"];
         if (f.contains("system_message"))    cfg.systemMessage    = f["system_message"];
         if (f.contains("tool_confirmation")) cfg.toolConfirmation = f["tool_confirmation"];
+        if (f.contains("reasoning_effort"))   cfg.reasoningEffort  = f["reasoning_effort"];
+        cfg.preserveReasoning = f.contains("preserve_reasoning");
         if (f.contains("tool_timeout"))      cfg.toolTimeout      = f["tool_timeout"].toInt();
         if (f.contains("context_keep_turns"))cfg.contextKeepTurns = f["context_keep_turns"].toInt();
         configSave(cfg);
@@ -363,6 +365,15 @@ QByteArray WebServer::renderSettingsPage() {
     html.replace("{{TC_NONE}}",  cfg.toolConfirmation == "none"  ? "selected" : "");
     html.replace("{{TC_SAFE}}",  cfg.toolConfirmation == "safe"  ? "selected" : "");
     html.replace("{{TC_ALL}}",   cfg.toolConfirmation == "all"   ? "selected" : "");
+    html.replace("{{REASONING_DEFAULT}}", cfg.reasoningEffort.isEmpty() ? "selected" : "");
+    html.replace("{{REASONING_NONE}}",    cfg.reasoningEffort == "none" ? "selected" : "");
+    html.replace("{{REASONING_MINIMAL}}", cfg.reasoningEffort == "minimal" ? "selected" : "");
+    html.replace("{{REASONING_LOW}}",     cfg.reasoningEffort == "low" ? "selected" : "");
+    html.replace("{{REASONING_MEDIUM}}",  cfg.reasoningEffort == "medium" ? "selected" : "");
+    html.replace("{{REASONING_HIGH}}",    cfg.reasoningEffort == "high" ? "selected" : "");
+    html.replace("{{REASONING_XHIGH}}",   cfg.reasoningEffort == "xhigh" ? "selected" : "");
+    html.replace("{{REASONING_MAX}}",     cfg.reasoningEffort == "max" ? "selected" : "");
+    html.replace("{{PRESERVE_REASONING}}", cfg.preserveReasoning ? "checked" : "");
 
     return html.toUtf8();
 }

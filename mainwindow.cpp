@@ -294,7 +294,8 @@ void MainWindow::processResponse(const QJsonArray& apiMessages) {
             Qt::QueuedConnection);
 
     m_worker->start(m_config.baseUrl, m_config.apiKey, m_config.model,
-                    apiMessages, m_config.toolConfirmation);
+                    apiMessages, m_config.toolConfirmation, m_config.reasoningEffort,
+                    m_config.preserveReasoning);
     m_confirmTimer->start();
 }
 
@@ -309,9 +310,11 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
         QString     content = event["content"].toString();
         QJsonObject usage   = event["usage"].toObject();
 
-        QJsonObject asstMsg;
-        asstMsg["role"]    = "assistant";
-        asstMsg["content"] = content;
+        QJsonObject asstMsg = event["message"].toObject();
+        if (asstMsg.isEmpty()) {
+            asstMsg["role"]    = "assistant";
+            asstMsg["content"] = content;
+        }
         QJsonArray messages = m_currentChat["messages"].toArray();
         messages.append(asstMsg);
         m_currentChat["messages"] = messages;

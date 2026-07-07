@@ -46,6 +46,26 @@
             <option value="all"  {{TC_ALL}}>all — confirm every tool call</option>
           </select>
         </div>
+
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Reasoning Effort</label>
+          <select name="reasoning_effort" class="form-select">
+            <option value="" {{REASONING_DEFAULT}}>Provider default — do not send</option>
+            <option value="none" {{REASONING_NONE}}>Off / none</option>
+            <option value="minimal" {{REASONING_MINIMAL}}>Minimal</option>
+            <option value="low" {{REASONING_LOW}}>Low</option>
+            <option value="medium" {{REASONING_MEDIUM}}>Medium</option>
+            <option value="high" {{REASONING_HIGH}}>High</option>
+            <option value="xhigh" {{REASONING_XHIGH}}>Extra high</option>
+            <option value="max" {{REASONING_MAX}}>Max</option>
+          </select>
+          <div class="form-text">Optional best-effort parameter. Provider default omits it.</div>
+        </div>
+        <div class="form-check mb-3">
+          <input type="checkbox" class="form-check-input" id="preserve_reasoning" name="preserve_reasoning" value="1" {{PRESERVE_REASONING}}>
+          <label class="form-check-label" for="preserve_reasoning">Preserve returned reasoning fields</label>
+          <div class="form-text">Keeps reasoning_content/reasoning/reasoning_details when providers return them.</div>
+        </div>
         <div class="mb-3">
           <label class="form-label fw-semibold">Tool Timeout (seconds)</label>
           <input name="tool_timeout" type="number" class="form-control"

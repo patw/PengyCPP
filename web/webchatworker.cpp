@@ -7,12 +7,15 @@ WebChatWorker::WebChatWorker(QObject* parent) : QObject(parent) {}
 
 void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
                            const QString& model, const QJsonArray& messages,
-                           const QString& toolConfirmation) {
+                           const QString& toolConfirmation, const QString& reasoningEffort,
+                           bool preserveReasoning) {
     m_baseUrl          = baseUrl;
     m_apiKey           = apiKey;
     m_model            = model;
     m_messages         = messages;
     m_toolConfirmation = toolConfirmation;
+    m_reasoningEffort = reasoningEffort;
+    m_preserveReasoning = preserveReasoning;
     m_cancelled        = false;
 
     {
@@ -68,8 +71,11 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
 
             } else if (type == "final_response") {
                 const QString content = ev["content"].toString();
-                if (!content.isEmpty())
-                    accMsgs.append(QJsonObject{{"role","assistant"},{"content",content}});
+                QJsonObject msg = ev["message"].toObject();
+                if (msg.isEmpty() && !content.isEmpty()) {
+                    msg = QJsonObject{{"role","assistant"},{"content",content}};
+                }
+                if (!msg.isEmpty()) accMsgs.append(msg);
                 emit eventReady(ev);
 
             } else {
@@ -92,7 +98,7 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
         LlmClient::CancelFn isCancelled = [this]() -> bool { return m_cancelled; };
 
         LlmClient client;
-        client.run(LlmParams{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation},
+        client.run(LlmParams{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation, m_reasoningEffort, m_preserveReasoning},
                    onEvent, onConfirm, isCancelled);
 
         Tools::clearSudoPasswordProvider();

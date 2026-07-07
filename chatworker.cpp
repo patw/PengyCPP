@@ -8,12 +8,15 @@ ChatWorker::ChatWorker(QObject* parent) : QObject(parent) {}
 
 void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
                        const QString& model, const QJsonArray& messages,
-                       const QString& toolConfirmation) {
+                       const QString& toolConfirmation, const QString& reasoningEffort,
+                       bool preserveReasoning) {
     m_baseUrl           = baseUrl;
     m_apiKey            = apiKey;
     m_model             = model;
     m_messages          = messages;
     m_toolConfirmation  = toolConfirmation;
+    m_reasoningEffort   = reasoningEffort;
+    m_preserveReasoning = preserveReasoning;
     m_cancelled         = false;
 
     {
@@ -39,7 +42,7 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
     });
 
     auto* thread = QThread::create([this] {
-        LlmParams params{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation};
+        LlmParams params{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation, m_reasoningEffort, m_preserveReasoning};
 
         LlmClient::EventFn onEvent = [this](const QJsonObject& ev) {
             if (m_cancelled) return;
