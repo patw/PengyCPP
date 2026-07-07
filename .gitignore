@@ -5,6 +5,8 @@ build_windows/
 Pengy.app/
 Pengy-Windows/
 
+build_ci*
+
 # CMake generated
 CMakeCache.txt
 CMakeFiles/
