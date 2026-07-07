@@ -6,6 +6,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 VERSION="${VERSION:-$(grep -oP 'project\(\w+ VERSION \K[\d.]+' CMakeLists.txt | head -1)}"
+# Strip leading 'v' if present (dpkg requires a digit-first version)
+VERSION="${VERSION#v}"
 ARCH="$(dpkg --print-architecture)"
 PKG_NAME="pengy_${VERSION}_${ARCH}"
 STAGING="$ROOT/.deb_staging/$PKG_NAME"
