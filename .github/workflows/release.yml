@@ -59,6 +59,7 @@ jobs:
           files: |
             pengy_*.deb
             Pengy-x86_64.AppImage
+          generate_release_notes: true
           fail_on_unmatched_files: false
 
   macos:
@@ -80,6 +81,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: Pengy-macOS-*.dmg
+          generate_release_notes: true
           fail_on_unmatched_files: false
 
   windows:
@@ -128,4 +130,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: Pengy-Windows-*.zip
+          generate_release_notes: true
           fail_on_unmatched_files: false
