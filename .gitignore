@@ -16,8 +16,13 @@ install_manifest.txt
 *.cmake
 !CMakeLists.txt
 
-# Remove the debian package
+# Release/package artifacts
 *.deb
+*.dmg
+*.AppImage
+*.zip
+*.tar.gz
+*.dSYM
 
 # Claude stuff
 .claude  
