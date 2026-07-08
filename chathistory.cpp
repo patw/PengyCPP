@@ -31,6 +31,11 @@ void ChatHistoryWidget::setupUi() {
     connect(m_settingsBtn, &QPushButton::clicked, this, &ChatHistoryWidget::settingsRequested);
     layout->addWidget(m_settingsBtn);
 
+    m_tasksBtn = new QPushButton("📋 Tasks");
+    m_tasksBtn->setFixedHeight(36);
+    connect(m_tasksBtn, &QPushButton::clicked, this, &ChatHistoryWidget::tasksRequested);
+    layout->addWidget(m_tasksBtn);
+
     layout->addSpacing(8);
 
     auto* divider = new QFrame;

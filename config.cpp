@@ -31,6 +31,8 @@ QJsonObject Config::toJson() const {
     o["preserve_reasoning"] = preserveReasoning;
     o["context_keep_turns"] = contextKeepTurns;
     o["ui_scale"]           = uiScale;
+    o["theme_mode"]         = themeMode;
+    o["theme_accent"]       = themeAccent;
     o["user_agent"]         = userAgent;
     o["tool_timeout"]       = toolTimeout;
     return o;
@@ -47,6 +49,8 @@ Config Config::fromJson(const QJsonObject& o) {
     if (o.contains("preserve_reasoning")) c.preserveReasoning = o["preserve_reasoning"].toBool(false);
     if (o.contains("context_keep_turns")) c.contextKeepTurns  = o["context_keep_turns"].toInt(0);
     if (o.contains("ui_scale"))           c.uiScale           = o["ui_scale"].toInt(100);
+    if (o.contains("theme_mode"))         c.themeMode         = o["theme_mode"].toString(c.themeMode);
+    if (o.contains("theme_accent"))       c.themeAccent       = o["theme_accent"].toString(c.themeAccent);
     if (o.contains("user_agent"))         c.userAgent         = o["user_agent"].toString(c.userAgent);
     if (o.contains("tool_timeout"))       c.toolTimeout       = o["tool_timeout"].toInt(60);
     return c;

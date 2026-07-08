@@ -4,6 +4,8 @@
 #include "chatinput.h"
 #include "chatworker.h"
 #include "settingsdialog.h"
+#include "tasksdialog.h"
+#include "themehelper.h"
 #include "config.h"
 #include "chatmanager.h"
 #include "tools.h"
@@ -27,6 +29,7 @@
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_config = configLoad();
     setupUi();
+    qApp->setStyleSheet(appStyleSheet(makeTheme(m_config.themeMode, m_config.themeAccent), m_config.uiScale));
 
     // Poll for sudo password requests from the worker thread
     m_confirmTimer = new QTimer(this);
@@ -59,6 +62,7 @@ void MainWindow::setupUi() {
     connect(m_chatHistory, &ChatHistoryWidget::chatSelected,    this, &MainWindow::loadChat);
     connect(m_chatHistory, &ChatHistoryWidget::newChatRequested,this, &MainWindow::createNewChat);
     connect(m_chatHistory, &ChatHistoryWidget::settingsRequested,this,&MainWindow::openSettings);
+    connect(m_chatHistory, &ChatHistoryWidget::tasksRequested,   this,&MainWindow::openTasks);
     connect(m_chatHistory, &ChatHistoryWidget::deleteRequested, this, &MainWindow::deleteChat);
 
     m_chatView  = new ChatView;
@@ -66,7 +70,7 @@ void MainWindow::setupUi() {
     connect(m_chatInput, &ChatInputWidget::messageSent, this, &MainWindow::sendMessage);
 
     m_stopBtn = new QPushButton("⏹ Stop");
-    m_stopBtn->setFixedHeight(32);
+    m_stopBtn->setFixedHeight(scaledSize(32, m_config.uiScale));
     m_stopBtn->setStyleSheet(
         "QPushButton { background-color: #d20f39; color: white; border: none; "
         "border-radius: 8px; padding: 4px 14px; font-weight: bold; font-size: 11pt; }"
@@ -486,8 +490,20 @@ void MainWindow::openSettings() {
     if (dlg.exec() == QDialog::Accepted) {
         m_config = dlg.config();
         configSave(m_config);
+        qApp->setStyleSheet(appStyleSheet(makeTheme(m_config.themeMode, m_config.themeAccent), m_config.uiScale));
+        m_stopBtn->setFixedHeight(scaledSize(32, m_config.uiScale));
         Tools::setUserAgent(m_config.userAgent);
         Tools::setTimeout(m_config.toolTimeout);
+        loadChatList();
+        if (!m_currentChatId.isEmpty()) m_chatHistory->selectChatById(m_currentChatId);
         m_chatHistory->updateQuickSettings(m_config.model, m_config.toolConfirmation);
     }
+}
+
+void MainWindow::openTasks() {
+    TasksDialog dlg(this);
+    connect(&dlg, &TasksDialog::taskPlayed, this, [this](const QString& prompt) {
+        sendMessage(prompt, QStringList());
+    });
+    dlg.exec();
 }

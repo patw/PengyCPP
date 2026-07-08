@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Pengy VERSION 1.2.13 LANGUAGES CXX)
+project(Pengy VERSION 1.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,11 +36,13 @@ add_executable(pengy
     main.cpp
     config.cpp
     chatmanager.cpp
+    taskmanager.cpp
     tools.cpp
     llmclient.cpp
     chatworker.cpp
     mainwindow.cpp
     chathistory.cpp
+    tasksdialog.cpp
     chatview.cpp
     chatinput.cpp
     settingsdialog.cpp
@@ -67,6 +69,7 @@ if(Qt6Test_FOUND)
         tests.cpp
         config.cpp
         chatmanager.cpp
+        taskmanager.cpp
         tools.cpp
         llmclient.cpp
         web/webserver.cpp

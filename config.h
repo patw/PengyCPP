@@ -14,6 +14,8 @@ struct Config {
     bool preserveReasoning   = false;
     int  contextKeepTurns    = 0;
     int  uiScale             = 100;
+    QString themeMode        = "system"; // "system" | "light" | "dark"
+    QString themeAccent      = "default"; // default | blue | teal | green | orange | red | pink | purple
     QString userAgent        = "PengyAgent/1.0";
     int  toolTimeout         = 60;
 

@@ -23,6 +23,7 @@ signals:
     void chatSelected(const QString& id);
     void newChatRequested();
     void settingsRequested();
+    void tasksRequested();
     void deleteRequested(const QString& id);
 
 private slots:
@@ -36,6 +37,7 @@ private:
 
     QPushButton* m_newChatBtn;
     QPushButton* m_settingsBtn;
+    QPushButton* m_tasksBtn;
     QListWidget* m_chatList;
     QLabel*      m_statusDot;
     QLabel*      m_statusText;

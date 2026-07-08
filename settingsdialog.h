@@ -30,5 +30,7 @@ private:
     QCheckBox*  m_preserveReasoning;
     QSpinBox*   m_contextKeep;
     QComboBox*  m_uiScale;
+    QComboBox*  m_themeMode;
+    QComboBox*  m_themeAccent;
     QSpinBox*   m_toolTimeout;
 };

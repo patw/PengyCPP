@@ -106,6 +106,23 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     m_uiScale->setCurrentIndex(idx);
     form->addRow("UI Scale (restart to apply):", m_uiScale);
 
+    m_themeMode = new QComboBox;
+    m_themeMode->addItem("System", "system");
+    m_themeMode->addItem("Light", "light");
+    m_themeMode->addItem("Dark", "dark");
+    for (int i = 0; i < m_themeMode->count(); ++i) {
+        if (m_themeMode->itemData(i).toString() == cfg.themeMode) m_themeMode->setCurrentIndex(i);
+    }
+    form->addRow("Theme mode:", m_themeMode);
+
+    m_themeAccent = new QComboBox;
+    const QStringList accents = {"default", "blue", "teal", "green", "orange", "red", "pink", "purple"};
+    for (const QString& a : accents) m_themeAccent->addItem(a.left(1).toUpper() + a.mid(1), a);
+    for (int i = 0; i < m_themeAccent->count(); ++i) {
+        if (m_themeAccent->itemData(i).toString() == cfg.themeAccent) m_themeAccent->setCurrentIndex(i);
+    }
+    form->addRow("Accent color:", m_themeAccent);
+
     m_toolTimeout = new QSpinBox;
     m_toolTimeout->setRange(-1, 3600);
     m_toolTimeout->setSpecialValueText("No timeout");
@@ -128,6 +145,8 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
         m_config.preserveReasoning = m_preserveReasoning->isChecked();
         m_config.contextKeepTurns  = m_contextKeep->value();
         m_config.uiScale           = m_uiScale->currentData().toInt();
+        m_config.themeMode         = m_themeMode->currentData().toString();
+        m_config.themeAccent       = m_themeAccent->currentData().toString();
         m_config.toolTimeout       = m_toolTimeout->value();
         accept();
     });

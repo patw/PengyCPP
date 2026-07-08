@@ -22,6 +22,7 @@ private slots:
     void deleteChat(const QString& chatId);
     void sendMessage(const QString& text, const QStringList& images);
     void openSettings();
+    void openTasks();
     void onWorkerEvent(const QString& eventJson);
     void onWorkerFinished();
     void onWorkerError(const QString& msg);
