@@ -2,15 +2,21 @@
 #include <QFile>
 #include <QDir>
 #include <QJsonDocument>
-#include <QStandardPaths>
 #include <QDateTime>
 #include <QSysInfo>
 
-static QString configFilePath() {
+/* Resolve the pengy config directory.
+ * Uses $XDG_CONFIG_HOME if set, otherwise $HOME/.config — matching the
+ * Python and Rust editions so all three share the same settings/chats/tasks. */
+static QString pengyConfigDir() {
     QString base = qEnvironmentVariable("XDG_CONFIG_HOME");
     if (base.isEmpty())
-        base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
-    return base + "/pengy/settings.json";
+        base = QDir::homePath() + "/.config";
+    return base + "/pengy";
+}
+
+static QString configFilePath() {
+    return pengyConfigDir() + "/settings.json";
 }
 
 static void backupCorruptFile(const QString& path) {

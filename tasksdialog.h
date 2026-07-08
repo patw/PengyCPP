@@ -6,11 +6,12 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QMap>
+#include "themehelper.h"
 
 class TasksDialog : public QDialog {
     Q_OBJECT
 public:
-    explicit TasksDialog(QWidget* parent = nullptr);
+    explicit TasksDialog(const Theme& theme, QWidget* parent = nullptr);
 signals:
     void taskPlayed(const QString& prompt);
 private:
@@ -24,6 +25,7 @@ private:
     QListWidget* m_list;
     QPushButton* m_newBtn;
     QJsonArray m_tasks;
+    Theme m_theme;
 };
 
 class TaskEditDialog : public QDialog {

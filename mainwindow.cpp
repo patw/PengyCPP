@@ -513,7 +513,8 @@ void MainWindow::openSettings() {
 }
 
 void MainWindow::openTasks() {
-    TasksDialog dlg(this);
+    Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
+    TasksDialog dlg(theme, this);
     connect(&dlg, &TasksDialog::taskPlayed, this, [this](const QString& prompt) {
         sendMessage(prompt, QStringList());
     });

@@ -9,7 +9,7 @@
 #include <QMessageBox>
 #include <QJsonDocument>
 
-TasksDialog::TasksDialog(QWidget* parent) : QDialog(parent) { setWindowTitle("Tasks"); resize(640,520); setupUi(); loadTasks(); }
+TasksDialog::TasksDialog(const Theme& theme, QWidget* parent) : QDialog(parent), m_theme(theme) { setWindowTitle("Tasks"); resize(640,520); setupUi(); loadTasks(); }
 void TasksDialog::setupUi() {
     auto* layout = new QVBoxLayout(this);
     auto* header = new QHBoxLayout;
@@ -18,6 +18,11 @@ void TasksDialog::setupUi() {
     auto* hint = new QLabel("Use %placeholder% in templates to prompt for dynamic values."); hint->setWordWrap(true); layout->addWidget(hint);
     m_list = new QListWidget; m_list->setSelectionMode(QAbstractItemView::NoSelection); layout->addWidget(m_list,1);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close); connect(buttons,&QDialogButtonBox::rejected,this,&QDialog::reject); layout->addWidget(buttons);
+    /* Theme the dialog and New button (matches Python reference) */
+    setStyleSheet(QString("QDialog{background-color:%1;color:%2;}QLabel{color:%2;}QListWidget{background-color:%3;color:%2;border:1px solid %4;border-radius:6px;}")
+        .arg(m_theme["bg"], m_theme["fg"], m_theme["panel"], m_theme["border_soft"]));
+    m_newBtn->setStyleSheet(QString("QPushButton{background-color:%1;color:%2;border:none;border-radius:8px;padding:7px 14px;font-weight:bold;}QPushButton:hover{background-color:%3;}")
+        .arg(m_theme["primary"], m_theme["primary_fg"], m_theme["primary_hover"]));
 }
 void TasksDialog::loadTasks() {
     m_tasks = tasksLoad(); m_list->clear();
@@ -26,10 +31,13 @@ void TasksDialog::loadTasks() {
 }
 QWidget* TasksDialog::makeTaskRow(const QJsonObject& task) {
     auto* row = new QWidget; auto* layout = new QHBoxLayout(row); layout->setContentsMargins(8,6,6,6); layout->setSpacing(6);
+    row->setObjectName("taskRow");
+    row->setStyleSheet(QString("#taskRow{background-color:%1;color:%2;}").arg(m_theme["panel"], m_theme["fg"]));
     auto* col = new QWidget; auto* vl = new QVBoxLayout(col); vl->setContentsMargins(0,0,0,0); vl->setSpacing(2);
-    auto* title = new QLabel(task["title"].toString("Untitled Task")); title->setStyleSheet("font-weight:bold;"); vl->addWidget(title);
-    QString preview = task["template"].toString().replace('\n',' '); if (preview.size()>140) preview = preview.left(140) + "…"; auto* prev = new QLabel(preview); prev->setStyleSheet("font-size:11px;color:#667085;"); vl->addWidget(prev); layout->addWidget(col,1);
-    auto addBtn=[&](const QString& txt,const QString& tip, auto fn){ auto* b=new QPushButton(txt); b->setFixedSize(28,28); b->setToolTip(tip); connect(b,&QPushButton::clicked,this,[=](){ fn(task); }); layout->addWidget(b); };
+    auto* title = new QLabel(task["title"].toString("Untitled Task")); title->setStyleSheet(QString("font-weight:bold;color:%1;").arg(m_theme["fg"])); vl->addWidget(title);
+    QString preview = task["template"].toString().replace('\n',' '); if (preview.size()>70) preview = preview.left(70) + "…"; auto* prev = new QLabel(preview); prev->setStyleSheet(QString("font-size:11px;color:%1;").arg(m_theme["muted"])); vl->addWidget(prev); layout->addWidget(col,1);
+    QString btnStyle = QString("QPushButton{background-color:transparent;color:%1;border:none;border-radius:4px;font-size:15px;}QPushButton:hover{background-color:%2;}").arg(m_theme["fg"], m_theme["hover"]);
+    auto addBtn=[&](const QString& txt,const QString& tip, auto fn){ auto* b=new QPushButton(txt); b->setFixedSize(32,32); b->setToolTip(tip); b->setStyleSheet(btnStyle); connect(b,&QPushButton::clicked,this,[=](){ fn(task); }); layout->addWidget(b); };
     addBtn("▶","Play task",[this](const QJsonObject&t){playTask(t);}); addBtn("✏","Edit task",[this](const QJsonObject&t){editTask(t);}); addBtn("🗑","Delete task",[this](const QJsonObject&t){deleteTask(t);}); return row;
 }
 void TasksDialog::newTask() { TaskEditDialog d({}, this); if (d.exec()==QDialog::Accepted) { taskCreate(d.title(), d.templ()); loadTasks(); } }
