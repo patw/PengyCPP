@@ -12,23 +12,56 @@
 #include <QNetworkRequest>
 #include <QEventLoop>
 #include <QTimer>
+#include <QFontDatabase>
 
 ChatView::ChatView(QWidget* parent) : QTextBrowser(parent) {
     setOpenLinks(false);
-    setStyleSheet("QTextBrowser { background: #fff; color: #1e1e2e; border: none; padding: 8px; }");
-    document()->setDefaultStyleSheet(
-        "body { font-family: monospace; font-size: 10pt; }"
-        "a { color: #a05000; }"
-        "pre { background: #f5f5f5; padding: 8px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; }"
-        "code { background: #f0f0f0; padding: 1px 3px; border-radius: 2px; }"
-        "table { border: 1px solid #ccc; margin: 6px 0; }"
-        "th, td { border: 1px solid #ccc; padding: 4px 10px; }"
-        "th { background: #f0f0f0; font-weight: bold; }"
-        "h1, h2, h3, h4, h5, h6 { margin: 10px 0 4px 0; }"
-        "h1 { font-size: 14pt; }  h2 { font-size: 13pt; }"
-        "h3 { font-size: 11pt; }  h4 { font-size: 10pt; }"
-        "img { max-width: 600px; }"
-    );
+    m_theme = makeTheme("system", "default");
+    applyTheme(m_theme, m_scale);
+}
+
+void ChatView::applyTheme(const Theme& theme, int scale) {
+    m_theme = theme;
+    m_scale = scale;
+    auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    font.setPointSize(scaledFont(10, scale));
+    setFont(font);
+    setStyleSheet(QString("QTextBrowser { background-color:%1; color:%2; border:none; padding:0; }")
+                  .arg(m_theme["bg"], m_theme["fg"]));
+    document()->setDefaultStyleSheet(buildCss());
+    if (!m_messages.isEmpty()) render();
+}
+
+QString ChatView::buildCss() const {
+    QString fixed = QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
+    int bodyPt = scaledFont(10, m_scale);
+    int labelPt = scaledFont(9, m_scale);
+    return QString(R"CSS(
+body { font-family:"%1"; font-size:%2pt; background-color:%3; color:%4; margin:8px; }
+a { color:%5; text-decoration:none; }
+pre { background-color:%15; color:%14; padding:10px; margin:6px 0; white-space:pre-wrap; word-wrap:break-word; }
+table { border:1px solid %6; margin:6px 0; }
+th, td { border:1px solid %6; padding:4px 10px; }
+th { background-color:%7; font-weight:bold; }
+img { max-width:600px; }
+.role-user { color:%8; font-weight:bold; font-size:%9pt; margin:8px 0 2px 0; }
+.role-assistant { color:%10; font-weight:bold; font-size:%9pt; margin:8px 0 2px 0; }
+.tool-card { border:1px solid %11; padding:4px 8px; margin:6px 0; background-color:%12; }
+.tool-link { color:%5; text-decoration:none; font-weight:bold; }
+.tool-pre { background-color:%13; color:%14; padding:4px; margin:2px 0; font-size:%9pt; }
+.muted { color:%16; }
+.declined { color:%17; }
+code { background-color:%7; color:%14; padding:1px 3px; border-radius:2px; }
+blockquote { border-left:3px solid %6; margin:6px 0; padding:2px 0 2px 10px; color:%16; }
+hr { border:0; border-top:1px solid %6; margin:10px 0; }
+ul, ol { margin:4px 0 8px 20px; padding-left:16px; }
+li { margin:2px 0; }
+h1, h2, h3, h4, h5, h6 { margin:10px 0 4px 0; }
+h1 { font-size:14pt; } h2 { font-size:13pt; } h3 { font-size:11pt; } h4 { font-size:10pt; }
+)CSS")
+        .arg(fixed).arg(bodyPt).arg(m_theme["bg"], m_theme["fg"], m_theme["link"], m_theme["border"], m_theme["panel_2"],
+             m_theme["user_label"]).arg(labelPt).arg(m_theme["assistant_label"], m_theme["border_soft"], m_theme["tool_bg"],
+             m_theme["tool_arg_bg"], m_theme["code_fg"], m_theme["code_bg"], m_theme["muted"], m_theme["danger"]);
 }
 
 void ChatView::appendMessage(const QString& role, const QJsonValue& content) {
@@ -115,7 +148,7 @@ void ChatView::render() {
 }
 
 QString ChatView::buildHtml() {
-    QString html = "<html><body>";
+    QString html = QString("<html><head><style>%1</style></head><body>").arg(buildCss());
     for (const QJsonValue& v : m_messages) {
         html += renderMessage(v.toObject());
     }
@@ -128,8 +161,7 @@ QString ChatView::renderMessage(const QJsonObject& msg) const {
 
     if (role == "user") {
         return QString(
-            "<p style='color:#00008b;font-weight:bold;font-size:9pt;margin:8px 0 2px 0;'>"
-            "&#x1F9D1; You</p>"
+            "<p class='role-user'>&#x1F9D1; You</p>"
             "<p style='margin:2px 0 10px 0;white-space:pre-wrap;'>%1</p>"
         ).arg(escapeHtml(msg["content"].toString()));
 
@@ -137,8 +169,7 @@ QString ChatView::renderMessage(const QJsonObject& msg) const {
         QString content = msg["content"].toString();
         if (content.isEmpty()) return "";
         return QString(
-            "<p style='color:#006400;font-weight:bold;font-size:9pt;margin:8px 0 2px 0;'>"
-            "&#x1F916; Assistant</p>"
+            "<p class='role-assistant'>&#x1F916; Assistant</p>"
             "<div style='margin:2px 0 10px 0;'>%1</div>"
         ).arg(markdownToHtml(content));
 
@@ -188,14 +219,13 @@ QString ChatView::renderToolBlock(const QJsonObject& msg) const {
 
     QString status;
     if (!hasResult && !declined) {
-        status = "&nbsp;<i style='color:#888;'>(running&#8230;)</i>";
+        status = "&nbsp;<i class='muted'>(running&#8230;)</i>";
     } else if (declined) {
-        status = "&nbsp;<i style='color:#cc0000;'>(declined)</i>";
+        status = "&nbsp;<i class='declined'>(declined)</i>";
     }
 
     QString header = QString(
-        "<a href='toggle://%1' "
-        "style='color:#a05000;text-decoration:none;font-weight:bold;'>%2</a>%3"
+        "<a class='tool-link' href='toggle://%1'>%2</a>%3"
     ).arg(toolCallId, label, status);
 
     QString inner = "<div style='margin-bottom:2px;'>" + header + "</div>";
@@ -206,7 +236,7 @@ QString ChatView::renderToolBlock(const QJsonObject& msg) const {
         inner += QString(
             "<div style='margin-top:4px;'>"
             "<b>Arguments:</b>"
-            "<pre style='background-color:#f0f0f0;padding:4px;margin:2px 0;font-size:9pt;'>%1</pre>"
+            "<pre class='tool-pre'>%1</pre>"
             "</div>"
         ).arg(argsJson);
 
@@ -216,14 +246,14 @@ QString ChatView::renderToolBlock(const QJsonObject& msg) const {
             inner += QString(
                 "<div>"
                 "<b>%1:</b>"
-                "<pre style='background-color:#f5f5f5;padding:4px;margin:2px 0;font-size:9pt;'>%2</pre>"
+                "<pre class='tool-pre'>%2</pre>"
                 "</div>"
             ).arg(resultLabel, resultEscaped);
         }
     }
 
     return QString(
-        "<div style='border:1px solid #ddd;padding:4px 8px;margin:6px 0;background:#fafafa;'>"
+        "<div class='tool-card'>"
         "%1"
         "</div>"
     ).arg(inner);
@@ -241,7 +271,7 @@ QString ChatView::markdownToHtml(const QString& md) const {
     // Convert ``` code blocks FIRST — prevents their contents from
     // being falsely matched by table / image / link regexes below.
     static QRegularExpression codeBlockRx("```(\\w*)\\n([\\s\\S]*?)```");
-    result.replace(codeBlockRx, "<pre><code>\\2</code></pre>");
+    result.replace(codeBlockRx, "<pre class='code-pre'><code>\\2</code></pre>");
 
     // Inline code BEFORE image/link so `![not-an-image](url)` is safe
     static QRegularExpression inlineCodeRx("`([^`]+)`");

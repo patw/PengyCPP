@@ -29,7 +29,7 @@
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_config = configLoad();
     setupUi();
-    qApp->setStyleSheet(appStyleSheet(makeTheme(m_config.themeMode, m_config.themeAccent), m_config.uiScale));
+    applyTheme();
 
     // Poll for sudo password requests from the worker thread
     m_confirmTimer = new QTimer(this);
@@ -97,6 +97,20 @@ void MainWindow::setupUi() {
     mainSplitter->setStretchFactor(1, 1);
     mainSplitter->setSizes({300, 800});
     mainLayout->addWidget(mainSplitter);
+}
+
+void MainWindow::applyTheme() {
+    Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
+    qApp->setStyleSheet(appStyleSheet(theme, m_config.uiScale));
+    if (m_chatView) m_chatView->applyTheme(theme, m_config.uiScale);
+    if (m_chatInput) m_chatInput->applyTheme(theme, m_config.uiScale);
+    if (m_chatHistory) m_chatHistory->applyTheme(theme, m_config.uiScale);
+    if (m_stopBtn) {
+        m_stopBtn->setFixedHeight(scaledSize(32, m_config.uiScale));
+        m_stopBtn->setStyleSheet(QString(
+            "QPushButton { background-color:%1; color:white; border:none; border-radius:8px; padding:4px 14px; font-weight:bold; font-size:11pt; }"
+            "QPushButton:hover { background-color:%2; }").arg(theme["danger"], theme["danger_hover"]));
+    }
 }
 
 void MainWindow::loadChatList() {
@@ -365,10 +379,12 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
 }
 
 void MainWindow::handleToolConfirm(const QJsonObject& req) {
+    Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
     QDialog dlg(this);
     dlg.setWindowTitle("Confirm Tool: " + req["name"].toString());
     dlg.setModal(true);
     dlg.resize(480, 300);
+    dlg.setStyleSheet(appStyleSheet(theme, m_config.uiScale));
 
     auto* layout = new QVBoxLayout(&dlg);
     QString info = QString("Execute tool: <b>%1</b><br><br>Arguments:<br><pre>%2</pre>")
@@ -377,28 +393,25 @@ void MainWindow::handleToolConfirm(const QJsonObject& req) {
     auto* label = new QLabel(info);
     label->setWordWrap(true);
     label->setTextFormat(Qt::RichText);
-    label->setStyleSheet("color: #000; padding: 8px;");
+    label->setStyleSheet(QString("color:%1; padding:8px;").arg(theme["fg"]));
     layout->addWidget(label);
 
     auto* btnLayout = new QHBoxLayout;
 
     auto* execBtn = new QPushButton("Execute");
-    execBtn->setStyleSheet(
-        "QPushButton { background-color: #1e66f5; color: white; border: none; "
-        "border-radius: 6px; padding: 8px 18px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #4478f7; }");
+    execBtn->setStyleSheet(QString(
+        "QPushButton { background-color:%1; color:%2; border:none; border-radius:6px; padding:8px 18px; font-weight:bold; }"
+        "QPushButton:hover { background-color:%3; }").arg(theme["primary"], theme["primary_fg"], theme["primary_hover"]));
 
     auto* yesAllBtn = new QPushButton("Yes to All\nThis Turn");
-    yesAllBtn->setStyleSheet(
-        "QPushButton { background-color: #df8e1d; color: white; border: none; "
-        "border-radius: 6px; padding: 8px 14px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #fea82f; }");
+    yesAllBtn->setStyleSheet(QString(
+        "QPushButton { background-color:%1; color:white; border:none; border-radius:6px; padding:8px 14px; font-weight:bold; }"
+        "QPushButton:hover { background-color:%2; }").arg(theme["warning"], theme["warning_hover"]));
 
     auto* cancelBtn = new QPushButton("Decline");
-    cancelBtn->setStyleSheet(
-        "QPushButton { background-color: #d20f39; color: white; border: none; "
-        "border-radius: 6px; padding: 8px 18px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #e64553; }");
+    cancelBtn->setStyleSheet(QString(
+        "QPushButton { background-color:%1; color:white; border:none; border-radius:6px; padding:8px 18px; font-weight:bold; }"
+        "QPushButton:hover { background-color:%2; }").arg(theme["danger"], theme["danger_hover"]));
 
     btnLayout->addWidget(execBtn);
     btnLayout->addWidget(yesAllBtn);
@@ -490,8 +503,7 @@ void MainWindow::openSettings() {
     if (dlg.exec() == QDialog::Accepted) {
         m_config = dlg.config();
         configSave(m_config);
-        qApp->setStyleSheet(appStyleSheet(makeTheme(m_config.themeMode, m_config.themeAccent), m_config.uiScale));
-        m_stopBtn->setFixedHeight(scaledSize(32, m_config.uiScale));
+        applyTheme();
         Tools::setUserAgent(m_config.userAgent);
         Tools::setTimeout(m_config.toolTimeout);
         loadChatList();

@@ -1,4 +1,5 @@
 #pragma once
+#include "themehelper.h"
 #include <QWidget>
 #include <QTextEdit>
 #include <QPushButton>
@@ -13,6 +14,7 @@ class ChatInputWidget : public QWidget {
     Q_OBJECT
 public:
     explicit ChatInputWidget(QWidget* parent = nullptr);
+    void applyTheme(const Theme& theme, int scale = 100);
 
 signals:
     void messageSent(const QString& text, const QStringList& images);
@@ -29,6 +31,9 @@ private:
     bool isImageFile(const QString& path) const;
     bool isTextFile(const QString& path) const;
 
+    Theme m_theme;
+    int m_scale = 100;
+
     InputEdit* m_edit;
     QPushButton* m_attachBtn;
     QWidget* m_chipsRow;
@@ -41,6 +46,7 @@ class InputEdit : public QTextEdit {
     Q_OBJECT
 public:
     explicit InputEdit(QWidget* parent = nullptr);
+    void applyTheme(const Theme& theme, int scale = 100);
 
 signals:
     void submitPressed();

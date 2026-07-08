@@ -1,4 +1,5 @@
 #include "chatinput.h"
+#include "themehelper.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFileDialog>
@@ -19,13 +20,20 @@ InputEdit::InputEdit(QWidget* parent) : QTextEdit(parent) {
     font.setPointSize(10);
     setFont(font);
     setPlaceholderText("Type a message... (Enter to send, Shift+Enter for new line)");
-    setMaximumHeight(60);
-    setMinimumHeight(40);
-    setStyleSheet(
-        "QTextEdit { background: #fff; color: #1e1e2e; border: 1px solid #ccc; "
-        "border-radius: 8px; padding: 6px 10px; }"
-        "QTextEdit:focus { border-color: #89b4fa; }");
+    applyTheme(makeTheme("system", "default"), 100);
     installEventFilter(this);
+}
+
+void InputEdit::applyTheme(const Theme& theme, int scale) {
+    auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    font.setPointSize(scaledFont(10, scale));
+    setFont(font);
+    setMaximumHeight(scaledSize(60, scale));
+    setMinimumHeight(scaledSize(40, scale));
+    setStyleSheet(QString(R"(
+QTextEdit { background-color:%1; color:%2; border:1px solid %3; border-radius:8px; padding:6px 10px; }
+QTextEdit:focus { border-color:%4; }
+)" ).arg(theme["input_bg"], theme["input_fg"], theme["border"], theme["focus"]));
 }
 
 void InputEdit::insertFromMimeData(const QMimeData* source) {
@@ -65,6 +73,7 @@ bool InputEdit::eventFilter(QObject* obj, QEvent* event) {
 // ── ChatInputWidget ────────────────────────────────────────────────
 
 ChatInputWidget::ChatInputWidget(QWidget* parent) : QWidget(parent) {
+    m_theme = makeTheme("system", "default");
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
@@ -87,9 +96,7 @@ ChatInputWidget::ChatInputWidget(QWidget* parent) : QWidget(parent) {
     m_attachBtn = new QPushButton("📎");
     m_attachBtn->setFixedSize(32, 32);
     m_attachBtn->setToolTip("Attach a file (text or image)");
-    m_attachBtn->setStyleSheet(
-        "QPushButton { background: transparent; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; }"
-        "QPushButton:hover { background: #f0f0f0; }");
+    // Styled by applyTheme().
     connect(m_attachBtn, &QPushButton::clicked, this, &ChatInputWidget::pickFile);
     rowLayout->addWidget(m_attachBtn);
 
@@ -99,6 +106,18 @@ ChatInputWidget::ChatInputWidget(QWidget* parent) : QWidget(parent) {
     rowLayout->addWidget(m_edit);
 
     layout->addWidget(inputRow);
+}
+
+void ChatInputWidget::applyTheme(const Theme& theme, int scale) {
+    m_theme = theme;
+    m_scale = scale;
+    if (m_edit) m_edit->applyTheme(theme, scale);
+    if (m_attachBtn) {
+        m_attachBtn->setStyleSheet(QString(R"(
+QPushButton { background:transparent; color:%1; border:1px solid %2; border-radius:6px; font-size:16px; }
+QPushButton:hover { background:%3; }
+)" ).arg(theme["fg"], theme["border"], theme["hover"]));
+    }
 }
 
 bool ChatInputWidget::isImageFile(const QString& path) const {
@@ -171,7 +190,7 @@ void ChatInputWidget::onImagePasted(const QString& path) {
 
 void ChatInputWidget::addChip(const QString& path) {
     auto* chip = new QWidget;
-    chip->setStyleSheet("background:#e8f0fe; border:1px solid #c0d0f0; border-radius:4px;");
+    chip->setStyleSheet(QString("background:%1; border:1px solid %2; border-radius:4px;").arg(m_theme["selection"], m_theme["border"]));
     auto* chipLayout = new QHBoxLayout(chip);
     chipLayout->setContentsMargins(5, 2, 3, 2);
     chipLayout->setSpacing(3);
@@ -179,14 +198,14 @@ void ChatInputWidget::addChip(const QString& path) {
     QString icon = isImageFile(path) ? "🖼" : "📄";
     QString fname = path.section('/', -1);
     auto* label = new QLabel(QString("%1 %2").arg(icon, fname));
-    label->setStyleSheet("font-size:11px; color:#333; border:none; background:transparent;");
+    label->setStyleSheet(QString("font-size:11px; color:%1; border:none; background:transparent;").arg(m_theme["fg"]));
     chipLayout->addWidget(label);
 
     auto* removeBtn = new QPushButton("✕");
     removeBtn->setFixedSize(14, 14);
-    removeBtn->setStyleSheet(
-        "QPushButton { background: transparent; border: none; color: #888; font-size: 9px; }"
-        "QPushButton:hover { color: #c00; }");
+    removeBtn->setStyleSheet(QString(
+        "QPushButton { background:transparent; border:none; color:%1; font-size:9px; }"
+        "QPushButton:hover { color:%2; }").arg(m_theme["muted"], m_theme["danger"]));
     QString pathCopy = path;
     connect(removeBtn, &QPushButton::clicked, this, [this, pathCopy, chip]() {
         removeChip(pathCopy, chip);

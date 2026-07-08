@@ -31,6 +31,7 @@ private slots:
 
 private:
     void setupUi();
+    void applyTheme();
     void loadChatList();
     void processResponse(const QJsonArray& messages);
     void handleToolConfirm(const QJsonObject& toolRequest);

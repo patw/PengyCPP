@@ -1,4 +1,5 @@
 #include "chathistory.h"
+#include "themehelper.h"
 #include "chatmanager.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -13,6 +14,7 @@
 #include <QRegularExpression>
 
 ChatHistoryWidget::ChatHistoryWidget(QWidget* parent) : QWidget(parent) {
+    m_theme = makeTheme("system", "default");
     setupUi();
 }
 
@@ -59,16 +61,16 @@ void ChatHistoryWidget::setupUi() {
     qsLayout->setSpacing(4);
 
     auto* statusRow = new QHBoxLayout;
-    auto* statusLabel = new QLabel("Status");
-    statusLabel->setStyleSheet("font-weight: bold; color: #000;");
-    statusRow->addWidget(statusLabel);
+    m_statusLabel = new QLabel("Status");
+    m_statusLabel->setStyleSheet(QString("font-weight: bold; color: %1;").arg(m_theme["fg"]));
+    statusRow->addWidget(m_statusLabel);
 
     m_statusDot = new QLabel("●");
-    m_statusDot->setStyleSheet("color: #a6e3a1; font-size: 14px;");
+    m_statusDot->setStyleSheet(QString("color: %1; font-size: 14px;").arg(m_theme["success_soft"]));
     statusRow->addWidget(m_statusDot);
 
     m_statusText = new QLabel("Idle");
-    m_statusText->setStyleSheet("color: #000;");
+    m_statusText->setStyleSheet(QString("color: %1;").arg(m_theme["fg"]));
     statusRow->addWidget(m_statusText);
     statusRow->addStretch();
     qsLayout->addLayout(statusRow);
@@ -78,15 +80,15 @@ void ChatHistoryWidget::setupUi() {
     qsLayout->addWidget(qsDivider);
 
     m_modelLabel = new QLabel("Model: gpt-4o");
-    m_modelLabel->setStyleSheet("color: #000;");
+    m_modelLabel->setStyleSheet(QString("color: %1;").arg(m_theme["fg"]));
     qsLayout->addWidget(m_modelLabel);
 
     m_confirmLabel = new QLabel("Tool Confirm: None");
-    m_confirmLabel->setStyleSheet("color: #000;");
+    m_confirmLabel->setStyleSheet(QString("color: %1;").arg(m_theme["fg"]));
     qsLayout->addWidget(m_confirmLabel);
 
     m_tokensLabel = new QLabel("Tokens: —");
-    m_tokensLabel->setStyleSheet("color: #000;");
+    m_tokensLabel->setStyleSheet(QString("color: %1;").arg(m_theme["fg"]));
     qsLayout->addWidget(m_tokensLabel);
 
     layout->addWidget(qsFrame);
@@ -94,10 +96,31 @@ void ChatHistoryWidget::setupUi() {
     m_blinkTimer = new QTimer(this);
     m_blinkTimer->setInterval(500);
     connect(m_blinkTimer, &QTimer::timeout, this, &ChatHistoryWidget::blinkDot);
+    applyTheme(m_theme, m_scale);
+}
+
+void ChatHistoryWidget::applyTheme(const Theme& theme, int scale) {
+    m_theme = theme;
+    m_scale = scale;
+    setStyleSheet(QString("ChatHistoryWidget { background-color:%1; color:%2; } QFrame { border-color:%3; }")
+                  .arg(theme["panel"], theme["fg"], theme["border"]));
+    if (m_chatList) {
+        m_chatList->setStyleSheet(QString(R"(
+QListWidget { background-color:%1; color:%2; border:1px solid %3; border-radius:6px; outline:none; }
+QListWidget::item { color:%2; padding:2px; border-radius:6px; }
+QListWidget::item:selected { background-color:%4; color:%2; }
+QListWidget::item:hover { background-color:%5; }
+)" ).arg(theme["panel"], theme["fg"], theme["border_soft"], theme["selection"], theme["hover"]));
+    }
+    if (m_statusLabel) m_statusLabel->setStyleSheet(QString("font-weight:bold; color:%1;").arg(theme["fg"]));
+    for (QLabel* label : {m_statusText, m_modelLabel, m_confirmLabel, m_tokensLabel}) {
+        if (label) label->setStyleSheet(QString("color:%1;").arg(theme["fg"]));
+    }
 }
 
 QWidget* ChatHistoryWidget::makeItemWidget(const QString& id, const QString& title) {
     auto* w = new QWidget;
+    w->setStyleSheet(QString("background-color:%1; color:%2;").arg(m_theme["panel"], m_theme["fg"]));
     auto* layout = new QHBoxLayout(w);
     layout->setContentsMargins(4, 2, 2, 2);
     layout->setSpacing(2);
@@ -106,15 +129,9 @@ QWidget* ChatHistoryWidget::makeItemWidget(const QString& id, const QString& tit
     label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     layout->addWidget(label, 1);
 
-    static const char* btnStyle =
-        "QPushButton {"
-        "  background-color: transparent;"
-        "  border: none;"
-        "  border-radius: 4px;"
-        "  font-size: 13px;"
-        "  padding: 0px;"
-        "}"
-        "QPushButton:hover { background-color: #cccccc; }";
+    QString btnStyle = QString(
+        "QPushButton { background-color:transparent; color:%1; border:none; border-radius:4px; font-size:13px; padding:0px; }"
+        "QPushButton:hover { background-color:%2; }").arg(m_theme["fg"], m_theme["hover"]);
 
     auto* saveBtn = new QPushButton("💾");
     saveBtn->setFixedSize(24, 24);
@@ -213,12 +230,12 @@ void ChatHistoryWidget::onItemClicked(QListWidgetItem* item) {
 void ChatHistoryWidget::setThinking(bool thinking) {
     if (thinking) {
         m_dotPhase = true;
-        m_statusDot->setStyleSheet("color: #f38ba8; font-size: 14px;");
+        m_statusDot->setStyleSheet(QString("color: %1; font-size: 14px;").arg(m_theme["danger"]));
         m_statusText->setText("Thinking…");
         m_blinkTimer->start();
     } else {
         m_blinkTimer->stop();
-        m_statusDot->setStyleSheet("color: #a6e3a1; font-size: 14px;");
+        m_statusDot->setStyleSheet(QString("color: %1; font-size: 14px;").arg(m_theme["success_soft"]));
         m_statusText->setText("Idle");
     }
 }
@@ -226,11 +243,11 @@ void ChatHistoryWidget::setThinking(bool thinking) {
 void ChatHistoryWidget::setToolRunning(bool running) {
     if (running) {
         m_blinkTimer->stop();
-        m_statusDot->setStyleSheet("color: #fab387; font-size: 14px;");
+        m_statusDot->setStyleSheet(QString("color: %1; font-size: 14px;").arg(m_theme["running"]));
         m_statusText->setText("Tool running");
     } else {
         m_dotPhase = true;
-        m_statusDot->setStyleSheet("color: #f38ba8; font-size: 14px;");
+        m_statusDot->setStyleSheet(QString("color: %1; font-size: 14px;").arg(m_theme["danger"]));
         m_statusText->setText("Thinking…");
         m_blinkTimer->start();
     }
@@ -238,7 +255,7 @@ void ChatHistoryWidget::setToolRunning(bool running) {
 
 void ChatHistoryWidget::blinkDot() {
     m_dotPhase = !m_dotPhase;
-    QString color = m_dotPhase ? "#f38ba8" : "transparent";
+    QString color = m_dotPhase ? m_theme["danger"] : "transparent";
     m_statusDot->setStyleSheet(QString("color: %1; font-size: 14px;").arg(color));
 }
 
