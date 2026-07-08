@@ -105,6 +105,8 @@ REM → Pengy-Windows\pengy.exe  (Qt DLLs bundled)
 - **Tool confirmation** — Three modes: YOLO (All) skips all confirmations, Safe auto-approves read-only tools, None confirms everything
 - **Context management** — Elide old tool results to save context window space; configurable per-chat
 - **Token usage display** — See prompt/completion token counts after every turn (GUI sidebar)
+- **Theme system** — System, light, and dark modes plus selectable accent colors; applied across the desktop UI with scaled markdown/code rendering
+- **Tasks system** — Reusable prompt templates for repeated workflows, with `%placeholder%` inputs collected at run time
 - **Model discovery** — Fetch available models from your endpoint with one click or `/models` command
 - **Multi-session** — Create, switch, and delete chat sessions; history saved locally as JSON; shared across all interfaces
 - **File attachments** — GUI: attach files from the input bar, paste images from clipboard; CLI: use `@path` inline syntax
@@ -113,15 +115,17 @@ REM → Pengy-Windows\pengy.exe  (Qt DLLs bundled)
 - **Web UI** — Responsive Bootstrap interface served by a lightweight QTcpServer; SSE live streaming; works great on mobile
 - **Slash commands** (CLI) — `/new`, `/load`, `/models`, `/yolo`, `/model`, `/list`, `/delete`, `/attach`, `/compact`, and more
 - **Templated system message** — Auto-fills `{date}`, `{username}`, `{hostname}`, `{osinfo}` at send time
-- **Persistent config** — Settings and chat history live in `~/.config/pengy/`, shared with all Pengy versions (Python, Rust, C++)
+- **Persistent config** — Settings, task templates, and chat history live in `~/.config/pengy/`, shared with all Pengy versions (Python, Rust, C++)
 - **Cross-version interop** — Chats created in Python Pengy or PengyR load seamlessly in PengyCPP, and vice versa
 - **Zero runtime dependencies** — Beyond system Qt6, no Python, no Rust, no third-party libraries required
 
 ---
 
-## Screenshot
+## Screenshots
 
-![PengyCPP Interface](screenshot.png)
+| Main chat UI | Settings / theme controls | Tasks templates |
+|---|---|---|
+| ![PengyCPP main chat UI](pengyui.png) | ![PengyCPP settings and theme controls](pengyconfig.png) | ![PengyCPP tasks template manager](pengytasks.png) |
 
 ---
 
@@ -138,7 +142,35 @@ REM → Pengy-Windows\pengy.exe  (Qt DLLs bundled)
 | Model | Model name, e.g. `gpt-4o`, `llama3`, `gemma` |
 | System Message | Supports `{date}`, `{username}`, `{hostname}`, `{osinfo}` placeholders |
 | Tool Confirmation | YOLO (All) / Safe Only / None — controls which tools require approval |
-| UI Scale (GUI) | 75 / 100 / 125 / 200 % — takes effect on next launch |
+| Theme Mode (GUI) | System / Light / Dark — System follows the OS palette |
+| Accent Color (GUI) | Default, Blue, Teal, Green, Orange, Red, Pink, or Purple |
+| UI Scale (GUI) | 75 / 100 / 125 / 150 / 175 / 200 % — restart for full native-widget scaling |
+
+---
+
+## Theme System
+
+The desktop UI includes a theme system built around two choices:
+
+- **Mode:** `System`, `Light`, or `Dark`. `System` follows the current OS/Qt palette.
+- **Accent:** `Default`, `Blue`, `Teal`, `Green`, `Orange`, `Red`, `Pink`, or `Purple`. The accent drives buttons, links, focus rings, selection colours, and other highlights.
+
+Theme settings are saved in `~/.config/pengy/settings.json` as `theme_mode`, `theme_accent`, and `ui_scale`, so they travel with the rest of your local Pengy configuration. The renderer also scales explicit markdown, code, and input fonts so the chat view tracks the configured UI scale instead of only resizing native widgets.
+
+---
+
+## Tasks
+
+Tasks are reusable prompt templates for workflows you repeat often — for example summarizing a YouTube video, drafting a release note, or running a standard code-review checklist. Open **Tasks** from the desktop sidebar to create, edit, delete, or play templates.
+
+A task has a title and a prompt template. Use `%placeholder%` tokens anywhere in the template to ask for values when the task is played:
+
+```text
+Summarize this YouTube video: %Youtube Video URL%
+Always use the youtube transcription skill.
+```
+
+When you click **▶ Play**, PengyCPP asks for each unique placeholder once, renders the final prompt, and sends it through the normal chat path so tools, skills, history, and confirmation settings all work exactly like a hand-written prompt. Tasks are stored locally in `~/.config/pengy/tasks.json` and are shared by the Python, Rust, and C++ editions.
 
 ---
 
@@ -203,6 +235,8 @@ PengyCPP is a **single CMake project** — no Rust, no Python, no FFI. All logic
 |--------|------|
 | `config` | Load/save `~/.config/pengy/settings.json`; render system message templates |
 | `chatmanager` | Chat CRUD, `~/.config/pengy/chats.json`, message cleaning, context elision |
+| `taskmanager` | Task template CRUD, `~/.config/pengy/tasks.json`, `%placeholder%` extraction/rendering |
+| `themehelper` | System/light/dark mode resolution, accent palette, UI-scale helpers, app stylesheet |
 | `tools` | 11 tools using `QFile`, `QProcess`, `QNetworkAccessManager`, `QDirIterator` |
 | `llmclient` | Blocking OpenAI-compatible chat loop via `QNetworkAccessManager` + local `QEventLoop` |
 | `chatworker` | Runs `LlmClient::run()` on a `QThread`; `QWaitCondition` for tool confirmation (zero-CPU wait) |
@@ -224,6 +258,7 @@ PengyCPP/
 ├── main.cpp                # Desktop GUI entry point
 ├── config.cpp/h            # Settings: ~/.config/pengy/settings.json
 ├── chatmanager.cpp/h       # Chats: ~/.config/pengy/chats.json
+├── taskmanager.cpp/h       # Tasks: ~/.config/pengy/tasks.json
 ├── tools.cpp/h             # 11 OpenAI function-calling tools
 ├── llmclient.cpp/h         # Blocking LLM chat loop (QNetworkAccessManager)
 ├── chatworker.cpp/h        # QThread worker + QWaitCondition confirmation
@@ -232,6 +267,8 @@ PengyCPP/
 ├── chatview.cpp/h          # Chat display — markdown, tables, collapsible tool blocks
 ├── chatinput.cpp/h         # Message input
 ├── settingsdialog.cpp/h    # Settings dialog + Fetch Models
+├── tasksdialog.cpp/h       # Task template manager/player
+├── themehelper.h           # Light/dark/accent theme helpers
 ├── cli/
 │   └── main.cpp            # Interactive REPL + single-shot mode
 ├── web/
@@ -261,6 +298,7 @@ PengyCPP/
 PengyCPP shares the same `~/.config/pengy/` directory as Python Pengy and PengyR:
 - **`settings.json`** — Same format, all versions read/write it
 - **`chats.json`** — Same message schema. Chats created in any version load in any other
+- **`tasks.json`** — Shared prompt-template library, including `%placeholder%` tokens
 
 ---
 
@@ -321,7 +359,7 @@ PengyCPP is the **highest-performance edition** of Pengy — smallest binary, lo
 | [**PengyR**](https://github.com/patw/PengyR) | Rust + Qt6 | High-performance native binary, statically-linked core |
 | [**PengyCPP**](https://github.com/patw/PengyCPP) | C++17 + Qt6 | Highest performance, smallest memory footprint, zero external dependencies |
 
-All three offer the same 11 tools, three interfaces (GUI/CLI/Web), and full chat interop.
+All three offer the same 11 tools, desktop theme controls, reusable task templates, three interfaces (GUI/CLI/Web), and full chat/task interop.
 
 ---
 
