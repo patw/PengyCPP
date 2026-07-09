@@ -24,7 +24,7 @@ void ChatView::applyTheme(const Theme& theme, int scale) {
     m_theme = theme;
     m_scale = scale;
     auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    font.setPointSize(scaledFont(10, scale));
+    font.setPointSizeF(scaledFont(10, scale));
     setFont(font);
     setStyleSheet(QString("QTextBrowser { background-color:%1; color:%2; border:none; padding:0; }")
                   .arg(m_theme["bg"], m_theme["fg"]));
@@ -34,12 +34,13 @@ void ChatView::applyTheme(const Theme& theme, int scale) {
 
 QString ChatView::buildCss() const {
     QString fixed = QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
-    int bodyPt = scaledFont(10, m_scale);
-    int labelPt = scaledFont(9, m_scale);
+    double bodyPt = scaledFont(10, m_scale);
+    double labelPt = scaledFont(9, m_scale);
     return QString(R"CSS(
 body { font-family:"%1"; font-size:%2pt; background-color:%3; color:%4; margin:8px; }
 a { color:%5; text-decoration:none; }
 pre { background-color:%15; color:%14; padding:10px; margin:6px 0; white-space:pre-wrap; word-wrap:break-word; }
+.code-lang { font-size:%9pt; color:%16; margin-bottom:2px; font-family:monospace; }
 table { border:1px solid %6; margin:6px 0; }
 th, td { border:1px solid %6; padding:4px 10px; }
 th { background-color:%7; font-weight:bold; }
@@ -270,8 +271,23 @@ QString ChatView::markdownToHtml(const QString& md) const {
     // ── Phase 2: markdown → HTML ─────────────────────────────────────
     // Convert ``` code blocks FIRST — prevents their contents from
     // being falsely matched by table / image / link regexes below.
-    static QRegularExpression codeBlockRx("```(\\w*)\\n([\\s\\S]*?)```");
-    result.replace(codeBlockRx, "<pre class='code-pre'><code>\\2</code></pre>");
+    static QRegularExpression codeBlockRx("```([A-Za-z0-9_+.-]*)\\n([\\s\\S]*?)```");
+    {
+        QList<QRegularExpressionMatch> matches;
+        QRegularExpressionMatchIterator it = codeBlockRx.globalMatch(result);
+        while (it.hasNext()) matches.append(it.next());
+        for (int i = matches.size() - 1; i >= 0; --i) {
+            const QRegularExpressionMatch& m = matches[i];
+            QString lang = m.captured(1).trimmed();
+            QString code = m.captured(2);
+            QString html;
+            if (!lang.isEmpty()) {
+                html += "<div class='code-lang'>" + lang + "</div>";
+            }
+            html += "<pre><code>" + highlightCode(code, lang) + "</code></pre>";
+            result.replace(m.capturedStart(), m.capturedLength(), html);
+        }
+    }
 
     // Inline code BEFORE image/link so `![not-an-image](url)` is safe
     static QRegularExpression inlineCodeRx("`([^`]+)`");
@@ -304,6 +320,9 @@ QString ChatView::markdownToHtml(const QString& md) const {
         }
     }
 
+    // Lists, blockquotes, and horizontal rules
+    result = convertMarkdownBlocks(result);
+
     // **bold** and *italic*
     static QRegularExpression boldRx("\\*\\*(.+?)\\*\\*");
     result.replace(boldRx, "<b>\\1</b>");
@@ -334,6 +353,186 @@ QString ChatView::markdownToHtml(const QString& md) const {
     return result;
 }
 
+QString ChatView::convertMarkdownBlocks(const QString& html) const {
+    QStringList lines = html.split('\n');
+    QStringList out;
+    bool inUl = false;
+    bool inOl = false;
+    bool inBlockquote = false;
+    bool inPre = false;
+
+    auto closeLists = [&]() {
+        if (inUl) { out.append("</ul>"); inUl = false; }
+        if (inOl) { out.append("</ol>"); inOl = false; }
+    };
+    auto closeBlockquote = [&]() {
+        if (inBlockquote) { out.append("</blockquote>"); inBlockquote = false; }
+    };
+
+    static QRegularExpression ulRx("^\\s*[-+]\\s+(.+)$");
+    static QRegularExpression starUlRx("^\\s*\\*\\s+(.+)$");
+    static QRegularExpression olRx("^\\s*\\d+[\\.)]\\s+(.+)$");
+    static QRegularExpression bqRx("^\\s*&gt;\\s?(.*)$");
+    static QRegularExpression hrRx("^\\s*(?:-{3,}|\\*{3,}|_{3,})\\s*$");
+
+    for (const QString& rawLine : lines) {
+        QString trimmed = rawLine.trimmed();
+
+        if (rawLine.contains("<pre")) inPre = true;
+        if (inPre) {
+            closeLists();
+            closeBlockquote();
+            out.append(rawLine);
+            if (rawLine.contains("</pre>")) inPre = false;
+            continue;
+        }
+
+        if (trimmed.isEmpty()) {
+            closeLists();
+            closeBlockquote();
+            out.append(rawLine);
+            continue;
+        }
+
+        QRegularExpressionMatch bq = bqRx.match(rawLine);
+        if (bq.hasMatch()) {
+            closeLists();
+            if (!inBlockquote) {
+                out.append("<blockquote>");
+                inBlockquote = true;
+            } else {
+                out.append("<br>");
+            }
+            out.append(bq.captured(1));
+            continue;
+        }
+
+        QRegularExpressionMatch ol = olRx.match(rawLine);
+        if (ol.hasMatch()) {
+            closeBlockquote();
+            if (inUl) { out.append("</ul>"); inUl = false; }
+            if (!inOl) { out.append("<ol>"); inOl = true; }
+            out.append("<li>" + ol.captured(1) + "</li>");
+            continue;
+        }
+
+        QRegularExpressionMatch ul = ulRx.match(rawLine);
+        if (!ul.hasMatch()) ul = starUlRx.match(rawLine);
+        if (ul.hasMatch()) {
+            closeBlockquote();
+            if (inOl) { out.append("</ol>"); inOl = false; }
+            if (!inUl) { out.append("<ul>"); inUl = true; }
+            out.append("<li>" + ul.captured(1) + "</li>");
+            continue;
+        }
+
+        if (hrRx.match(rawLine).hasMatch()) {
+            closeLists();
+            closeBlockquote();
+            out.append("<hr>");
+            continue;
+        }
+
+        closeLists();
+        closeBlockquote();
+        out.append(rawLine);
+    }
+
+    closeLists();
+    closeBlockquote();
+    return out.join("\n");
+}
+
+QString ChatView::highlightCode(const QString& code, const QString& lang) const {
+    static const QMap<QString, QString> aliases = {
+        {"py","python"}, {"python3","python"},
+        {"js","javascript"}, {"jsx","javascript"}, {"ts","javascript"}, {"tsx","javascript"}, {"typescript","javascript"}, {"node","javascript"}, {"mjs","javascript"},
+        {"c++","cpp"}, {"cc","cpp"}, {"cxx","cpp"}, {"hpp","cpp"}, {"h","c"},
+        {"rs","rust"},
+        {"sh","shell"}, {"bash","shell"}, {"zsh","shell"},
+        {"rb","ruby"},
+        {"golang","go"},
+    };
+    QString family = lang.trimmed().toLower();
+    if (aliases.contains(family)) family = aliases.value(family);
+
+    static const QMap<QString, QStringList> keywordSets = {
+        {"python", {"def","class","return","if","elif","else","for","while","in","not","and","or","is","import","from","as","with","try","except","finally","raise","yield","lambda","pass","break","continue","global","nonlocal","assert","del","None","True","False","async","await"}},
+        {"javascript", {"function","return","if","else","for","while","in","of","var","let","const","new","class","extends","import","export","from","as","try","catch","finally","throw","typeof","instanceof","null","undefined","true","false","async","await","switch","case","default","break","continue","this","super","yield","delete","void"}},
+        {"c", {"int","char","float","double","void","if","else","for","while","do","switch","case","default","break","continue","return","struct","union","enum","typedef","static","const","extern","sizeof","unsigned","signed","long","short","goto","volatile"}},
+        {"cpp", {"int","char","float","double","void","bool","if","else","for","while","do","switch","case","default","break","continue","return","class","struct","union","enum","typedef","namespace","using","template","typename","public","private","protected","virtual","override","new","delete","this","static","const","constexpr","auto","nullptr","true","false","try","catch","throw","friend","operator","inline","explicit","sizeof","unsigned","signed","long","short"}},
+        {"rust", {"fn","let","mut","if","else","match","for","while","loop","in","return","struct","enum","impl","trait","pub","use","mod","crate","self","Self","super","as","ref","move","dyn","where","async","await","unsafe","const","static","true","false","break","continue","type"}},
+        {"java", {"public","private","protected","class","interface","extends","implements","static","final","void","int","long","short","byte","char","float","double","boolean","if","else","for","while","do","switch","case","default","break","continue","return","new","this","super","try","catch","finally","throw","throws","import","package","true","false","null","enum","abstract","synchronized"}},
+        {"go", {"func","package","import","var","const","type","struct","interface","if","else","for","range","return","switch","case","default","break","continue","go","defer","chan","select","map","nil","true","false","make","new"}},
+        {"shell", {"if","then","else","elif","fi","for","while","do","done","case","esac","function","return","export","local","exit","in","break","continue"}},
+        {"sql", {"select","from","where","insert","update","delete","create","table","drop","alter","join","left","right","inner","outer","on","group","by","order","having","as","and","or","not","null","values","into","set","distinct","limit","union","in","exists","between","like"}},
+        {"ruby", {"def","end","if","elsif","else","unless","while","until","for","in","do","class","module","return","yield","begin","rescue","ensure","raise","require","true","false","nil","self","new"}},
+        {"php", {"function","return","if","else","elseif","for","foreach","while","do","switch","case","default","break","continue","class","interface","extends","implements","public","private","protected","static","new","echo","print","true","false","null","namespace","use","try","catch","finally","throw"}},
+    };
+
+    static const QMap<QString, QString> commentStyle = {
+        {"python","#"}, {"shell","#"}, {"ruby","#"},
+        {"javascript","//"}, {"c","//"}, {"cpp","//"}, {"rust","//"}, {"java","//"}, {"go","//"}, {"php","//"},
+        {"sql","--"},
+    };
+
+    // Build one alternation pattern in priority order (comment > strings > numbers >
+    // keywords) and remember which role each capture group maps to, so a single
+    // left-to-right pass never re-highlights text already claimed by an earlier group.
+    QStringList altParts;
+    QList<QString> roles;
+
+    QString cstyle = commentStyle.value(family);
+    if (cstyle == "#") {
+        altParts << "(#[^\\n]*)";
+        roles << "comment";
+    } else if (cstyle == "//") {
+        altParts << "(/\\*[\\s\\S]*?\\*/|//[^\\n]*)";
+        roles << "comment";
+    } else if (cstyle == "--") {
+        altParts << "(--[^\\n]*)";
+        roles << "comment";
+    }
+
+    // code has already been through QString::toHtmlEscaped(), so a literal "
+    // is &quot; — match the entity, not the character.
+    altParts << "(&quot;(?:[^&]|&(?!quot;))*&quot;)";
+    roles << "string";
+    altParts << "('(?:[^'\\\\]|\\\\.)*')";
+    roles << "string";
+    altParts << "(\\b\\d+(?:\\.\\d+)?\\b)";
+    roles << "number";
+
+    QStringList kws = keywordSets.value(family);
+    if (!kws.isEmpty()) {
+        altParts << ("(\\b(?:" + kws.join('|') + ")\\b)");
+        roles << "keyword";
+    }
+
+    QRegularExpression rx(altParts.join('|'));
+    bool lightMode = (m_theme["mode"] != "dark");
+
+    QString out;
+    int last = 0;
+    QRegularExpressionMatchIterator it = rx.globalMatch(code);
+    while (it.hasNext()) {
+        QRegularExpressionMatch m = it.next();
+        out += code.mid(last, m.capturedStart() - last);
+        QString role;
+        for (int g = 1; g <= roles.size(); ++g) {
+            if (m.capturedStart(g) != -1) { role = roles[g - 1]; break; }
+        }
+        QString color = m_theme.c.value("syntax_" + role, m_theme["fg"]);
+        QString style;
+        if (role == "comment" && lightMode) style = "font-style:italic;";
+        if (role == "keyword" && lightMode) style += "font-weight:bold;";
+        out += "<span style='color:" + color + ";" + style + "'>" + m.captured(0) + "</span>";
+        last = m.capturedStart() + m.capturedLength();
+    }
+    out += code.mid(last);
+    return out;
+}
+
 QString ChatView::paragraphize(const QString& html) const {
     QStringList parts = html.split("\n\n");
     for (int i = 0; i < parts.size(); ++i) {
@@ -345,7 +544,8 @@ QString ChatView::paragraphize(const QString& html) const {
                     || p.startsWith("<h3")  || p.startsWith("<h4")
                     || p.startsWith("<ul")  || p.startsWith("<ol")
                     || p.startsWith("<li")  || p.startsWith("<blockquote")
-                    || p.startsWith("<img")  || p.startsWith("<video")
+                    || p.startsWith("<hr")  || p.startsWith("<img")
+                    || p.startsWith("<video")
                     || p.startsWith("<svg");
         if (!isBlock) {
             p.replace("\n", "<br>");

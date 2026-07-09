@@ -52,9 +52,9 @@ inline Theme makeTheme(const QString& mode, const QString& accent) {
     if (resolved != "light" && resolved != "dark") resolved = isDarkSystemPalette() ? "dark" : "light";
     Theme t;
     if (resolved == "dark") {
-        t.c = {{"mode","dark"},{"bg","#1e1e2e"},{"fg","#cdd6f4"},{"panel","#181825"},{"panel_2","#313244"},{"panel_3","#45475a"},{"input_bg","#11111b"},{"input_fg","#cdd6f4"},{"border","#45475a"},{"border_soft","#313244"},{"muted","#a6adc8"},{"code_bg","#11111b"},{"code_fg","#cdd6f4"},{"hover","#313244"},{"selection","#25324a"},{"tool_bg","#181825"},{"tool_arg_bg","#11111b"},{"user_label","#89b4fa"},{"assistant_label","#a6e3a1"},{"pygments_style","monokai"}};
+        t.c = {{"mode","dark"},{"bg","#1e1e2e"},{"fg","#cdd6f4"},{"panel","#181825"},{"panel_2","#313244"},{"panel_3","#45475a"},{"input_bg","#11111b"},{"input_fg","#cdd6f4"},{"border","#45475a"},{"border_soft","#313244"},{"muted","#a6adc8"},{"code_bg","#11111b"},{"code_fg","#cdd6f4"},{"hover","#313244"},{"selection","#25324a"},{"tool_bg","#181825"},{"tool_arg_bg","#11111b"},{"user_label","#89b4fa"},{"assistant_label","#a6e3a1"},{"pygments_style","monokai"},{"syntax_keyword","#66d9ef"},{"syntax_string","#e6db74"},{"syntax_comment","#959077"},{"syntax_number","#ae81ff"}};
     } else {
-        t.c = {{"mode","light"},{"bg","#ffffff"},{"fg","#1e1e2e"},{"panel","#f8f9fb"},{"panel_2","#f0f2f5"},{"panel_3","#e8edf5"},{"input_bg","#ffffff"},{"input_fg","#1e1e2e"},{"border","#c9ced6"},{"border_soft","#dde2ea"},{"muted","#667085"},{"code_bg","#f5f7fa"},{"code_fg","#27313f"},{"hover","#edf2fa"},{"selection","#e8f0fe"},{"tool_bg","#fafbfc"},{"tool_arg_bg","#f0f2f5"},{"user_label","#0b3d91"},{"assistant_label","#0f6b3f"},{"pygments_style","friendly"}};
+        t.c = {{"mode","light"},{"bg","#ffffff"},{"fg","#1e1e2e"},{"panel","#f8f9fb"},{"panel_2","#f0f2f5"},{"panel_3","#e8edf5"},{"input_bg","#ffffff"},{"input_fg","#1e1e2e"},{"border","#c9ced6"},{"border_soft","#dde2ea"},{"muted","#667085"},{"code_bg","#f5f7fa"},{"code_fg","#27313f"},{"hover","#edf2fa"},{"selection","#e8f0fe"},{"tool_bg","#fafbfc"},{"tool_arg_bg","#f0f2f5"},{"user_label","#0b3d91"},{"assistant_label","#0f6b3f"},{"pygments_style","friendly"},{"syntax_keyword","#007020"},{"syntax_string","#4070a0"},{"syntax_comment","#60a0b0"},{"syntax_number","#40a070"}};
     }
 
     QMap<QString, QString> primary = {{"default","#1e66f5"},{"blue","#1e66f5"},{"teal","#179299"},{"green","#40a02b"},{"orange","#df8e1d"},{"red","#d20f39"},{"pink","#ea76cb"},{"purple","#8839ef"}};
@@ -77,8 +77,24 @@ inline Theme makeTheme(const QString& mode, const QString& accent) {
     return t;
 }
 
-inline int scaledSize(int px, int scale) { return qMax(1, qRound(px * qBound(50, scale, 300) / 100.0)); }
-inline int scaledFont(int pt, int scale) { return qMax(1, qRound(pt * qBound(50, scale, 300) / 100.0)); }
+// main.cpp bakes ui_scale into QT_SCALE_FACTOR at launch, which makes Qt natively
+// scale every logical pixel (fonts and widget geometry alike) for the whole app.
+// scaledSize()/scaledFont() must divide that back out, or a value already covered
+// by QT_SCALE_FACTOR gets multiplied again here. Before a restart QT_SCALE_FACTOR
+// still reflects the old setting, so this correctly yields a live-preview delta;
+// after a restart it collapses to a no-op once the two agree.
+inline double dpiScaleAlreadyApplied() {
+    bool ok = false;
+    double v = qEnvironmentVariable("QT_SCALE_FACTOR").toDouble(&ok);
+    return (ok && v > 0) ? v : 1.0;
+}
+
+inline int scaledSize(int px, int scale) {
+    return qMax(1, qRound(px * (qBound(50, scale, 300) / 100.0) / dpiScaleAlreadyApplied()));
+}
+inline double scaledFont(int pt, int scale) {
+    return qMax(1.0, pt * (qBound(50, scale, 300) / 100.0) / dpiScaleAlreadyApplied());
+}
 
 inline QString appStyleSheet(const Theme& t, int scale) {
     int padV = scaledSize(5, scale), padH = scaledSize(10, scale);

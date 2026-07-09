@@ -26,7 +26,7 @@ InputEdit::InputEdit(QWidget* parent) : QTextEdit(parent) {
 
 void InputEdit::applyTheme(const Theme& theme, int scale) {
     auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    font.setPointSize(scaledFont(10, scale));
+    font.setPointSizeF(scaledFont(10, scale));
     setFont(font);
     setMaximumHeight(scaledSize(60, scale));
     setMinimumHeight(scaledSize(40, scale));
@@ -94,7 +94,7 @@ ChatInputWidget::ChatInputWidget(QWidget* parent) : QWidget(parent) {
     rowLayout->setSpacing(4);
 
     m_attachBtn = new QPushButton("📎");
-    m_attachBtn->setFixedSize(32, 32);
+    m_attachBtn->setFixedSize(36, 36);
     m_attachBtn->setToolTip("Attach a file (text or image)");
     // Styled by applyTheme().
     connect(m_attachBtn, &QPushButton::clicked, this, &ChatInputWidget::pickFile);
@@ -113,6 +113,8 @@ void ChatInputWidget::applyTheme(const Theme& theme, int scale) {
     m_scale = scale;
     if (m_edit) m_edit->applyTheme(theme, scale);
     if (m_attachBtn) {
+        int sz = scaledSize(36, scale);
+        m_attachBtn->setFixedSize(sz, sz);
         m_attachBtn->setStyleSheet(QString(R"(
 QPushButton { background:transparent; color:%1; border:1px solid %2; border-radius:6px; font-size:16px; }
 QPushButton:hover { background:%3; }

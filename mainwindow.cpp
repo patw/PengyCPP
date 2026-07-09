@@ -85,13 +85,16 @@ void MainWindow::setupUi() {
     inputLayout->addWidget(m_chatInput);
     inputLayout->addWidget(m_stopBtn);
 
+    auto* leftSplitter = new QSplitter(Qt::Vertical);
+    leftSplitter->addWidget(m_chatHistory);
+
     auto* rightPane = new QSplitter(Qt::Vertical);
     rightPane->addWidget(m_chatView);
     rightPane->addWidget(inputRow);
     rightPane->setStretchFactor(0, 1);
 
     auto* mainSplitter = new QSplitter(Qt::Horizontal);
-    mainSplitter->addWidget(m_chatHistory);
+    mainSplitter->addWidget(leftSplitter);
     mainSplitter->addWidget(rightPane);
     mainSplitter->setStretchFactor(0, 0);
     mainSplitter->setStretchFactor(1, 1);
@@ -383,7 +386,7 @@ void MainWindow::handleToolConfirm(const QJsonObject& req) {
     QDialog dlg(this);
     dlg.setWindowTitle("Confirm Tool: " + req["name"].toString());
     dlg.setModal(true);
-    dlg.resize(480, 300);
+    dlg.resize(480, 320);
     dlg.setStyleSheet(appStyleSheet(theme, m_config.uiScale));
 
     auto* layout = new QVBoxLayout(&dlg);

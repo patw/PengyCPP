@@ -35,6 +35,8 @@ private:
     QString renderToolBlock(const QJsonObject& msg) const;
     QString markdownToHtml(const QString& md) const;
     QString convertMarkdownTables(const QString& md) const;
+    QString convertMarkdownBlocks(const QString& html) const;
+    QString highlightCode(const QString& code, const QString& lang) const;
     QString paragraphize(const QString& html) const;
     QString escapeHtml(const QString& text) const;
     void    fetchImage(const QString& url);

@@ -31,21 +31,25 @@ private:
 class TaskEditDialog : public QDialog {
     Q_OBJECT
 public:
-    explicit TaskEditDialog(const QJsonObject& task = {}, QWidget* parent = nullptr);
+    explicit TaskEditDialog(const QJsonObject& task, const Theme& theme, QWidget* parent = nullptr);
     QString title() const;
     QString templ() const;
 private:
     void acceptIfValid();
+    void applyTheme();
     QLineEdit* m_title;
     QPlainTextEdit* m_template;
+    Theme m_theme;
 };
 
 class PlaceholderDialog : public QDialog {
     Q_OBJECT
 public:
-    explicit PlaceholderDialog(const QStringList& placeholders, QWidget* parent = nullptr);
+    explicit PlaceholderDialog(const QStringList& placeholders, const Theme& theme, QWidget* parent = nullptr);
     QMap<QString, QString> values() const;
 private:
     void acceptIfValid();
+    void applyTheme();
     QMap<QString, QLineEdit*> m_inputs;
+    Theme m_theme;
 };

@@ -64,7 +64,7 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     form->addRow("User Agent:", m_userAgent);
 
     m_systemMsg = new QTextEdit(cfg.systemMessage);
-    m_systemMsg->setMaximumHeight(80);
+    m_systemMsg->setMaximumHeight(100);
     form->addRow("System Message:", m_systemMsg);
 
     m_toolConfirm = new QComboBox;
@@ -80,7 +80,7 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     form->addRow("Tool Confirmation:", m_toolConfirm);
 
     m_reasoningEffort = new QComboBox;
-    m_reasoningEffort->addItem("Provider default — do not send", "");
+    m_reasoningEffort->addItem("Provider default — do not send reasoning option", "");
     m_reasoningEffort->addItem("Off / none", "none");
     m_reasoningEffort->addItem("Minimal", "minimal");
     m_reasoningEffort->addItem("Low", "low");
@@ -106,7 +106,7 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     m_contextKeep->setRange(0, 999);
     m_contextKeep->setSpecialValueText("Keep all");
     m_contextKeep->setSuffix(" turns");
-    m_contextKeep->setToolTip("Tool results older than this many turns are elided. 0 = keep all.");
+    m_contextKeep->setToolTip("Tool results older than this many turns are elided to save context window. 0 = keep all.");
     m_contextKeep->setValue(cfg.contextKeepTurns);
     form->addRow("Keep tool results:", m_contextKeep);
 
@@ -118,7 +118,7 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
         if (scales[i] == cfg.uiScale) idx = i;
     }
     m_uiScale->setCurrentIndex(idx);
-    form->addRow("UI Scale (restart to apply):", m_uiScale);
+    form->addRow("UI Scale (restart for full UI):", m_uiScale);
 
     m_themeMode = new WidePopupComboBox;
     m_themeMode->addItem("System", "system");
