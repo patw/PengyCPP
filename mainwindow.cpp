@@ -331,23 +331,26 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
         QString     content = event["content"].toString();
         QJsonObject usage   = event["usage"].toObject();
 
-        QJsonObject asstMsg = event["message"].toObject();
-        if (asstMsg.isEmpty()) {
-            asstMsg["role"]    = "assistant";
-            asstMsg["content"] = content;
-        }
-        QJsonArray messages = m_currentChat["messages"].toArray();
-        messages.append(asstMsg);
-        m_currentChat["messages"] = messages;
+        if (!content.isEmpty()) {
+            QJsonObject asstMsg = event["message"].toObject();
+            if (asstMsg.isEmpty()) {
+                asstMsg["role"]    = "assistant";
+                asstMsg["content"] = content;
+            }
+            QJsonArray messages = m_currentChat["messages"].toArray();
+            messages.append(asstMsg);
+            m_currentChat["messages"] = messages;
 
-        m_chatView->appendMessageText("assistant", content);
+            m_chatView->appendMessageText("assistant", content);
+
+            chatSave(m_currentChat);
+            loadChatList();
+        }
+
         m_chatHistory->setThinking(false);
         m_chatHistory->updateTokenUsage(
             usage["prompt_tokens"].toInt(),
             usage["completion_tokens"].toInt());
-
-        chatSave(m_currentChat);
-        loadChatList();
 
     } else if (type == "tool_request") {
         m_chatView->appendMessage("tool_request", event);
