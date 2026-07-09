@@ -534,27 +534,86 @@ QString ChatView::highlightCode(const QString& code, const QString& lang) const 
 }
 
 QString ChatView::paragraphize(const QString& html) const {
-    QStringList parts = html.split("\n\n");
-    for (int i = 0; i < parts.size(); ++i) {
-        QString p = parts[i].trimmed();
-        if (p.isEmpty()) continue;
-        bool isBlock = p.startsWith("<table") || p.startsWith("<pre")
-                    || p.startsWith("<div")  || p.startsWith("<p")
-                    || p.startsWith("<h1")  || p.startsWith("<h2")
-                    || p.startsWith("<h3")  || p.startsWith("<h4")
-                    || p.startsWith("<ul")  || p.startsWith("<ol")
-                    || p.startsWith("<li")  || p.startsWith("<blockquote")
-                    || p.startsWith("<hr")  || p.startsWith("<img")
-                    || p.startsWith("<video")
-                    || p.startsWith("<svg");
-        if (!isBlock) {
-            p.replace("\n", "<br>");
-            parts[i] = "<p>" + p + "</p>";
+    QStringList lines = html.split('\n');
+    QStringList result;
+    QStringList currentPara;
+    bool inBlock = false;
+    int blockDepth = 0;
+
+    // Block-level tags that should never be wrapped in <p> or have <br> injected
+    static const QStringList blockTags = {
+        "table", "pre", "div", "p", "h1", "h2", "h3", "h4",
+        "ul", "ol", "li", "blockquote", "hr", "img", "video", "svg"
+    };
+
+    // Pre-compile regexes for matching opening and closing block tags
+    static QRegularExpression openRx("^<(" + blockTags.join('|') + R"()[\s>/])");
+    static QRegularExpression countOpenRx("<(" + blockTags.join('|') + R"()[\s>])");
+    static QRegularExpression countCloseRx("</(" + blockTags.join('|') + R"()\s*>)");
+
+    for (const QString& line : lines) {
+        QString stripped = line.trimmed();
+
+        if (!inBlock) {
+            if (openRx.match(stripped).hasMatch()) {
+                // Transition from text to block — flush current paragraph first
+                if (!currentPara.isEmpty()) {
+                    QString text = currentPara.join('\n').trimmed();
+                    if (!text.isEmpty()) {
+                        text.replace('\n', "<br>");
+                        result.append("<p>" + text + "</p>");
+                    }
+                    currentPara.clear();
+                }
+                inBlock = true;
+                int opens = 0;
+                auto it = countOpenRx.globalMatch(stripped);
+                while (it.hasNext()) { it.next(); opens++; }
+                int closes = 0;
+                it = countCloseRx.globalMatch(stripped);
+                while (it.hasNext()) { it.next(); closes++; }
+                blockDepth = opens - closes;
+                result.append(line);
+            } else if (stripped.isEmpty()) {
+                // Blank line — flush current paragraph
+                if (!currentPara.isEmpty()) {
+                    QString text = currentPara.join('\n').trimmed();
+                    if (!text.isEmpty()) {
+                        text.replace('\n', "<br>");
+                        result.append("<p>" + text + "</p>");
+                    }
+                    currentPara.clear();
+                }
+            } else {
+                currentPara.append(line);
+            }
         } else {
-            parts[i] = p;
+            // Inside a block — append verbatim, track depth
+            result.append(line);
+            int opens = 0;
+            auto it = countOpenRx.globalMatch(stripped);
+            while (it.hasNext()) { it.next(); opens++; }
+            int closes = 0;
+            it = countCloseRx.globalMatch(stripped);
+            while (it.hasNext()) { it.next(); closes++; }
+            blockDepth += opens - closes;
+            if (blockDepth <= 0) {
+                inBlock = false;
+                blockDepth = 0;
+            }
         }
     }
-    return parts.join("\n");
+
+    // Flush remaining paragraph
+    if (!currentPara.isEmpty()) {
+        QString text = currentPara.join('\n').trimmed();
+        if (!text.isEmpty()) {
+            text.replace('\n', "<br>");
+            result.append("<p>" + text + "</p>");
+        }
+    }
+
+    return result.join('\n');
 }
 
 QString ChatView::convertMarkdownTables(const QString& md) const {

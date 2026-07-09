@@ -21,9 +21,9 @@ struct HttpRequest {
 class WebServer : public QObject {
     Q_OBJECT
 public:
-    explicit WebServer(quint16 port, QObject* parent = nullptr);
+    explicit WebServer(const QString& host, quint16 port, QObject* parent = nullptr);
     bool start();
-    quint16 port() const;
+    quint16 port() const { return m_server->serverPort(); }
 
 private slots:
     void onNewConnection();
@@ -31,6 +31,7 @@ private slots:
     void onSocketDisconnected();
 
 private:
+    QString     m_host;
     quint16     m_port;
     QTcpServer* m_server;
 

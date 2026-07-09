@@ -255,6 +255,8 @@ The Web binary (`pengy_web [port]`) runs a `QTcpServer` HTTP server (default por
 ```bash
 pengy_web                            # localhost:5000
 pengy_web 8080                       # custom port
+pengy_web --host 0.0.0.0 --port 8080 # expose beyond localhost
+pengy_web -h                         # help
 ```
 
 ### Layout
@@ -293,6 +295,7 @@ pengy_web 8080                       # custom port
 | POST | `/chat/:id/sudo` | Provide sudo password to blocked worker |
 | POST | `/chat/:id/delete` | Delete chat and redirect to index |
 | GET/POST | `/settings` | View/update all config fields |
+| POST | `/chat/:id/stop` | Cancel running generation for a chat |
 
 ### SSE Event Types
 

@@ -10,18 +10,19 @@
 #include <QUrl>
 #include <QTextStream>
 
-WebServer::WebServer(quint16 port, QObject* parent)
-    : QObject(parent), m_port(port),
+WebServer::WebServer(const QString& host, quint16 port, QObject* parent)
+    : QObject(parent), m_host(host), m_port(port),
       m_server(new QTcpServer(this))
 {
     connect(m_server, &QTcpServer::newConnection, this, &WebServer::onNewConnection);
 }
 
 bool WebServer::start() {
-    return m_server->listen(QHostAddress::LocalHost, m_port);
+    QHostAddress addr = (m_host == "0.0.0.0")
+                            ? QHostAddress::Any
+                            : QHostAddress(m_host);
+    return m_server->listen(addr, m_port);
 }
-
-quint16 WebServer::port() const { return m_server->serverPort(); }
 
 // ── Connection handling ──────────────────────────────────────────────
 
@@ -293,11 +294,12 @@ void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {
         if (f.contains("system_message"))    cfg.systemMessage    = f["system_message"];
         if (f.contains("tool_confirmation")) cfg.toolConfirmation = f["tool_confirmation"];
         if (f.contains("reasoning_effort"))   cfg.reasoningEffort  = f["reasoning_effort"];
+        if (f.contains("user_agent"))        cfg.userAgent        = f["user_agent"];
         cfg.preserveReasoning = f.contains("preserve_reasoning");
         if (f.contains("tool_timeout"))      cfg.toolTimeout      = f["tool_timeout"].toInt();
         if (f.contains("context_keep_turns"))cfg.contextKeepTurns = f["context_keep_turns"].toInt();
         configSave(cfg);
-        sendRedirect(socket, "/settings");
+        sendRedirect(socket, "/settings?saved=1");
     } else {
         sendResponse(socket, 200, "text/html; charset=utf-8", renderSettingsPage());
     }
@@ -356,12 +358,17 @@ QByteArray WebServer::renderSettingsPage() {
     QString html = QString::fromUtf8(f.readAll());
 
     Config cfg = configLoad();
+    QJsonArray chats = chatsLoad();
+
     html.replace("{{BASE_URL}}",         cfg.baseUrl.toHtmlEscaped());
     html.replace("{{API_KEY_STATUS}}",   cfg.apiKey.isEmpty() ? "not set" : "set");
     html.replace("{{MODEL}}",            cfg.model.toHtmlEscaped());
     html.replace("{{SYSTEM_MESSAGE}}",   cfg.systemMessage.toHtmlEscaped());
     html.replace("{{TOOL_TIMEOUT}}",     QString::number(cfg.toolTimeout));
     html.replace("{{CONTEXT_KEEP_TURNS}}",QString::number(cfg.contextKeepTurns));
+    html.replace("{{USER_AGENT}}",       cfg.userAgent.toHtmlEscaped());
+    html.replace("{{CHATS_JSON}}",
+        safeJs(QJsonDocument(chats).toJson(QJsonDocument::Compact)));
     html.replace("{{TC_NONE}}",  cfg.toolConfirmation == "none"  ? "selected" : "");
     html.replace("{{TC_SAFE}}",  cfg.toolConfirmation == "safe"  ? "selected" : "");
     html.replace("{{TC_ALL}}",   cfg.toolConfirmation == "all"   ? "selected" : "");

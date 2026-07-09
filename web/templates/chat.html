@@ -2,104 +2,189 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Pengy — {{CHAT_TITLE}}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>
-html,body{height:100%;margin:0;overflow:hidden}
-body{display:flex}
-.sidebar{width:230px;min-width:230px;display:flex;flex-direction:column;border-right:1px solid #dee2e6;background:#f8f9fa}
-.sidebar-body{flex:1;overflow-y:auto;padding:.5rem}
-.sidebar-footer{padding:.5rem .75rem;border-top:1px solid #dee2e6;font-size:.73rem;color:#6c757d}
-.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
-#messages{flex:1;overflow-y:auto;padding:1rem 1.25rem}
-.input-bar{padding:.75rem;border-top:1px solid #dee2e6;background:#fff}
-.msg-user{text-align:right;margin-bottom:1rem}
-.msg-user .bubble{display:inline-block;background:#0d6efd;color:#fff;padding:.5rem .75rem;border-radius:1rem 1rem 0 1rem;max-width:80%;text-align:left;white-space:pre-wrap;word-break:break-word}
-.msg-asst{margin-bottom:1rem}
-.msg-asst .bubble{background:#f8f9fa;border:1px solid #e9ecef;padding:.75rem;border-radius:0 1rem 1rem 1rem;max-width:90%;display:inline-block;width:100%}
-.msg-asst .bubble p:last-child{margin-bottom:0}
-.msg-asst .bubble pre{background:#212529;color:#f8f9fa;padding:.75rem;border-radius:.25rem;overflow-x:auto;font-size:.8rem}
-.msg-asst .bubble pre code{background:transparent!important;padding:0}
-.msg-asst .bubble code{background:#e9ecef;padding:.1rem .25rem;border-radius:.2rem;font-size:.85em}
-.msg-asst .bubble table{font-size:.82rem;border-collapse:collapse;margin:.5rem 0;width:auto}
-.msg-asst .bubble th,.msg-asst .bubble td{border:1px solid #dee2e6;padding:.25rem .5rem}
-.msg-asst .bubble th{background:#e9ecef}
-.tool-card{font-size:.8rem;margin-bottom:.375rem}
-.tool-card .card-header{padding:.3rem .5rem;cursor:pointer;user-select:none}
-.tc-result pre{max-height:180px;overflow-y:auto;font-size:.75rem;background:#f8f9fa;border-radius:.25rem;padding:.4rem;margin:0;white-space:pre-wrap;word-break:break-all}
-#textarea-msg{resize:none;min-height:38px;max-height:160px;overflow-y:auto}
-.chat-item{display:block;padding:.35rem .5rem;border-radius:.25rem;color:#212529;text-decoration:none;font-size:.83rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
-.chat-item:hover{background:#e9ecef;color:#212529}
-.chat-item.active{background:#0d6efd;color:#fff}
-.chat-item.active:hover{background:#0b5ed7}
+  html, body { height: 100%; overflow: hidden; }
+  .app-shell { display: flex; flex-direction: column; height: 100vh; padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .app-body { display: flex; flex: 1; overflow: hidden; }
+  @media (min-width: 768px) {
+    body { display: flex; flex-direction: row; }
+    #sidebarOffcanvas {
+      position: relative !important; transform: none !important; visibility: visible !important;
+      width: 260px !important; height: 100vh !important; flex-shrink: 0;
+      border-right: 1px solid var(--bs-border-color); display: flex !important;
+      flex-direction: column; z-index: auto !important; top: auto !important;
+      bottom: auto !important; left: auto !important;
+    }
+    #sidebarOffcanvas ~ .offcanvas-backdrop { display: none !important; }
+    .app-shell { flex: 1; min-width: 0; }
+    #sidebarOffcanvas .offcanvas-header { display: none; }
+    #sidebarOffcanvas .offcanvas-body { padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+  }
+  #sidebarOffcanvas .offcanvas-header { border-bottom: 1px solid var(--bs-border-color); }
+  #sidebarOffcanvas .offcanvas-body { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+  .chat-list { overflow-y: auto; flex: 1; }
+  .chat-list-item { display: flex; align-items: center; padding: 0.5rem 0.75rem; border-radius: 6px; text-decoration: none; color: var(--bs-body-color); gap: 0.4rem; min-height: 44px; }
+  .chat-list-item:hover { background: var(--bs-secondary-bg); color: var(--bs-body-color); }
+  .chat-list-item.active { background: var(--bs-tertiary-bg); }
+  .chat-list-item .chat-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.85rem; flex: 1; }
+  .chat-list-item .delete-btn { opacity: 0; border: none; background: none; color: var(--bs-secondary-color); padding: 0.25rem 0.35rem; font-size: 0.8rem; flex-shrink: 0; min-width: 28px; min-height: 28px; }
+  @media (hover: none) and (pointer: coarse) { .chat-list-item .delete-btn { opacity: 0.5; } }
+  .chat-list-item:hover .delete-btn { opacity: 1; }
+  .chat-list-item .delete-btn:hover { color: var(--bs-danger); }
+  .messages-area { flex: 1; overflow-y: auto; padding: 1rem 0.75rem; }
+  @media (min-width: 576px) { .messages-area { padding: 1.25rem 1rem; } }
+  .msg-user { display: flex; justify-content: flex-end; margin-bottom: 0.85rem; }
+  .bubble-user { max-width: 85%; background: var(--bs-secondary-bg); border-radius: 18px 18px 4px 18px; padding: 0.6rem 1rem; white-space: pre-wrap; word-break: break-word; font-size: 0.9rem; }
+  @media (max-width: 575px) { .bubble-user { max-width: 92%; } }
+  .msg-assistant { display: flex; justify-content: flex-start; margin-bottom: 0.85rem; }
+  .bubble-assistant { max-width: 90%; background: var(--bs-tertiary-bg); border-radius: 4px 18px 18px 18px; padding: 0.75rem 1rem; font-size: 0.9rem; word-break: break-word; }
+  @media (max-width: 575px) { .bubble-assistant { max-width: 96%; } }
+  .msg-tool { margin-bottom: 0.5rem; }
+  .tool-card { background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); border-left: 3px solid #f9e2af; border-radius: 6px; padding: 0.5rem 0.75rem; max-width: 90%; font-size: 0.82rem; }
+  @media (max-width: 575px) { .tool-card { max-width: 98%; } }
+  .tool-card.declined { border-left-color: var(--bs-danger); }
+  .tool-card.done { border-left-color: var(--bs-success); }
+  .tool-header { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 0.4rem; }
+  .tool-args, .tool-output { background: #f6f8fa; border-radius: 4px; padding: 0.5rem 0.6rem; margin-top: 0.4rem; max-height: 250px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; color: #24292e; }
+  .msg-thinking { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.85rem; color: var(--bs-secondary-color); font-size: 0.85rem; }
+  .input-area { padding: 0.6rem 0.75rem; border-top: 1px solid var(--bs-border-color); background: var(--bs-body-bg); padding-bottom: calc(0.6rem + env(safe-area-inset-bottom, 0px)); }
+  @media (min-width: 576px) { .input-area { padding: 0.75rem 1rem; } }
+  #messageInput { resize: none; max-height: 180px; overflow-y: auto; font-size: 16px; }
+  .markdown-body { line-height: 1.6; }
+  .markdown-body p { margin-bottom: 0.5rem; }
+  .markdown-body p:last-child { margin-bottom: 0; }
+  .markdown-body h1,.markdown-body h2,.markdown-body h3 { margin-top:0.75rem; margin-bottom:0.4rem; }
+  .markdown-body pre { background: #f6f8fa; border-radius: 4px; padding: 0.75rem; overflow-x: auto; }
+  .markdown-body code { font-size: 0.84em; }
+  .markdown-body :not(pre)>code { background: #f6f8fa; color: #d63384; padding: 0.1em 0.3em; border-radius: 3px; }
+  .markdown-body table { width:100%; border-collapse:collapse; margin-bottom:0.5rem; }
+  .markdown-body th,.markdown-body td { border:1px solid var(--bs-border-color); padding:0.25rem 0.5rem; }
+  .markdown-body ul,.markdown-body ol { padding-left:1.5rem; margin-bottom:0.5rem; }
+  .markdown-body blockquote { border-left: 3px solid var(--bs-border-color); margin: 0.5rem 0; padding-left: 0.75rem; color: var(--bs-secondary-color); }
+  .usage-line { font-size: 0.75rem; color: var(--bs-secondary-color); margin-top: 0.4rem; }
 </style>
 </head>
 <body>
 
-<!-- Sidebar -->
-<div class="sidebar">
-  <div class="p-2 border-bottom">
-    <a href="/chat/new" id="btn-new-chat"
-       onclick="event.preventDefault();fetch('/chat/new',{method:'POST'}).then(r=>r.ok&&(location.href=r.url))"
-       class="btn btn-primary btn-sm w-100 mb-1">+ New Chat</a>
-    <a href="/settings" class="btn btn-outline-secondary btn-sm w-100">⚙ Settings</a>
+<!-- Sidebar (offcanvas on mobile, static on desktop) -->
+<div class="offcanvas offcanvas-start" tabindex="-1" id="sidebarOffcanvas" aria-labelledby="sidebarTitle">
+  <div class="offcanvas-header">
+    <h6 class="offcanvas-title fw-bold mb-0" id="sidebarTitle">🐧 Pengy</h6>
+    <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
   </div>
-  <div class="sidebar-body" id="sidebar-chats"></div>
-  <div class="sidebar-footer" id="sidebar-footer"></div>
+  <div class="offcanvas-body">
+    <div class="p-2">
+      <form action="/chat/new" method="post">
+        <button type="submit" class="btn btn-outline-primary w-100" data-bs-dismiss="offcanvas">
+          <i class="bi bi-plus-lg"></i> New Chat
+        </button>
+      </form>
+    </div>
+    <div class="chat-list px-2 pb-2" id="sidebar-chats"></div>
+    <div class="mt-auto border-top p-2 d-md-none">
+      <a href="/settings" class="btn btn-outline-secondary w-100" data-bs-dismiss="offcanvas">
+        <i class="bi bi-gear me-1"></i> Settings
+      </a>
+    </div>
+  </div>
 </div>
 
-<!-- Main -->
-<div class="main">
-  <div id="messages"></div>
-  <div class="input-bar">
-    <form id="form-send" class="d-flex gap-2 align-items-end">
-      <textarea id="textarea-msg" class="form-control"
-                placeholder="Message… (Shift+Enter for newline)" rows="1"></textarea>
-      <button type="submit" id="btn-send" class="btn btn-primary flex-shrink-0">Send</button>
-      <button type="button" id="btn-stop" class="btn btn-danger flex-shrink-0 d-none">■ Stop</button>
-    </form>
+<!-- App shell -->
+<div class="app-shell">
+  <nav class="navbar navbar-light bg-light border-bottom px-2 py-2 flex-shrink-0">
+    <div class="d-flex align-items-center gap-1">
+      <button class="btn btn-outline-secondary d-md-none" type="button" data-bs-toggle="offcanvas" data-bs-target="#sidebarOffcanvas" aria-label="Open sidebar">
+        <i class="bi bi-list"></i>
+      </button>
+      <span class="fw-bold text-nowrap">🐧 Pengy</span>
+      <form action="/chat/new" method="post" class="d-md-none ms-1">
+        <button type="submit" class="btn btn-outline-primary" title="New Chat" aria-label="New Chat">
+          <i class="bi bi-plus-lg"></i>
+        </button>
+      </form>
+    </div>
+    <div class="d-flex align-items-center gap-1">
+      <span class="text-muted small d-none d-sm-inline" id="navbar-model"></span>
+      <span class="badge bg-secondary small" id="navbar-tc-badge">Confirm</span>
+      <a href="/settings" class="btn btn-outline-secondary" aria-label="Settings">
+        <i class="bi bi-gear"></i><span class="d-none d-sm-inline ms-1">Settings</span>
+      </a>
+    </div>
+  </nav>
+  <div class="app-body">
+    <div class="flex-grow-1 d-flex flex-column overflow-hidden">
+      <div class="messages-area" id="messages"></div>
+      <div class="input-area">
+        <form id="form-send" class="d-flex gap-2" novalidate>
+          <textarea id="messageInput" class="form-control" rows="1"
+                    placeholder="Message… (Enter to send, Shift+Enter for newline)"
+                    autocomplete="off" autofocus></textarea>
+          <button type="submit" id="btn-send" class="btn btn-primary align-self-end">
+            <i class="bi bi-send-fill"></i>
+          </button>
+          <button type="button" id="btn-stop" class="btn btn-danger align-self-end d-none">
+            <i class="bi bi-stop-fill"></i>
+          </button>
+        </form>
+      </div>
+    </div>
   </div>
 </div>
 
 <!-- Tool confirmation modal -->
-<div class="modal fade" id="confirmModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+<div class="modal fade" id="confirmModal" tabindex="-1" data-bs-backdrop="static">
   <div class="modal-dialog modal-lg">
     <div class="modal-content">
-      <div class="modal-header py-2">
-        <h6 class="modal-title mb-0">🔧 Execute Tool: <span id="confirm-name" class="text-primary fw-bold"></span></h6>
+      <div class="modal-header">
+        <h6 class="modal-title">
+          <i class="bi bi-gear-fill text-warning me-2"></i>
+          Tool Request: <code id="confirm-name" class="fw-semibold text-warning"></code>
+        </h6>
       </div>
-      <div class="modal-body py-2">
-        <pre id="confirm-args" class="bg-light p-2 rounded small mb-0" style="max-height:280px;overflow-y:auto"></pre>
+      <div class="modal-body">
+        <pre id="confirm-args" class="tool-args" style="max-height:300px"></pre>
       </div>
-      <div class="modal-footer py-2">
-        <button class="btn btn-success btn-sm" onclick="submitConfirm(true,false)">Execute</button>
-        <button class="btn btn-warning btn-sm" onclick="submitConfirm(true,true)">Yes to All</button>
-        <button class="btn btn-danger btn-sm" onclick="submitConfirm(false,false)">Decline</button>
+      <div class="modal-footer">
+        <button class="btn btn-sm btn-outline-danger" onclick="submitConfirm(false,false)">
+          <i class="bi bi-x-circle me-1"></i>Decline
+        </button>
+        <button class="btn btn-sm btn-outline-warning" onclick="submitConfirm(true,true)">
+          <i class="bi bi-lightning-fill me-1"></i>Yes to All This Turn
+        </button>
+        <button class="btn btn-sm btn-success" onclick="submitConfirm(true,false)">
+          <i class="bi bi-check-circle me-1"></i>Execute
+        </button>
       </div>
     </div>
   </div>
 </div>
 
 <!-- Sudo modal -->
-<div class="modal fade" id="sudoModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
-  <div class="modal-dialog">
+<div class="modal fade" id="sudoModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog modal-sm">
     <div class="modal-content">
-      <div class="modal-header py-2">
-        <h6 class="modal-title mb-0">🔐 Sudo Password Required</h6>
+      <div class="modal-header">
+        <h6 class="modal-title">
+          <i class="bi bi-shield-lock text-warning me-2"></i>sudo password
+        </h6>
       </div>
-      <div class="modal-body py-2">
+      <div class="modal-body">
         <input type="password" id="sudo-pwd" class="form-control"
-               placeholder="Enter sudo password…" autocomplete="current-password">
+               placeholder="Enter password…" autocomplete="current-password">
       </div>
-      <div class="modal-footer py-2">
-        <button class="btn btn-primary btn-sm" onclick="submitSudo()">Submit</button>
-        <button class="btn btn-secondary btn-sm" onclick="cancelSudo()">Cancel</button>
+      <div class="modal-footer">
+        <button class="btn btn-sm btn-outline-secondary" onclick="cancelSudo()">Cancel</button>
+        <button class="btn btn-sm btn-warning" onclick="submitSudo()">Submit</button>
       </div>
     </div>
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 // ── Server data ────────────────────────────────────────────────────
 const CHAT_ID   = '{{CHAT_ID}}';
@@ -110,6 +195,7 @@ const ALL_CHATS = {{CHATS_JSON}};
 
 // ── State ──────────────────────────────────────────────────────────
 let es = null, processing = false, currentTurnDiv = null;
+let thinkingEl = null;
 let confirmModal, sudoModal;
 
 // ── Bootstrap init ─────────────────────────────────────────────────
@@ -117,38 +203,88 @@ document.addEventListener('DOMContentLoaded', () => {
   confirmModal = new bootstrap.Modal(document.getElementById('confirmModal'));
   sudoModal    = new bootstrap.Modal(document.getElementById('sudoModal'));
 
+  // Navbar model + badge
+  document.getElementById('navbar-model').textContent = MODEL;
+  const tcBadge = document.getElementById('navbar-tc-badge');
+  const tcMap = { all: ['YOLO', 'bg-warning text-dark'], safe: ['Safe', 'bg-info text-dark'], none: ['Confirm', 'bg-secondary'] };
+  const tc = tcMap[TOOL_CONF] || tcMap.none;
+  tcBadge.textContent = tc[0];
+  tcBadge.className = 'badge small ' + tc[1];
+
   renderSidebar(ALL_CHATS, CHAT_ID);
   renderInitMessages(MESSAGES);
-  document.getElementById('sidebar-footer').textContent =
-    MODEL + ' · tools: ' + TOOL_CONF;
 
-  const ta   = document.getElementById('textarea-msg');
+  // Empty state
+  if (MESSAGES.filter(m => m.role !== 'system').length === 0) {
+    showEmptyState();
+  }
+
+  const ta   = document.getElementById('messageInput');
   const form = document.getElementById('form-send');
 
   form.addEventListener('submit', e => {
     e.preventDefault();
     const msg = ta.value.trim();
-    if (msg && !processing) { ta.value = ''; autoGrow(ta); sendMessage(msg); }
+    if (msg && !processing) { ta.value = ''; ta.style.height = 'auto'; sendMessage(msg); }
   });
 
   ta.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      form.dispatchEvent(new Event('submit'));
+      form.requestSubmit();
     }
   });
-  ta.addEventListener('input', () => autoGrow(ta));
+  ta.addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = Math.min(this.scrollHeight, 180) + 'px';
+  });
 
   document.getElementById('btn-stop').addEventListener('click', stopGeneration);
 
   document.getElementById('sudo-pwd').addEventListener('keydown', e => {
     if (e.key === 'Enter') submitSudo();
   });
+
+  // Dismiss offcanvas when clicking a chat link on mobile
+  document.addEventListener('click', function(e) {
+    const link = e.target.closest('.chat-list-item');
+    if (!link) return;
+    const offcanvas = document.getElementById('sidebarOffcanvas');
+    if (!offcanvas) return;
+    const bsOffcanvas = bootstrap.Offcanvas.getInstance(offcanvas);
+    if (bsOffcanvas && offcanvas.classList.contains('show')) { bsOffcanvas.hide(); }
+  });
+
+  scrollBottom();
 });
 
-function autoGrow(ta) {
-  ta.style.height = 'auto';
-  ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+// ── Empty state ────────────────────────────────────────────────────
+function showEmptyState() {
+  const m = document.getElementById('messages');
+  const el = document.createElement('div');
+  el.className = 'text-center text-muted py-5';
+  el.id = 'empty-state';
+  el.innerHTML = '<div style="font-size:2.5rem">🐧</div><div class="mt-2">Start a conversation</div>';
+  m.appendChild(el);
+}
+
+function hideEmptyState() {
+  const el = document.getElementById('empty-state');
+  if (el) el.remove();
+}
+
+// ── Thinking indicator ─────────────────────────────────────────────
+function showThinking() {
+  hideThinking();
+  thinkingEl = document.createElement('div');
+  thinkingEl.className = 'msg-thinking';
+  thinkingEl.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div><span>Thinking…</span>';
+  document.getElementById('messages').appendChild(thinkingEl);
+  scrollBottom();
+}
+
+function hideThinking() {
+  if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
 }
 
 // ── Sidebar ────────────────────────────────────────────────────────
@@ -156,10 +292,19 @@ function renderSidebar(chats, activeChatId) {
   const el = document.getElementById('sidebar-chats');
   el.innerHTML = '';
   for (const c of chats) {
+    const active = c.id === activeChatId;
     const a = document.createElement('a');
     a.href = '/chat/' + c.id;
-    a.className = 'chat-item' + (c.id === activeChatId ? ' active' : '');
-    a.textContent = c.title || '(untitled)';
+    a.className = 'chat-list-item' + (active ? ' active' : '');
+    a.dataset.chatId = c.id;
+    a.innerHTML =
+      '<i class="bi bi-chat-left-text small text-muted flex-shrink-0"></i>' +
+      '<span class="chat-title">' + esc(c.title || '(untitled)') + '</span>' +
+      '<form action="/chat/' + c.id + '/delete" method="post" style="display:inline" onclick="event.stopPropagation()">' +
+        '<button type="submit" class="delete-btn" title="Delete chat" onclick="return confirm(\'Delete this chat?\')">' +
+          '<i class="bi bi-x"></i>' +
+        '</button>' +
+      '</form>';
     el.appendChild(a);
   }
 }
@@ -189,6 +334,11 @@ function renderMd(raw) {
     });
     return out + '</table>';
   });
+  // blockquotes
+  s = s.replace(/(?:^|\n)((?:> .*\n?)+)/g, (_, block) => {
+    const lines = block.trim().split('\n').map(l => l.replace(/^> ?/, ''));
+    return '<blockquote>' + lines.join('<br>') + '</blockquote>';
+  });
   // headings
   s = s.replace(/^###\s(.+)$/gm, '<h5>$1</h5>');
   s = s.replace(/^##\s(.+)$/gm,  '<h4>$1</h4>');
@@ -198,6 +348,11 @@ function renderMd(raw) {
   s = s.replace(/\*([^*\n]+)\*/g,     '<em>$1</em>');
   // links
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  // ordered lists
+  s = s.replace(/(?:^|\n)((?:\d+\.\s.+\n?)+)/g, (_, block) => {
+    const items = block.trim().split('\n').map(l => '<li>' + l.replace(/^\d+\.\s/, '') + '</li>');
+    return '<ol>' + items.join('') + '</ol>';
+  });
   // unordered lists (simple)
   s = s.replace(/(?:^|\n)((?:- .+\n?)+)/g, (_, block) => {
     const items = block.trim().split('\n').map(l => '<li>' + l.replace(/^- /, '') + '</li>');
@@ -210,54 +365,57 @@ function renderMd(raw) {
 
 // ── Message DOM helpers ────────────────────────────────────────────
 function appendUserMsg(content) {
+  hideEmptyState();
   const d = document.createElement('div');
   d.className = 'msg-user';
-  d.innerHTML = '<span class="bubble">' + esc(content) + '</span>';
+  d.innerHTML = '<div class="bubble-user">' + esc(content) + '</div>';
   document.getElementById('messages').appendChild(d);
   scrollBottom();
 }
 
-function appendAssistantMsg(content) {
+function appendAssistantMsg(content, usage) {
   const d = document.createElement('div');
-  d.className = 'msg-asst';
-  d.innerHTML = '<div class="bubble">' +
-    (content ? renderMd(content) : '<em class="text-muted">(no text response)</em>') +
-    '</div>';
+  d.className = 'msg-assistant';
+  let usageHtml = '';
+  if (usage && (usage.prompt_tokens || usage.completion_tokens)) {
+    const tot = (usage.prompt_tokens||0) + (usage.completion_tokens||0);
+    usageHtml = '<div class="usage-line">' +
+      (usage.prompt_tokens||0).toLocaleString() + ' in / ' +
+      (usage.completion_tokens||0).toLocaleString() + ' out (' +
+      tot.toLocaleString() + ' total)</div>';
+  }
+  d.innerHTML = '<div class="bubble-assistant"><div class="markdown-body">' +
+    (content ? renderMd(content) : '<em class="text-muted">(empty response)</em>') +
+    '</div>' + usageHtml + '</div>';
   document.getElementById('messages').appendChild(d);
   scrollBottom();
 }
 
 function startToolTurn() {
   const d = document.createElement('div');
-  d.className = 'msg-asst';
+  d.className = 'msg-tool';
   document.getElementById('messages').appendChild(d);
   return d;
 }
 
 function addToolCard(container, name, args, tcId, autoApproved) {
-  const bid = 'badge-' + tcId;
-  const bbid = 'tcb-' + tcId.replace(/[^a-zA-Z0-9]/g, '_');
+  const sid = 'tc_' + tcId.replace(/[^a-zA-Z0-9]/g, '');
   const card = document.createElement('div');
-  card.className = 'card tool-card';
-  card.id = 'tc-' + tcId;
+  card.className = 'tool-card mb-1';
+  card.id = sid;
   card.innerHTML =
-    '<div class="card-header d-flex align-items-center gap-2" data-bs-toggle="collapse" data-bs-target="#' + bbid + '">' +
-      '🔧 <strong>' + esc(name) + '</strong>' +
-      '<span id="' + bid + '">' +
-        (autoApproved
-          ? '<span class="badge bg-secondary">running</span>'
-          : '<span class="badge bg-warning text-dark">waiting</span>') +
+    '<div class="tool-header" data-bs-toggle="collapse" data-bs-target="#body-' + sid + '">' +
+      '<i class="bi bi-gear-fill text-warning" style="font-size:0.8rem"></i>' +
+      '<code class="fw-semibold text-warning">' + esc(name) + '</code>' +
+      '<span class="badge ' + (autoApproved ? 'bg-secondary' : 'bg-warning text-dark') + ' ms-1" id="badge-' + sid + '">' +
+        (autoApproved ? 'running…' : 'pending') +
       '</span>' +
-      '<span class="ms-auto text-muted small">▾</span>' +
+      '<i class="bi bi-chevron-down ms-auto" style="font-size:0.7rem"></i>' +
     '</div>' +
-    '<div class="collapse show" id="' + bbid + '">' +
-      '<div class="card-body p-2">' +
-        '<small class="text-muted">Arguments</small>' +
-        '<pre class="mt-1 mb-2 small bg-light p-2 rounded">' + esc(JSON.stringify(args, null, 2)) + '</pre>' +
-        '<div id="tcr-' + tcId + '" style="display:none">' +
-          '<small class="text-muted">Output</small>' +
-          '<div class="tc-result mt-1"><pre id="tcp-' + tcId + '"></pre></div>' +
-        '</div>' +
+    '<div class="collapse" id="body-' + sid + '">' +
+      '<pre class="tool-args">' + esc(JSON.stringify(args, null, 2)) + '</pre>' +
+      '<div id="result-' + sid + '">' +
+        '<span class="text-muted small">' + (autoApproved ? 'Running…' : 'Awaiting confirmation…') + '</span>' +
       '</div>' +
     '</div>';
   (container || document.getElementById('messages')).appendChild(card);
@@ -266,16 +424,27 @@ function addToolCard(container, name, args, tcId, autoApproved) {
 }
 
 function completeToolCard(tcId, content, declined) {
-  const badge = document.getElementById('badge-' + tcId);
-  if (badge) badge.innerHTML = declined
-    ? '<span class="badge bg-danger">declined</span>'
-    : '<span class="badge bg-success">done</span>';
-  const rd = document.getElementById('tcr-' + tcId);
-  const rp = document.getElementById('tcp-' + tcId);
-  if (rd && rp) {
-    rd.style.display = '';
-    rp.textContent = content.length > 2000 ? content.slice(0,2000) + '\n…[truncated]' : content;
+  const sid = 'tc_' + tcId.replace(/[^a-zA-Z0-9]/g, '');
+  const card = document.getElementById(sid);
+  if (card) {
+    card.classList.remove('declined', 'done');
+    card.classList.add(declined ? 'declined' : 'done');
   }
+  const badge = document.getElementById('badge-' + sid);
+  if (badge) {
+    badge.className = 'badge ms-1 ' + (declined ? 'bg-danger' : 'bg-success');
+    badge.textContent = declined ? 'declined' : 'done';
+  }
+  const resultArea = document.getElementById('result-' + sid);
+  if (resultArea) {
+    if (declined) {
+      resultArea.innerHTML = '<div class="text-danger small mt-1 ps-1">Declined by user</div>';
+    } else {
+      const display = content.length > 2000 ? content.slice(0,2000) + '\n…[truncated]' : content;
+      resultArea.innerHTML = '<pre class="tool-output">' + esc(display) + '</pre>';
+    }
+  }
+  scrollBottom();
 }
 
 // ── Initial message render ─────────────────────────────────────────
@@ -288,12 +457,17 @@ function renderInitMessages(messages) {
       appendUserMsg(typeof msg.content === 'string' ? msg.content : '');
       i++;
     } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+      // Tool turn — render any text content first
+      if (msg.content) appendAssistantMsg(msg.content);
       const turn = startToolTurn();
       for (const tc of msg.tool_calls) {
         let a = {};
         try { a = JSON.parse(tc.function.arguments || '{}'); } catch(_){}
         addToolCard(turn, tc.function.name, a, tc.id, true);
+        // Mark as done since these are historical
+        completeToolCard(tc.id, '', false);
       }
+      // Now fill in tool results
       i++;
       while (i < messages.length && messages[i].role === 'tool') {
         completeToolCard(messages[i].tool_call_id, messages[i].content || '', false);
@@ -304,13 +478,14 @@ function renderInitMessages(messages) {
       i++;
     } else { i++; }
   }
-  scrollBottom();
 }
 
 // ── Send / SSE ─────────────────────────────────────────────────────
 async function sendMessage(content) {
+  hideEmptyState();
   appendUserMsg(content);
   setProcessing(true);
+  showThinking();
   connectSSE();
   const r = await fetch('/chat/' + CHAT_ID + '/send', {
     method: 'POST',
@@ -319,6 +494,7 @@ async function sendMessage(content) {
   });
   if (!r.ok) {
     disconnectSSE();
+    hideThinking();
     setProcessing(false);
     appendAssistantMsg('⚠️ Failed to send message.');
   }
@@ -329,28 +505,34 @@ function connectSSE() {
   currentTurnDiv = null;
   es = new EventSource('/chat/' + CHAT_ID + '/stream');
   es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(_){} };
-  es.onerror   = () => { if (processing) { disconnectSSE(); setProcessing(false); } };
+  es.onerror   = () => { if (processing) { disconnectSSE(); hideThinking(); setProcessing(false); } };
 }
 
 function disconnectSSE() { if (es) { es.close(); es = null; } }
 
 function handleEvent(ev) {
   if (ev.type === 'assistant_tool_calls') {
+    hideThinking();
     currentTurnDiv = startToolTurn();
 
   } else if (ev.type === 'tool_request') {
+    hideThinking();
     if (!currentTurnDiv) currentTurnDiv = startToolTurn();
     addToolCard(currentTurnDiv, ev.name, ev.args || {}, ev.tool_call_id, !!ev.auto_approved);
     if (!ev.auto_approved) showConfirmModal(ev.name, ev.args || {});
+    else showThinking();
 
   } else if (ev.type === 'tool_result') {
+    hideThinking();
     completeToolCard(ev.tool_call_id, ev.content || '', !!ev.declined);
+    showThinking();
 
   } else if (ev.type === 'final_response') {
-    appendAssistantMsg(ev.content || '');
+    hideThinking();
+    appendAssistantMsg(ev.content || '', ev.usage);
     if (ev.chat_title) {
       document.title = 'Pengy — ' + ev.chat_title;
-      const link = document.querySelector('.chat-item.active');
+      const link = document.querySelector('.chat-list-item.active .chat-title');
       if (link) link.textContent = ev.chat_title;
     }
     currentTurnDiv = null;
@@ -358,9 +540,11 @@ function handleEvent(ev) {
     setProcessing(false);
 
   } else if (ev.type === 'sudo_request') {
+    hideThinking();
     showSudoModal();
 
   } else if (ev.type === 'error') {
+    hideThinking();
     appendAssistantMsg('⚠️ ' + (ev.message || 'Unknown error'));
     disconnectSSE();
     setProcessing(false);
@@ -370,14 +554,16 @@ function handleEvent(ev) {
 async function stopGeneration() {
   await fetch('/chat/' + CHAT_ID + '/stop', {method:'POST'});
   disconnectSSE();
+  hideThinking();
   setProcessing(false);
 }
 
 function setProcessing(on) {
   processing = on;
+  document.getElementById('messageInput').disabled = on;
   document.getElementById('btn-send').disabled = on;
-  document.getElementById('textarea-msg').disabled = on;
   document.getElementById('btn-stop').classList.toggle('d-none', !on);
+  if (!on) document.getElementById('messageInput').focus();
 }
 
 function scrollBottom() {
@@ -394,6 +580,7 @@ function showConfirmModal(name, args) {
 
 async function submitConfirm(confirmed, yolo) {
   confirmModal.hide();
+  showThinking();
   await fetch('/chat/' + CHAT_ID + '/confirm', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
@@ -411,6 +598,7 @@ function showSudoModal() {
 async function submitSudo() {
   const pwd = document.getElementById('sudo-pwd').value;
   sudoModal.hide();
+  showThinking();
   await fetch('/chat/' + CHAT_ID + '/sudo', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({password: pwd})
@@ -425,6 +613,5 @@ async function cancelSudo() {
   });
 }
 </script>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

@@ -680,7 +680,7 @@ private slots:
     // ── Web server: startup ──────────────────────────────────────────
 
     void webServerBindsPort() {
-        WebServer server(0);
+        WebServer server("127.0.0.1", 0);
         QVERIFY(server.start());
         QVERIFY(server.port() > 0);
     }
@@ -688,7 +688,7 @@ private slots:
     // ── Web server: routing ──────────────────────────────────────────
 
     void webGetRootRedirects() {
-        WebServer server(0);
+        WebServer server("127.0.0.1", 0);
         QVERIFY(server.start());
         WebResp r = webRequest("GET", server.port(), "/");
         QCOMPARE(r.status, 302);
@@ -700,7 +700,7 @@ private slots:
         QJsonObject chat = chatCreate("Web Test Chat");
         QString chatId   = chat["id"].toString();
 
-        WebServer server(0);
+        WebServer server("127.0.0.1", 0);
         QVERIFY(server.start());
         WebResp r = webRequest("GET", server.port(), "/chat/" + chatId);
         QCOMPARE(r.status, 200);
@@ -710,7 +710,7 @@ private slots:
     }
 
     void webGetSettingsPage() {
-        WebServer server(0);
+        WebServer server("127.0.0.1", 0);
         QVERIFY(server.start());
         WebResp r = webRequest("GET", server.port(), "/settings");
         QCOMPARE(r.status, 200);
@@ -721,7 +721,7 @@ private slots:
     }
 
     void webPostSettingsSavesAndRedirects() {
-        WebServer server(0);
+        WebServer server("127.0.0.1", 0);
         QVERIFY(server.start());
         QByteArray form =
             "base_url=http%3A%2F%2Flocalhost%3A8080%2Fv1"
@@ -744,7 +744,7 @@ private slots:
     }
 
     void webPostNewChatCreatesChat() {
-        WebServer server(0);
+        WebServer server("127.0.0.1", 0);
         QVERIFY(server.start());
         WebResp r = webRequest("POST", server.port(), "/chat/new");
         QCOMPARE(r.status, 302);
@@ -757,7 +757,7 @@ private slots:
 
     void webSendEmptyContentReturns400() {
         QJsonObject chat = chatCreate("Send Test");
-        WebServer server(0);
+        WebServer server("127.0.0.1", 0);
         QVERIFY(server.start());
         WebResp r = webRequest("POST", server.port(),
                                "/chat/" + chat["id"].toString() + "/send",
@@ -766,7 +766,7 @@ private slots:
     }
 
     void webUnknownRouteReturns404() {
-        WebServer server(0);
+        WebServer server("127.0.0.1", 0);
         QVERIFY(server.start());
         WebResp r = webRequest("GET", server.port(), "/no/such/path");
         QCOMPARE(r.status, 404);
@@ -777,7 +777,7 @@ private slots:
         QString chatId   = chat["id"].toString();
         QCOMPARE(chatsLoad().size(), 1);
 
-        WebServer server(0);
+        WebServer server("127.0.0.1", 0);
         QVERIFY(server.start());
         WebResp r = webRequest("POST", server.port(), "/chat/" + chatId + "/delete");
         QCOMPARE(r.status, 302);
@@ -787,7 +787,7 @@ private slots:
     void webStreamReturnsSSEHeaders() {
         QJsonObject chat = chatCreate("Stream Test");
 
-        WebServer server(0);
+        WebServer server("127.0.0.1", 0);
         QVERIFY(server.start());
         QNetworkAccessManager mgr;
         QNetworkRequest req(QUrl("http://127.0.0.1:" + QString::number(server.port()) +

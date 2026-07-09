@@ -12,6 +12,7 @@
 #include <QDateTime>
 #include <QUuid>
 #include <QTextStream>
+#include <QRegularExpression>
 #include <atomic>
 #include <cstdio>
 #include <functional>
@@ -49,6 +50,144 @@ static void out(const QString& s) {
 }
 static void outln(const QString& s = {}) { out(s + '\n'); }
 static void prompt(const QString& p) { out(bold(p)); }
+
+// ── Markdown-to-terminal renderer ────────────────────────────────────
+
+/// Render inline markdown: **bold**, *italic*, `code`, [links](url).
+static QString renderInline(const QString& text) {
+    QString result = text;
+
+    // Inline code: `...` → cyan+dim
+    {
+        QRegularExpression re("`([^`\\n]+)`");
+        result.replace(re, g_color ? "\033[2;36m\\1\033[0m" : "\\1");
+    }
+    // Bold: **...**  (process before italic)
+    {
+        QRegularExpression re("\\*\\*([^*\\n]+)\\*\\*");
+        result.replace(re, g_color ? "\033[1m\\1\033[0m" : "\\1");
+    }
+    // Italic: *...*
+    {
+        QRegularExpression re("\\*([^*\\n]+)\\*");
+        result.replace(re, g_color ? "\033[3m\\1\033[0m" : "\\1");
+    }
+    // Links: [text](url) → text (url)
+    {
+        QRegularExpression re("\\[([^\\]]+)\\]\\(([^)]+)\\)");
+        result.replace(re, g_color ? "\033[36m\\1\033[0m (\\2)" : "\\1 (\\2)");
+    }
+
+    return result;
+}
+
+/// Render markdown text with ANSI styling for the terminal.
+/// Handles: fenced code blocks, inline code, bold, italic, headers,
+/// lists, blockquotes, horizontal rules, and links.
+static void renderMarkdownToTerminal(const QString& text) {
+    const QStringList lines = text.split('\n');
+    bool inCodeBlock = false;
+    bool inList = false;
+    int listNum = 0;
+
+    for (int i = 0; i < lines.size(); i++) {
+        const QString& line = lines[i];
+        const QString trimmed = line.trimmed();
+
+        // Code block fence
+        if (trimmed.startsWith("```")) {
+            if (inCodeBlock) {
+                inCodeBlock = false;
+                outln(dim(""));
+            } else {
+                if (inList) { outln(""); inList = false; }
+                inCodeBlock = true;
+            }
+            continue;
+        }
+
+        if (inCodeBlock) {
+            outln(dim(line));
+            continue;
+        }
+
+        // Empty line
+        if (trimmed.isEmpty()) {
+            if (inList) { outln(""); inList = false; }
+            if (i + 1 < lines.size() && !lines[i + 1].trimmed().isEmpty())
+                outln();
+            continue;
+        }
+
+        // Horizontal rule
+        if (trimmed == "---" || trimmed == "***" || trimmed == "___") {
+            if (inList) { outln(""); inList = false; }
+            QString rule = QString("─").repeated(60);
+            outln(dim(rule));
+            continue;
+        }
+
+        // Headers
+        if (trimmed.startsWith("### ")) {
+            if (inList) { outln(""); inList = false; }
+            outln(bold(renderInline(trimmed.mid(4))));
+            outln();
+            continue;
+        }
+        if (trimmed.startsWith("## ")) {
+            if (inList) { outln(""); inList = false; }
+            outln(bold(renderInline(trimmed.mid(3))));
+            outln();
+            continue;
+        }
+        if (trimmed.startsWith("# ")) {
+            if (inList) { outln(""); inList = false; }
+            outln(bold(renderInline(trimmed.mid(2))));
+            outln();
+            continue;
+        }
+
+        // Blockquote
+        if (trimmed.startsWith("> ")) {
+            if (inList) { outln(""); inList = false; }
+            outln("  " + dim("│") + " " + renderInline(trimmed.mid(2)));
+            continue;
+        }
+        if (trimmed == ">") {
+            if (inList) { outln(""); inList = false; }
+            outln("  " + dim("│"));
+            continue;
+        }
+
+        // Unordered list
+        if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+            if (!inList) inList = true;
+            outln("  " + cyan("•") + " " + renderInline(trimmed.mid(2)));
+            continue;
+        }
+
+        // Ordered list (simple: starts with "N. ")
+        {
+            QRegularExpression re("^(\\d+)\\. (.+)");
+            auto m = re.match(trimmed);
+            if (m.hasMatch()) {
+                if (!inList) { inList = true; listNum = 0; }
+                listNum++;
+                outln("  " + cyan(QString::number(listNum) + ".") + " " + renderInline(m.captured(2)));
+                continue;
+            }
+        }
+
+        // Regular paragraph
+        if (inList) { outln(""); inList = false; }
+        outln(renderInline(trimmed));
+    }
+
+    if (inCodeBlock)
+        outln(dim(""));
+    if (inList)
+        outln();
+}
 
 // ── Secure password input ────────────────────────────────────────────
 
@@ -123,6 +262,7 @@ public:
     Config      cfg;
     QJsonObject chat;
     QJsonArray  m_runMsgs;
+    bool        m_firstEventDone = false;
 
     void exec(bool singleShot, const QString& singleShotMsg, bool noSave = false) {
         cfg = configLoad();
@@ -186,8 +326,11 @@ private:
 
         // Clear accumulated messages
         m_runMsgs = QJsonArray();
+        m_firstEventDone = false;
 
         Tools::setSudoPasswordProvider([](){ return readPassword("Sudo password: "); });
+
+        out(dim("Thinking..."));
 
         LlmClient client;
         client.run(
@@ -213,6 +356,12 @@ private:
 
     void onEvent(const QJsonObject& ev) {
         const QString type = ev["type"].toString();
+
+        // Clear thinking indicator on first event
+        if (!m_firstEventDone) {
+            m_firstEventDone = true;
+            out("\r\033[K"); // clear line
+        }
 
         if (type == "assistant_tool_calls") {
             m_runMsgs.append(ev["message"].toObject());
@@ -244,7 +393,11 @@ private:
                 m_runMsgs.append(QJsonObject{{"role","assistant"},{"content",content}});
             outln();
             outln(green(bold("--- Pengy ---")));
-            outln(content);
+            if (content.trimmed().isEmpty()) {
+                outln(dim("(empty response)"));
+            } else {
+                renderMarkdownToTerminal(content);
+            }
             const QJsonObject usage = ev["usage"].toObject();
             if (usage["total_tokens"].toInt() > 0) {
                 outln(dim(QString("(%1 in / %2 out tokens)")
@@ -347,9 +500,16 @@ private:
             outln(dim("tool_confirmation → " + cfg.toolConfirmation));
 
         } else if (cmd == "/system") {
-            if (arg.isEmpty()) outln("system_message: " + (cfg.systemMessage.isEmpty()
-                ? dim("(not set)") : cfg.systemMessage));
-            else { cfg.systemMessage = arg; configSave(cfg); outln(dim("System message updated.")); }
+            if (arg.isEmpty()) {
+                QString rendered = cfg.systemMessage.isEmpty()
+                    ? dim("(not set)")
+                    : configRenderSystemMessage(cfg.systemMessage);
+                outln(bold("Template: ") + cfg.systemMessage);
+                outln(bold("Rendered: ") + rendered);
+            } else { cfg.systemMessage = arg; configSave(cfg);
+                outln(green("System message updated."));
+                outln(bold("Rendered: ") + configRenderSystemMessage(arg));
+            }
 
         } else if (cmd == "/compact") {
             int turns = cfg.contextKeepTurns > 0 ? cfg.contextKeepTurns : 3;
@@ -375,6 +535,11 @@ private:
             if (!ok || n < 1) outln("Usage: /delete <n>  (see /list)");
             else deleteChat(n - 1);
 
+        } else if (cmd == "/attach") {
+            outln(bold("File attachment:"));
+            outln("  Use " + cyan("@path/to/file") + " anywhere in your message to attach a text file.");
+            outln("  Example: " + dim("Look at @src/main.cpp and fix the bug"));
+
         } else {
             outln(red("Unknown command: " + cmd + "  — type /help"));
         }
@@ -398,6 +563,7 @@ private:
             {"/context-keep <n>",   "Keep last N turns full (0 = keep all)"},
             {"/timeout <n>",        "Set tool execution timeout in seconds"},
             {"/agent [str]",        "Show or set user agent string"},
+            {"/attach",             "Show file attachment help"},
             {"/config",             "Show current configuration"},
             {"/help",               "Show this help"},
             {"/quit",               "Exit"},

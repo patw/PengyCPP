@@ -6,19 +6,40 @@ int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
 
     quint16 port = 5000;
+    QString host = "127.0.0.1";
     const QStringList args = app.arguments().mid(1);
-    if (!args.isEmpty()) {
-        bool ok;
-        int p = args.first().toInt(&ok);
-        if (ok && p > 0 && p < 65536) port = static_cast<quint16>(p);
+    for (int i = 0; i < args.size(); i++) {
+        if (args[i] == "-h" || args[i] == "--help") {
+            QTextStream(stdout)
+                << "Pengy web UI — chat with LLMs from your browser\n\n"
+                << "Usage: pengy_web [PORT] [--host HOST]\n\n"
+                << "Arguments:\n"
+                << "  PORT          Bind port (default: 5000)\n\n"
+                << "Options:\n"
+                << "  --host HOST   Bind host (default: 127.0.0.1). Pass\n"
+                << "                --host 0.0.0.0 to expose beyond localhost —\n"
+                << "                this app has no authentication and exposes\n"
+                << "                run_bash/run_python tools, so only do this\n"
+                << "                on a trusted network.\n"
+                << "  -h, --help    Show this help message and exit\n";
+            return 0;
+        } else if (args[i] == "--host") {
+            if (i + 1 < args.size()) {
+                host = args[++i];
+            }
+        } else {
+            bool ok;
+            int p = args[i].toInt(&ok);
+            if (ok && p > 0 && p < 65536) port = static_cast<quint16>(p);
+        }
     }
 
-    WebServer server(port);
+    WebServer server(host, port);
     if (!server.start()) {
-        QTextStream(stderr) << "Failed to bind on port " << port << "\n";
+        QTextStream(stderr) << "Failed to bind on " << host << ":" << port << "\n";
         return 1;
     }
 
-    QTextStream(stdout) << "Pengy web UI running at http://localhost:" << port << "\n";
+    QTextStream(stdout) << "Pengy web UI running at http://" << host << ":" << port << "\n";
     return app.exec();
 }
