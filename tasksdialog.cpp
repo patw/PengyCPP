@@ -35,7 +35,7 @@ QWidget* TasksDialog::makeTaskRow(const QJsonObject& task) {
     row->setStyleSheet(QString("#taskRow{background-color:%1;color:%2;}").arg(m_theme["panel"], m_theme["fg"]));
     auto* col = new QWidget; auto* vl = new QVBoxLayout(col); vl->setContentsMargins(0,0,0,0); vl->setSpacing(2);
     auto* title = new QLabel(task["title"].toString("Untitled Task")); title->setStyleSheet(QString("font-weight:bold;color:%1;").arg(m_theme["fg"])); title->setMinimumWidth(0); vl->addWidget(title);
-    QString preview = task["template"].toString().replace('\n',' '); if (preview.size()>140) preview = preview.left(140) + "…"; auto* prev = new QLabel(preview); prev->setStyleSheet(QString("font-size:11px;color:%1;").arg(m_theme["muted"])); vl->addWidget(prev); layout->addWidget(col,1);
+    QString preview = task["template"].toString().replace('\n',' '); if (preview.size()>70) preview = preview.left(70) + "…"; auto* prev = new QLabel(preview); prev->setStyleSheet(QString("font-size:11px;color:%1;").arg(m_theme["muted"])); vl->addWidget(prev); layout->addWidget(col,1);
     QString btnStyle = QString("QPushButton{background-color:transparent;color:%1;border:none;border-radius:4px;font-size:13px;}QPushButton:hover{background-color:%2;}").arg(m_theme["fg"], m_theme["hover"]);
     auto addBtn=[&](const QString& txt,const QString& tip, auto fn){ auto* b=new QPushButton(txt); b->setFixedSize(28,28); b->setToolTip(tip); b->setStyleSheet(btnStyle); connect(b,&QPushButton::clicked,this,[=](){ fn(task); }); layout->addWidget(b); };
     addBtn("▶","Play task",[this](const QJsonObject&t){playTask(t);}); addBtn("✏","Edit task",[this](const QJsonObject&t){editTask(t);}); addBtn("🗑","Delete task",[this](const QJsonObject&t){deleteTask(t);}); return row;
