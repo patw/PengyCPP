@@ -43,6 +43,7 @@ static inline QString bold(const QString& s)   { return clr("\033[1m",  s); }
 static inline QString dim(const QString& s)    { return clr("\033[2m",  s); }
 static inline QString green(const QString& s)  { return clr("\033[32m", s); }
 static inline QString cyan(const QString& s)   { return clr("\033[36m", s); }
+static inline QString blue(const QString& s)   { return clr("\033[34m", s); }
 static inline QString red(const QString& s)    { return clr("\033[31m", s); }
 
 static void out(const QString& s) {
@@ -54,26 +55,21 @@ static void prompt(const QString& p) { out(bold(p)); }
 
 // ── Markdown-to-terminal renderer ────────────────────────────────────
 
-/// Render inline markdown: **bold**, *italic*, `code`, [links](url).
 static QString renderInline(const QString& text) {
     QString result = text;
 
-    // Inline code: `...` → cyan+dim
     {
         QRegularExpression re("`([^`\\n]+)`");
         result.replace(re, g_color ? "\033[2;36m\\1\033[0m" : "\\1");
     }
-    // Bold: **...**  (process before italic)
     {
         QRegularExpression re("\\*\\*([^*\\n]+)\\*\\*");
         result.replace(re, g_color ? "\033[1m\\1\033[0m" : "\\1");
     }
-    // Italic: *...*
     {
         QRegularExpression re("\\*([^*\\n]+)\\*");
         result.replace(re, g_color ? "\033[3m\\1\033[0m" : "\\1");
     }
-    // Links: [text](url) → text (url)
     {
         QRegularExpression re("\\[([^\\]]+)\\]\\(([^)]+)\\)");
         result.replace(re, g_color ? "\033[36m\\1\033[0m (\\2)" : "\\1 (\\2)");
@@ -82,9 +78,6 @@ static QString renderInline(const QString& text) {
     return result;
 }
 
-/// Render markdown text with ANSI styling for the terminal.
-/// Handles: fenced code blocks, inline code, bold, italic, headers,
-/// lists, blockquotes, horizontal rules, and links.
 static void renderMarkdownToTerminal(const QString& text) {
     const QStringList lines = text.split('\n');
     bool inCodeBlock = false;
@@ -95,7 +88,6 @@ static void renderMarkdownToTerminal(const QString& text) {
         const QString& line = lines[i];
         const QString trimmed = line.trimmed();
 
-        // Code block fence
         if (trimmed.startsWith("```")) {
             if (inCodeBlock) {
                 inCodeBlock = false;
@@ -112,7 +104,6 @@ static void renderMarkdownToTerminal(const QString& text) {
             continue;
         }
 
-        // Empty line
         if (trimmed.isEmpty()) {
             if (inList) { outln(""); inList = false; }
             if (i + 1 < lines.size() && !lines[i + 1].trimmed().isEmpty())
@@ -120,7 +111,6 @@ static void renderMarkdownToTerminal(const QString& text) {
             continue;
         }
 
-        // Horizontal rule
         if (trimmed == "---" || trimmed == "***" || trimmed == "___") {
             if (inList) { outln(""); inList = false; }
             QString rule = QString("─").repeated(60);
@@ -128,7 +118,6 @@ static void renderMarkdownToTerminal(const QString& text) {
             continue;
         }
 
-        // Headers
         if (trimmed.startsWith("### ")) {
             if (inList) { outln(""); inList = false; }
             outln(bold(renderInline(trimmed.mid(4))));
@@ -148,7 +137,6 @@ static void renderMarkdownToTerminal(const QString& text) {
             continue;
         }
 
-        // Blockquote
         if (trimmed.startsWith("> ")) {
             if (inList) { outln(""); inList = false; }
             outln("  " + dim("│") + " " + renderInline(trimmed.mid(2)));
@@ -160,14 +148,12 @@ static void renderMarkdownToTerminal(const QString& text) {
             continue;
         }
 
-        // Unordered list
         if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
             if (!inList) inList = true;
             outln("  " + cyan("•") + " " + renderInline(trimmed.mid(2)));
             continue;
         }
 
-        // Ordered list (simple: starts with "N. ")
         {
             QRegularExpression re("^(\\d+)\\. (.+)");
             auto m = re.match(trimmed);
@@ -179,15 +165,12 @@ static void renderMarkdownToTerminal(const QString& text) {
             }
         }
 
-        // Regular paragraph
         if (inList) { outln(""); inList = false; }
         outln(renderInline(trimmed));
     }
 
-    if (inCodeBlock)
-        outln(dim(""));
-    if (inList)
-        outln();
+    if (inCodeBlock) outln(dim(""));
+    if (inList) outln();
 }
 
 // ── Secure password input ────────────────────────────────────────────
@@ -256,6 +239,11 @@ static QStringList fetchModels(const Config& cfg) {
     return models;
 }
 
+static QString truncate(const QString& text, int maxLen = 72) {
+    if (text.length() <= maxLen) return text;
+    return text.left(maxLen - 1) + QStringLiteral("…");
+}
+
 // ── CLI application ──────────────────────────────────────────────────
 
 class PengyCliApp {
@@ -264,7 +252,7 @@ public:
     QJsonObject chat;
     QJsonArray  m_runMsgs;
     bool        m_firstEventDone = false;
-    QString     m_outputMode = "pretty"; // pretty | raw | json | silent
+    QString     m_outputMode = "pretty";
 
     void exec(bool singleShot, const QString& singleShotMsg,
               bool noSave = false,
@@ -272,7 +260,6 @@ public:
               const QString& systemOverride = {}) {
         cfg = configLoad();
 
-        // Apply CLI overrides after loading config
         if (!modelOverride.isEmpty())
             cfg.model = modelOverride;
         if (!systemOverride.isEmpty())
@@ -281,7 +268,6 @@ public:
         Tools::setTimeout(cfg.toolTimeout);
 
         if (singleShot && noSave) {
-            // Ephemeral chat: never touches chats.json.
             chat = QJsonObject{
                 {"id",         QUuid::createUuid().toString(QUuid::WithoutBraces)},
                 {"title",      "New Chat"},
@@ -299,12 +285,32 @@ public:
         }
 
         outln(bold("Pengy") + " — type " + cyan("/help") + " for commands, Ctrl-D to quit");
-        outln(dim("Chat: " + chat["title"].toString()));
+
+        // Startup summary
+        {
+            QJsonArray msgs = chat["messages"].toArray();
+            int msgCount = msgs.size();
+            QString title = chat["title"].toString();
+            outln(dim("Chat: " + title + " (" + QString::number(msgCount) + " messages)"));
+
+            // Show last user message as context
+            for (int i = msgs.size() - 1; i >= 0; --i) {
+                if (msgs[i].toObject()["role"].toString() == "user") {
+                    QString last = msgs[i].toObject()["content"].toString();
+                    if (!last.isEmpty()) {
+                        outln(dim("Last: ") + truncate(last, 80));
+                    }
+                    break;
+                }
+            }
+        }
+        outln(dim("Model: " + cfg.model + "  Tool Confirm: " + cfg.toolConfirmation));
         outln();
 
         QTextStream in(stdin);
         while (!in.atEnd()) {
-            prompt("You> ");
+            QString title = truncate(chat["title"].toString(), 30);
+            prompt(title + " › You> ");
             QString line = in.readLine();
             if (line.isNull()) break;
             line = line.trimmed();
@@ -335,7 +341,6 @@ private:
             });
         for (const QJsonValue& v : hist) sendMsgs.append(v);
 
-        // Clear accumulated messages
         m_runMsgs = QJsonArray();
         m_firstEventDone = false;
 
@@ -353,7 +358,6 @@ private:
 
         Tools::clearSudoPasswordProvider();
 
-        // Persist to chat
         QJsonArray msgs = chat["messages"].toArray();
         msgs.append(QJsonObject{{"role","user"},{"content",input}});
         for (const QJsonValue& v : m_runMsgs) msgs.append(v);
@@ -368,10 +372,9 @@ private:
     void onEvent(const QJsonObject& ev) {
         const QString type = ev["type"].toString();
 
-        // Clear thinking indicator on first event
         if (!m_firstEventDone) {
             m_firstEventDone = true;
-            out("\r\033[K"); // clear line
+            out("\r\033[K");
         }
 
         if (type == "assistant_tool_calls") {
@@ -414,7 +417,6 @@ private:
                 if (!content.trimmed().isEmpty())
                     outln(content);
             } else {
-                // pretty (default)
                 outln();
                 outln(green(bold("--- Pengy ---")));
                 if (content.trimmed().isEmpty()) {
@@ -437,10 +439,15 @@ private:
         outln();
         outln("  " + bold("[1]") + " Execute   " +
               bold("[2]") + " Yes to all this turn   " +
-              bold("[3]") + " Decline");
+              bold("[3]") + " Decline   " +
+              bold("[4]") + " Abort run");
         prompt("Choice [1]: ");
         QTextStream in(stdin);
         const QString c = in.readLine().trimmed();
+        if (c == "4") {
+            outln(red("Run aborted by user."));
+            return {false, false};  // decline + don't yolo
+        }
         if (c == "3") return {false, false};
         if (c == "2") return {true,  true};
         return {true, false};
@@ -463,7 +470,23 @@ private:
 
         } else if (cmd == "/new") {
             chat = chatCreate("New Chat");
-            outln(dim("New chat started."));
+            outln(green("✓ New chat created."));
+
+        } else if (cmd == "/show") {
+            cmdShow(arg);
+
+        } else if (cmd == "/tail") {
+            cmdTail(arg);
+
+        } else if (cmd == "/rename") {
+            cmdRename(arg);
+
+        } else if (cmd == "/clear") {
+            out("\033[2J\033[H");
+            outln(dim("Screen cleared. Use /show to see conversation."));
+
+        } else if (cmd == "/export") {
+            cmdExport(arg);
 
         } else if (cmd == "/config") {
             outln(bold("Configuration:"));
@@ -571,27 +594,179 @@ private:
         return true;
     }
 
+    // ── New command implementations ──────────────────────────────────
+
+    void cmdShow(const QString& arg) {
+        QJsonArray msgs = chat["messages"].toArray();
+        int total = msgs.size();
+        if (total == 0) {
+            outln(dim("No messages in this chat."));
+            return;
+        }
+
+        int limit = 0;
+        if (!arg.isEmpty()) {
+            bool ok; limit = arg.toInt(&ok);
+            if (!ok || limit <= 0) {
+                outln("Usage: /show [N]  — show last N messages");
+                return;
+            }
+        }
+
+        int start = limit > 0 ? qMax(0, total - limit) : 0;
+        int showing = total - start;
+
+        outln();
+        outln(bold("Conversation: ") + bold(chat["title"].toString()) +
+              dim(" (" + QString::number(total) + " messages total" +
+                  (limit > 0 ? ", showing last " + QString::number(showing) : "") + ")"));
+        outln(dim(QString("─").repeated(60)));
+
+        for (int i = start; i < total; i++) {
+            QJsonObject msg = msgs[i].toObject();
+            QString role = msg["role"].toString();
+            QString content = msg["content"].toString();
+            int num = i + 1;
+
+            if (role == "user") {
+                outln(blue(bold("#" + QString::number(num) + " You:")) + " " + content);
+            } else if (role == "assistant") {
+                QJsonArray toolCalls = msg["tool_calls"].toArray();
+                if (!toolCalls.isEmpty()) {
+                    QStringList tcNames;
+                    for (const QJsonValue& tc : toolCalls)
+                        tcNames << tc.toObject()["function"].toObject()["name"].toString();
+                    outln(green(bold("#" + QString::number(num) + " Assistant:")) +
+                          dim(" (tool calls: " + tcNames.join(", ") + ")"));
+                }
+                if (!content.isEmpty()) {
+                    outln(dim("  " + truncate(content, 100)));
+                }
+            } else if (role == "tool") {
+                QString tcId = msg["tool_call_id"].toString().left(8);
+                outln(dim("#" + QString::number(num) + " Tool [" + tcId + "]: " + truncate(content, 80)));
+            } else if (role == "system") {
+                outln(dim("#" + QString::number(num) + " System: " + truncate(content, 100)));
+            }
+        }
+        outln(dim(QString("─").repeated(60)));
+    }
+
+    void cmdTail(const QString& arg) {
+        int n = 5;
+        if (!arg.isEmpty()) {
+            bool ok; int parsed = arg.toInt(&ok);
+            if (ok && parsed > 0) n = parsed;
+        }
+        cmdShow(QString::number(n));
+    }
+
+    void cmdRename(const QString& arg) {
+        if (arg.isEmpty()) {
+            outln(dim("Usage: /rename <new title>"));
+            return;
+        }
+        QString oldTitle = chat["title"].toString();
+        chat["title"] = arg;
+        chatSave(chat);
+        outln(green("✓ Renamed: ") + bold(oldTitle) + " → " + bold(arg));
+    }
+
+    void cmdExport(const QString& arg) {
+        QJsonArray msgs = chat["messages"].toArray();
+
+        QString outPath = arg;
+        if (outPath.isEmpty()) {
+            QString safe = chat["title"].toString();
+            safe.replace(QRegularExpression("[^a-zA-Z0-9 _-]"), "");
+            safe = safe.trimmed().left(50);
+            if (safe.isEmpty()) safe = "chat";
+            outPath = QDir::homePath() + "/Downloads/" + safe + ".md";
+        }
+
+        QStringList lines;
+        lines << "# " + chat["title"].toString();
+        lines << "*Exported " + QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") + "*";
+        lines << "";
+
+        for (const QJsonValue& v : msgs) {
+            QJsonObject msg = v.toObject();
+            QString role = msg["role"].toString();
+            QString content = msg["content"].toString();
+
+            if (role == "user") {
+                lines << "### 🧑 You";
+                lines << content;
+                lines << "";
+            } else if (role == "assistant") {
+                QJsonArray toolCalls = msg["tool_calls"].toArray();
+                if (!toolCalls.isEmpty()) {
+                    lines << "### 🤖 Assistant (tool calls)";
+                    for (const QJsonValue& tc : toolCalls) {
+                        QJsonObject fn = tc.toObject()["function"].toObject();
+                        lines << "- **" + fn["name"].toString() + "**";
+                        lines << "  ```json\n  " + fn["arguments"].toString() + "\n  ```";
+                    }
+                    lines << "";
+                }
+                if (!content.isEmpty()) {
+                    lines << "### 🤖 Assistant";
+                    lines << content;
+                    lines << "";
+                }
+            } else if (role == "tool") {
+                QString tcId = msg["tool_call_id"].toString();
+                lines << "#### 🔧 Tool result (`" + tcId + "`)";
+                lines << "```";
+                lines << content;
+                lines << "```";
+                lines << "";
+            } else if (role == "system") {
+                lines << "*System: " + truncate(content, 200) + "*";
+                lines << "";
+            }
+        }
+
+        QFileInfo fi(outPath);
+        QDir().mkpath(fi.dir().absolutePath());
+        QFile f(outPath);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            f.write(lines.join('\n').toUtf8());
+            f.close();
+            outln(green("✓ Exported to: ") + bold(outPath));
+        } else {
+            outln(red("Error exporting: ") + f.errorString());
+        }
+    }
+
+    // ── Updated existing commands ────────────────────────────────────
+
     void printHelp() {
         struct Cmd { const char* c; const char* d; };
         static const Cmd cmds[] = {
-            {"/new",                "Start a new chat"},
-            {"/list",               "List all chats"},
-            {"/load <n>",           "Load chat by number"},
-            {"/delete <n>",         "Delete chat by number"},
-            {"/compact",            "Elide old tool results in current chat"},
-            {"/model [name]",       "Show or set model"},
-            {"/models",             "Fetch available models from endpoint"},
-            {"/baseurl [url]",      "Show or set API base URL"},
-            {"/apikey [key]",       "Show or set API key"},
-            {"/system [msg]",       "Show or set system message template"},
+            {"/help",                "Show this help"},
+            {"/new",                 "Start a new chat"},
+            {"/show [N]",            "Show full conversation (optional: last N messages)"},
+            {"/tail [N]",            "Show the last N messages (default 5)"},
+            {"/rename <title>",      "Rename the current chat"},
+            {"/clear",               "Clear the terminal screen"},
+            {"/export [path]",       "Export current chat as Markdown"},
+            {"/config",              "Show current configuration"},
+            {"/model [name]",        "Show or set model"},
+            {"/models",              "Fetch available models from endpoint"},
+            {"/baseurl [url]",       "Show or set API base URL"},
+            {"/apikey [key]",        "Show or set API key"},
+            {"/system [msg]",        "Show or set system message template"},
             {"/yolo [none|safe|all]","Cycle or set tool confirmation mode"},
-            {"/context-keep <n>",   "Keep last N turns full (0 = keep all)"},
-            {"/timeout <n>",        "Set tool execution timeout in seconds"},
-            {"/agent [str]",        "Show or set user agent string"},
-            {"/attach",             "Show file attachment help"},
-            {"/config",             "Show current configuration"},
-            {"/help",               "Show this help"},
-            {"/quit",               "Exit"},
+            {"/context-keep <n>",    "Keep last N turns full (0 = keep all)"},
+            {"/timeout <n>",         "Set tool execution timeout in seconds"},
+            {"/agent [str]",         "Show or set user agent string"},
+            {"/compact",             "Elide old tool results in current chat"},
+            {"/list",                "List all chats"},
+            {"/load <n>",            "Load chat by number"},
+            {"/delete <n>",          "Delete chat by number"},
+            {"/attach",              "Show file attachment help"},
+            {"/quit",                "Exit"},
         };
         outln(bold("Commands:"));
         for (const auto& cmd : cmds)
@@ -605,13 +780,33 @@ private:
         const QJsonArray chats = chatsLoad();
         if (chats.isEmpty()) { outln(dim("No chats.")); return; }
         outln(bold("Chats:"));
+        outln(dim(QString("  %1  %2  %3  %4")
+            .arg("#", -4)
+            .arg("Title", -30)
+            .arg("Msgs", 6)
+            .arg("Preview")));
+
+        QString currentId = chat["id"].toString();
         for (int i = 0; i < chats.size(); i++) {
             const QJsonObject c = chats[i].toObject();
-            const bool cur = c["id"].toString() == chat["id"].toString();
-            outln(QString("  %1. %2%3")
-                .arg(i + 1)
-                .arg(c["title"].toString())
-                .arg(cur ? green("  ◀ current") : ""));
+            const bool cur = c["id"].toString() == currentId;
+            int msgCount = c["messages"].toArray().size();
+
+            // Find first user message as preview
+            QString preview;
+            const QJsonArray msgs = c["messages"].toArray();
+            for (const QJsonValue& v : msgs) {
+                if (v.toObject()["role"].toString() == "user") {
+                    preview = truncate(v.toObject()["content"].toString(), 30);
+                    break;
+                }
+            }
+
+            outln(QString("  %1 %2 %3  %4")
+                .arg((cur ? green("→") + QString::number(i + 1) : " " + QString::number(i + 1)), -4)
+                .arg(truncate(c["title"].toString(), 28), -30)
+                .arg(msgCount, 5)
+                .arg(preview));
         }
     }
 
@@ -619,7 +814,10 @@ private:
         const QJsonArray chats = chatsLoad();
         if (idx < 0 || idx >= chats.size()) { outln(red("No chat at that index.")); return; }
         chat = chats[idx].toObject();
-        outln(dim("Loaded: " + chat["title"].toString()));
+        int msgCount = chat["messages"].toArray().size();
+        outln(dim("Loaded: " + chat["title"].toString() + " (" + QString::number(msgCount) + " messages)"));
+        // Show tail for context
+        cmdTail("3");
     }
 
     void deleteChat(int idx) {
@@ -689,7 +887,6 @@ int main(int argc, char* argv[]) {
     const bool singleShot = !promptArgs.isEmpty();
     const QString msg     = singleShot ? promptArgs.join(' ') : QString();
 
-    // Apply config directory override as early as possible
     if (!configDir.isEmpty())
         setConfigDir(configDir);
 
