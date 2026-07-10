@@ -7,8 +7,21 @@
 
 /* Resolve the pengy config directory.
  * Uses $XDG_CONFIG_HOME if set, otherwise $HOME/.config — matching the
- * Python and Rust editions so all three share the same settings/chats/tasks. */
+ * Python and Rust editions so all three share the same settings/chats/tasks.
+ * Can be overridden via setConfigDir(). */
+static QString& configDirOverride() {
+    static QString override;
+    return override;
+}
+
+void setConfigDir(const QString& path) {
+    configDirOverride() = path;
+}
+
 static QString pengyConfigDir() {
+    QString& override = configDirOverride();
+    if (!override.isEmpty())
+        return override;
     QString base = qEnvironmentVariable("XDG_CONFIG_HOME");
     if (base.isEmpty())
         base = QDir::homePath() + "/.config";

@@ -26,7 +26,7 @@
 #include "../chatmanager.h"
 #include "../llmclient.h"
 #include "../tools.h"
-#include "../version.h"
+#include "version.h"
 
 // ── Terminal colors ──────────────────────────────────────────────────
 
@@ -264,9 +264,19 @@ public:
     QJsonObject chat;
     QJsonArray  m_runMsgs;
     bool        m_firstEventDone = false;
+    QString     m_outputMode = "pretty"; // pretty | raw | json | silent
 
-    void exec(bool singleShot, const QString& singleShotMsg, bool noSave = false) {
+    void exec(bool singleShot, const QString& singleShotMsg,
+              bool noSave = false,
+              const QString& modelOverride = {},
+              const QString& systemOverride = {}) {
         cfg = configLoad();
+
+        // Apply CLI overrides after loading config
+        if (!modelOverride.isEmpty())
+            cfg.model = modelOverride;
+        if (!systemOverride.isEmpty())
+            cfg.systemMessage = systemOverride;
         Tools::setUserAgent(cfg.userAgent);
         Tools::setTimeout(cfg.toolTimeout);
 
@@ -392,20 +402,34 @@ private:
             const QString content = ev["content"].toString();
             if (!content.isEmpty())
                 m_runMsgs.append(QJsonObject{{"role","assistant"},{"content",content}});
-            outln();
-            outln(green(bold("--- Pengy ---")));
-            if (content.trimmed().isEmpty()) {
-                outln(dim("(empty response)"));
+
+            if (m_outputMode == "silent") {
+                // No output
+            } else if (m_outputMode == "json") {
+                QJsonObject result;
+                result["content"] = content;
+                result["usage"] = ev["usage"].toObject();
+                outln(QJsonDocument(result).toJson(QJsonDocument::Indented));
+            } else if (m_outputMode == "raw") {
+                if (!content.trimmed().isEmpty())
+                    outln(content);
             } else {
-                renderMarkdownToTerminal(content);
+                // pretty (default)
+                outln();
+                outln(green(bold("--- Pengy ---")));
+                if (content.trimmed().isEmpty()) {
+                    outln(dim("(empty response)"));
+                } else {
+                    renderMarkdownToTerminal(content);
+                }
+                const QJsonObject usage = ev["usage"].toObject();
+                if (usage["total_tokens"].toInt() > 0) {
+                    outln(dim(QString("(%1 in / %2 out tokens)")
+                        .arg(usage["prompt_tokens"].toInt())
+                        .arg(usage["completion_tokens"].toInt())));
+                }
+                outln();
             }
-            const QJsonObject usage = ev["usage"].toObject();
-            if (usage["total_tokens"].toInt() > 0) {
-                outln(dim(QString("(%1 in / %2 out tokens)")
-                    .arg(usage["prompt_tokens"].toInt())
-                    .arg(usage["completion_tokens"].toInt())));
-            }
-            outln();
         }
     }
 
@@ -623,20 +647,41 @@ int main(int argc, char* argv[]) {
 
     const QStringList args = app.arguments().mid(1);
     bool noSave = false;
+    QString outputMode = "pretty";
+    QString configDir;
+    QString modelOverride;
+    QString systemOverride;
     QStringList promptArgs;
-    for (const QString& a : args) {
+    for (int i = 0; i < args.size(); i++) {
+        const QString& a = args[i];
         if (a == "--no-save") {
             noSave = true;
         } else if (a == "-v" || a == "--version") {
             outln(QString("Pengy v") + PENGY_VERSION);
             return 0;
         } else if (a == "-h" || a == "--help") {
-            outln("Usage: pengy_cli [prompt...] [--no-save]");
+            outln("Usage: pengy_cli [prompt...] [OPTIONS]");
+            outln();
+            outln("Arguments:");
             outln("  prompt      Optional prompt for single-shot mode. If omitted, starts interactive mode.");
-            outln("  --no-save   Don't persist single-shot chats to history.");
-            outln("  -v, --version  Show version information and exit.");
-            outln("  -h, --help     Show this help message and exit.");
+            outln();
+            outln("Options:");
+            outln("  --no-save        Don't persist single-shot chats to history.");
+            outln("  --model NAME     Set the model to use (overrides config).");
+            outln("  --system MSG     Set the system message (overrides config).");
+            outln("  --output FORMAT  Output format: pretty, raw, json, silent (default: pretty).");
+            outln("  --config-dir PATH  Use a custom config directory.");
+            outln("  -v, --version    Show version information and exit.");
+            outln("  -h, --help       Show this help message and exit.");
             return 0;
+        } else if (a == "--model" && i + 1 < args.size()) {
+            modelOverride = args[++i];
+        } else if (a == "--system" && i + 1 < args.size()) {
+            systemOverride = args[++i];
+        } else if (a == "--output" && i + 1 < args.size()) {
+            outputMode = args[++i];
+        } else if (a == "--config-dir" && i + 1 < args.size()) {
+            configDir = args[++i];
         } else {
             promptArgs.append(a);
         }
@@ -644,7 +689,12 @@ int main(int argc, char* argv[]) {
     const bool singleShot = !promptArgs.isEmpty();
     const QString msg     = singleShot ? promptArgs.join(' ') : QString();
 
+    // Apply config directory override as early as possible
+    if (!configDir.isEmpty())
+        setConfigDir(configDir);
+
     PengyCliApp cli;
-    cli.exec(singleShot, msg, noSave);
+    cli.m_outputMode = outputMode;
+    cli.exec(singleShot, msg, noSave, modelOverride, systemOverride);
     return 0;
 }
