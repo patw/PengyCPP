@@ -1,6 +1,7 @@
 #include <QCoreApplication>
 #include <QTextStream>
 #include "webserver.h"
+#include "version.h"
 
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
@@ -9,7 +10,10 @@ int main(int argc, char* argv[]) {
     QString host = "127.0.0.1";
     const QStringList args = app.arguments().mid(1);
     for (int i = 0; i < args.size(); i++) {
-        if (args[i] == "-h" || args[i] == "--help") {
+        if (args[i] == "-v" || args[i] == "--version") {
+            QTextStream(stdout) << "Pengy v" << PENGY_VERSION << "\n";
+            return 0;
+        } else if (args[i] == "-h" || args[i] == "--help") {
             QTextStream(stdout)
                 << "Pengy web UI — chat with LLMs from your browser\n\n"
                 << "Usage: pengy_web [PORT] [--host HOST]\n\n"
@@ -21,7 +25,8 @@ int main(int argc, char* argv[]) {
                 << "                this app has no authentication and exposes\n"
                 << "                run_bash/run_python tools, so only do this\n"
                 << "                on a trusted network.\n"
-                << "  -h, --help    Show this help message and exit\n";
+                << "  -v, --version  Show version information and exit.\n"
+                << "  -h, --help     Show this help message and exit\n";
             return 0;
         } else if (args[i] == "--host") {
             if (i + 1 < args.size()) {

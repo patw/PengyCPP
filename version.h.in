@@ -1,0 +1,4 @@
+// Auto-generated from version.h.in — do not edit directly
+#pragma once
+
+#define PENGY_VERSION "@PROJECT_VERSION@"

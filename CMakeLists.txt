@@ -6,6 +6,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
+# Generate version.h from template
+configure_file(
+    ${CMAKE_SOURCE_DIR}/version.h.in
+    ${CMAKE_BINARY_DIR}/version.h
+    @ONLY
+)
+
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
 
 # ── CLI ─────────────────────────────────────────────────────────────
@@ -17,6 +24,7 @@ add_executable(pengy_cli
     llmclient.cpp
 )
 target_link_libraries(pengy_cli PRIVATE Qt6::Core Qt6::Network)
+target_include_directories(pengy_cli PRIVATE ${CMAKE_BINARY_DIR})
 
 # ── Web UI ───────────────────────────────────────────────────────────
 add_executable(pengy_web
@@ -30,6 +38,7 @@ add_executable(pengy_web
     llmclient.cpp
 )
 target_link_libraries(pengy_web PRIVATE Qt6::Core Qt6::Network)
+target_include_directories(pengy_web PRIVATE ${CMAKE_BINARY_DIR})
 
 # ── Desktop GUI ──────────────────────────────────────────────────────
 add_executable(pengy
@@ -54,6 +63,8 @@ target_link_libraries(pengy PRIVATE
     Qt6::Widgets
     Qt6::Network
 )
+
+target_include_directories(pengy PRIVATE ${CMAKE_BINARY_DIR})
 
 if(NOT APPLE AND NOT WIN32)
     set_target_properties(pengy PROPERTIES

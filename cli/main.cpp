@@ -26,6 +26,7 @@
 #include "../chatmanager.h"
 #include "../llmclient.h"
 #include "../tools.h"
+#include "../version.h"
 
 // ── Terminal colors ──────────────────────────────────────────────────
 
@@ -626,10 +627,15 @@ int main(int argc, char* argv[]) {
     for (const QString& a : args) {
         if (a == "--no-save") {
             noSave = true;
+        } else if (a == "-v" || a == "--version") {
+            outln(QString("Pengy v") + PENGY_VERSION);
+            return 0;
         } else if (a == "-h" || a == "--help") {
             outln("Usage: pengy_cli [prompt...] [--no-save]");
             outln("  prompt      Optional prompt for single-shot mode. If omitted, starts interactive mode.");
             outln("  --no-save   Don't persist single-shot chats to history.");
+            outln("  -v, --version  Show version information and exit.");
+            outln("  -h, --help     Show this help message and exit.");
             return 0;
         } else {
             promptArgs.append(a);
