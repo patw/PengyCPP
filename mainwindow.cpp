@@ -122,6 +122,17 @@ void MainWindow::loadChatList() {
 }
 
 void MainWindow::createNewChat() {
+    m_chats = chatsLoad();
+    if (!m_chats.isEmpty()) {
+        QJsonObject first = m_chats[0].toObject();
+        if (first["title"].toString() == "New Chat" && first["messages"].toArray().isEmpty()) {
+            m_currentChat   = first;
+            m_currentChatId = first["id"].toString();
+            m_chatHistory->selectChatById(m_currentChatId);
+            m_chatView->clear();
+            return;
+        }
+    }
     QJsonObject chat = chatCreate("New Chat");
     if (chat.isEmpty()) return;
     m_currentChat   = chat;

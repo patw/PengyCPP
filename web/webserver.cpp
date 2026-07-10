@@ -122,6 +122,14 @@ void WebServer::routeRoot(QTcpSocket* socket) {
 }
 
 void WebServer::routeChatNew(QTcpSocket* socket) {
+    QJsonArray chats = chatsLoad();
+    if (!chats.isEmpty()) {
+        QJsonObject first = chats[0].toObject();
+        if (first["title"].toString() == "New Chat" && first["messages"].toArray().isEmpty()) {
+            sendRedirect(socket, "/chat/" + first["id"].toString());
+            return;
+        }
+    }
     QJsonObject chat = chatCreate("New Chat");
     sendRedirect(socket, "/chat/" + chat["id"].toString());
 }
