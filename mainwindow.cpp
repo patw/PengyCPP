@@ -187,10 +187,25 @@ void MainWindow::loadChat(const QString& chatId) {
                     req["args"]         = argsObj;
                     m_chatView->appendMessage("tool_request", req);
                 }
-                if (!msg["content"].toString().isEmpty())
-                    m_chatView->appendMessageText("assistant", msg["content"].toString());
+                if (!msg["content"].toString().isEmpty()) {
+                    QJsonObject display;
+                    display["role"] = "assistant";
+                    display["content"] = msg["content"].toString();
+                    if (msg.contains("reasoning_content"))
+                        display["reasoning_content"] = msg["reasoning_content"];
+                    else if (msg.contains("reasoning"))
+                        display["reasoning_content"] = msg["reasoning"];
+                    m_chatView->appendMessage("assistant", display);
+                }
             } else if (!msg["content"].toString().isEmpty()) {
-                m_chatView->appendMessageText("assistant", msg["content"].toString());
+                QJsonObject display;
+                display["role"] = "assistant";
+                display["content"] = msg["content"].toString();
+                if (msg.contains("reasoning_content"))
+                    display["reasoning_content"] = msg["reasoning_content"];
+                else if (msg.contains("reasoning"))
+                    display["reasoning_content"] = msg["reasoning"];
+                m_chatView->appendMessage("assistant", display);
             }
         } else if (role == "tool") {
             QJsonObject result;
@@ -352,7 +367,16 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
             messages.append(asstMsg);
             m_currentChat["messages"] = messages;
 
-            m_chatView->appendMessageText("assistant", content);
+            // Pass reasoning_content to chat view
+            QJsonObject display;
+            display["role"] = "assistant";
+            display["content"] = content;
+            if (asstMsg.contains("reasoning_content")) {
+                display["reasoning_content"] = asstMsg["reasoning_content"];
+            } else if (asstMsg.contains("reasoning")) {
+                display["reasoning_content"] = asstMsg["reasoning"];
+            }
+            m_chatView->appendMessage("assistant", display);
 
             chatSave(m_currentChat);
             loadChatList();

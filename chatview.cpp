@@ -1,5 +1,4 @@
 #include "chatview.h"
-#include <QThread>
 #include <QScrollBar>
 #include <QDesktopServices>
 #include <QRegularExpression>
@@ -36,6 +35,7 @@ QString ChatView::buildCss() const {
     QString fixed = QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
     double bodyPt = scaledFont(10, m_scale);
     double labelPt = scaledFont(9, m_scale);
+    double reasoningLabelPt = scaledFont(8.5, m_scale);
     return QString(R"CSS(
 body { font-family:"%1"; font-size:%2pt; background-color:%3; color:%4; margin:8px; }
 a { color:%5; text-decoration:none; }
@@ -52,6 +52,9 @@ img { max-width:600px; }
 .tool-pre { background-color:%13; color:%14; padding:4px; margin:2px 0; font-size:%9pt; }
 .muted { color:%16; }
 .declined { color:%17; }
+.reasoning-card { border:1px solid %18; padding:6px 10px; margin:6px 0; background-color:%19; }
+.reasoning-link { color:%20; text-decoration:none; font-weight:bold; }
+.reasoning-body { color:%16; font-size:%21pt; white-space:pre-wrap; word-wrap:break-word; margin-top:4px; }
 code { background-color:%7; color:%14; padding:1px 3px; border-radius:2px; }
 blockquote { border-left:3px solid %6; margin:6px 0; padding:2px 0 2px 10px; color:%16; }
 hr { border:0; border-top:1px solid %6; margin:10px 0; }
@@ -62,7 +65,8 @@ h1 { font-size:14pt; } h2 { font-size:13pt; } h3 { font-size:11pt; } h4 { font-s
 )CSS")
         .arg(fixed).arg(bodyPt).arg(m_theme["bg"], m_theme["fg"], m_theme["link"], m_theme["border"], m_theme["panel_2"],
              m_theme["user_label"]).arg(labelPt).arg(m_theme["assistant_label"], m_theme["border_soft"], m_theme["tool_bg"],
-             m_theme["tool_arg_bg"], m_theme["code_fg"], m_theme["code_bg"], m_theme["muted"], m_theme["danger"]);
+             m_theme["tool_arg_bg"], m_theme["code_fg"], m_theme["code_bg"], m_theme["muted"], m_theme["danger"],
+             m_theme["reasoning_border"], m_theme["reasoning_bg"], m_theme["reasoning_fg"]).arg(reasoningLabelPt);
 }
 
 void ChatView::appendMessage(const QString& role, const QJsonValue& content) {
@@ -110,6 +114,7 @@ void ChatView::appendMessage(const QString& role, const QJsonValue& content) {
 void ChatView::clear() {
     m_messages = QJsonArray();
     m_expandedTools.clear();
+    m_expandedReasoning.clear();
     QTextBrowser::clear();
 }
 
@@ -125,6 +130,19 @@ void ChatView::mousePressEvent(QMouseEvent* event) {
             }
             render();
             return;
+        }
+        if (anchor.startsWith("reasoning://")) {
+            bool ok;
+            int idx = anchor.mid(QString("reasoning://").length()).toInt(&ok);
+            if (ok) {
+                if (m_expandedReasoning.contains(idx)) {
+                    m_expandedReasoning.remove(idx);
+                } else {
+                    m_expandedReasoning.insert(idx);
+                }
+                render();
+                return;
+            }
         }
         if (anchor.startsWith("http://") || anchor.startsWith("https://")) {
             QDesktopServices::openUrl(QUrl(anchor));
@@ -169,16 +187,51 @@ QString ChatView::renderMessage(const QJsonObject& msg) const {
     } else if (role == "assistant") {
         QString content = msg["content"].toString();
         if (content.isEmpty()) return "";
-        return QString(
+        QString parts;
+        if (msg.contains("reasoning_content")) {
+            // Find message index for toggle anchor
+            int idx = -1;
+            for (int i = 0; i < m_messages.size(); ++i) {
+                if (m_messages[i].toObject() == msg) { idx = i; break; }
+            }
+            parts += renderReasoningBlock(msg["reasoning_content"].toString(), idx);
+        }
+        parts += QString(
             "<p class='role-assistant'>&#x1F916; Assistant</p>"
             "<div style='margin:2px 0 10px 0;'>%1</div>"
         ).arg(markdownToHtml(content));
+        return parts;
 
     } else if (role == "tool_block") {
         return renderToolBlock(msg);
     }
 
     return "";
+}
+
+QString ChatView::renderReasoningBlock(const QString& reasoning, int idx) const {
+    bool expanded = m_expandedReasoning.contains(idx);
+    QString arrow = expanded ? "&#9660;" : "&#9654;";
+
+    // First line preview for collapsed state
+    QString firstLine = reasoning.section('\n', 0, 0);
+    QString preview = firstLine.left(120);
+    if (firstLine.length() > 120) preview += "&#8230;";
+
+    QString header = QString(
+        "<a class='reasoning-link' href='reasoning://%1'>%2&nbsp;Reasoning</a>"
+    ).arg(idx).arg(arrow);
+
+    QString inner = "<div style='margin-bottom:2px;'>" + header + "</div>";
+
+    if (expanded) {
+        QString reasoningEscaped = escapeHtml(reasoning);
+        inner += "<div class='reasoning-body'>" + reasoningEscaped + "</div>";
+    } else {
+        inner += "<div class='reasoning-body muted'>" + escapeHtml(preview) + "</div>";
+    }
+
+    return "<div class='reasoning-card'>" + inner + "</div>";
 }
 
 QString ChatView::renderToolBlock(const QJsonObject& msg) const {
@@ -352,6 +405,7 @@ QString ChatView::markdownToHtml(const QString& md) const {
 
     return result;
 }
+
 
 QString ChatView::convertMarkdownBlocks(const QString& html) const {
     QStringList lines = html.split('\n');
