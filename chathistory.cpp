@@ -244,7 +244,11 @@ void ChatHistoryWidget::setToolRunning(bool running) {
     if (running) {
         m_blinkTimer->stop();
         m_statusDot->setStyleSheet(QString("color: %1; font-size: 14px;").arg(m_theme["running"]));
-        m_statusText->setText("Tool running");
+        m_statusText->setText("Running Tool…");
+        // Force an immediate repaint so the orange dot is visible before
+        // the caller unblocks the worker thread — otherwise the dot can
+        // flip straight from red (thinking) → red again without painting.
+        m_statusDot->repaint();
     } else {
         m_dotPhase = true;
         m_statusDot->setStyleSheet(QString("color: %1; font-size: 14px;").arg(m_theme["danger"]));
