@@ -36,13 +36,21 @@ static QByteArray syncPost(const QUrl& url, const QByteArray& body,
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
 
-    QByteArray data;
-    if (reply->error() == QNetworkReply::NoError) {
-        data = reply->readAll();
-    } else {
-        data = QJsonDocument(QJsonObject{
-            {"error", QJsonObject{{"message", reply->errorString()}}}
-        }).toJson();
+    QByteArray data = reply->readAll();
+
+    if (reply->error() != QNetworkReply::NoError) {
+        // HTTP error — try to surface the provider's actual error body,
+        // falling back to Qt's errorString() if the body is unhelpful.
+        QJsonDocument doc = QJsonDocument::fromJson(data);
+        if (!doc.isObject() || !doc.object().contains("error")) {
+            // Body is not JSON with an "error" field — wrap raw text
+            QString detail = QString::fromUtf8(data).trimmed();
+            if (detail.isEmpty())
+                detail = reply->errorString();
+            data = QJsonDocument(QJsonObject{
+                {"error", QJsonObject{{"message", detail}}}
+            }).toJson();
+        }
     }
     reply->deleteLater();
     return data;

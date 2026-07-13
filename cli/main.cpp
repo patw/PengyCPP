@@ -240,8 +240,9 @@ static QStringList fetchModels(const Config& cfg) {
 }
 
 static QString truncate(const QString& text, int maxLen = 72) {
-    if (text.length() <= maxLen) return text;
-    return text.left(maxLen - 1) + QStringLiteral("…");
+    QString preview = text.simplified();
+    if (preview.length() <= maxLen) return preview;
+    return preview.left(maxLen - 1) + QStringLiteral("…");
 }
 
 // ── CLI application ──────────────────────────────────────────────────
@@ -629,16 +630,17 @@ private:
             int num = i + 1;
 
             if (role == "user") {
-                outln(blue(bold("#" + QString::number(num) + " You:")) + " " + content);
+                outln(blue(bold("#" + QString::number(num) + " You:")) + " " + truncate(content, 200));
             } else if (role == "assistant") {
                 QJsonArray toolCalls = msg["tool_calls"].toArray();
+                QString suffix;
                 if (!toolCalls.isEmpty()) {
                     QStringList tcNames;
                     for (const QJsonValue& tc : toolCalls)
                         tcNames << tc.toObject()["function"].toObject()["name"].toString();
-                    outln(green(bold("#" + QString::number(num) + " Assistant:")) +
-                          dim(" (tool calls: " + tcNames.join(", ") + ")"));
+                    suffix = dim(" (tool calls: " + tcNames.join(", ") + ")");
                 }
+                outln(green(bold("#" + QString::number(num) + " Assistant:")) + suffix);
                 if (!content.isEmpty()) {
                     outln(dim("  " + truncate(content, 100)));
                 }
