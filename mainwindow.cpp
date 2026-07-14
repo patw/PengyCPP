@@ -389,6 +389,7 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
 
     } else if (type == "tool_request") {
         m_chatView->appendMessage("tool_request", event);
+        m_chatHistory->setToolRunning(true);
         QString name = event["name"].toString();
         QString tc   = m_config.toolConfirmation;
 
@@ -409,6 +410,7 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
 
     } else if (type == "tool_result") {
         m_chatView->appendMessage("tool_result", event);
+        m_chatHistory->setToolRunning(false);
         QJsonObject toolMsg;
         toolMsg["role"]         = "tool";
         toolMsg["tool_call_id"] = event["tool_call_id"];
