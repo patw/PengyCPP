@@ -2,6 +2,7 @@
 build/
 build_macos/
 build_windows/
+build_test*/
 Pengy.app/
 Pengy-Windows/
 

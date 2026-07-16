@@ -19,7 +19,27 @@ cd "$ROOT/build"
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 
-# 2. Assemble staging tree
+# 2. Smoke test binaries before packaging
+echo "==> Smoke testing binaries..."
+smoke() {
+    local bin="$1" name; name=$(basename "$bin")
+    if [ ! -f "$bin" ]; then echo -e "  \033[31m✗\033[0m $name not found"; return 1; fi
+    if "$bin" --version 2>/dev/null | grep -q "^Pengy v" && \
+       "$bin" --help    2>/dev/null | grep -qiE "usage|options"; then
+        echo -e "  \033[32m✓\033[0m $name --version + --help"
+    else
+        echo -e "  \033[31m✗\033[0m $name --version/--help failed (stale or broken?)"
+        return 1
+    fi
+}
+if ! smoke "$ROOT/build/pengy" || \
+   ! smoke "$ROOT/build/pengy_cli" || \
+   ! smoke "$ROOT/build/pengy_web"; then
+    echo -e "\033[31m==> Binary smoke test failed — aborting .deb build!\033[0m"
+    exit 1
+fi
+
+# 3. Assemble staging tree
 echo "==> Assembling package staging tree..."
 rm -rf "$ROOT/.deb_staging"
 mkdir -p "$STAGING/usr/bin"
@@ -38,7 +58,7 @@ cp "$ROOT/pengy.png"    "$STAGING/usr/share/icons/hicolor/256x256/apps/pengy.png
 # Compute installed size in KB (required by control file)
 INSTALLED_KB=$(du -sk "$STAGING/usr" | cut -f1)
 
-# 3. Write DEBIAN/control
+# 4. Write DEBIAN/control
 cat > "$STAGING/DEBIAN/control" <<EOF
 Package: pengy
 Version: $VERSION
@@ -56,7 +76,7 @@ Description: LLM chat desktop application
  Also includes pengy-cli (terminal REPL) and pengy-web (browser UI at port 5000).
 EOF
 
-# 4. Write .desktop file
+# 5. Write .desktop file
 cat > "$STAGING/usr/share/applications/pengy.desktop" <<EOF
 [Desktop Entry]
 Name=Pengy
@@ -68,7 +88,7 @@ Categories=Utility;Development;
 Terminal=false
 EOF
 
-# 5. Write copyright (required for a well-formed .deb)
+# 6. Write copyright (required for a well-formed .deb)
 cat > "$STAGING/usr/share/doc/pengy/copyright" <<EOF
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: pengy
@@ -79,7 +99,7 @@ Copyright: $(date +%Y) Pat Wendorf
 License: MIT
 EOF
 
-# 6. Post-install hook to update icon cache and desktop database
+# 7. Post-install hook to update icon cache and desktop database
 cat > "$STAGING/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
@@ -92,7 +112,7 @@ fi
 EOF
 chmod 755 "$STAGING/DEBIAN/postinst"
 
-# 7. Build the .deb
+# 8. Build the .deb
 echo "==> Building .deb..."
 dpkg-deb --build --root-owner-group "$STAGING" "$ROOT/${PKG_NAME}.deb"
 

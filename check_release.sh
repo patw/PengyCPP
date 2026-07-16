@@ -85,10 +85,24 @@ else
     fi
 fi
 
-# ── 7. Verify binaries ──────────────────────────────────────────────
+# ── 7. Verify binaries (existence + --version/--help smoke test) ───
 echo "--- Verify binaries ---"
 ls -lh build/pengy build/pengy_cli build/pengy_web build/pengy_tests 2>/dev/null
 file build/pengy | grep -q "ELF" && ok "pengy is a valid ELF binary" || warn "pengy doesn't look like an ELF"
+for bin in build/pengy build/pengy_cli build/pengy_web; do
+    name=$(basename "$bin")
+    if [ ! -f "$bin" ]; then warn "$name not found"; continue; fi
+    if "$bin" --version 2>/dev/null | grep -q "^Pengy v"; then
+        ok "$name --version works"
+    else
+        warn "$name --version failed (stale binary?)"
+    fi
+    if "$bin" --help 2>/dev/null | grep -qiE "usage|options"; then
+        ok "$name --help works"
+    else
+        warn "$name --help failed (stale binary?)"
+    fi
+done
 
 # ── 8. .deb package ─────────────────────────────────────────────────
 echo "--- .deb package ---"
