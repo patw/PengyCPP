@@ -23,7 +23,10 @@ add_executable(pengy_cli
     tools.cpp
     llmclient.cpp
 )
-target_link_libraries(pengy_cli PRIVATE Qt6::Core Qt6::Network readline)
+target_link_libraries(pengy_cli PRIVATE Qt6::Core Qt6::Network)
+if(UNIX AND NOT WIN32)
+    target_link_libraries(pengy_cli PRIVATE readline)
+endif()
 target_include_directories(pengy_cli PRIVATE ${CMAKE_BINARY_DIR})
 
 # ── Web UI ───────────────────────────────────────────────────────────

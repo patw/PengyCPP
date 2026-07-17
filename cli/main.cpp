@@ -17,10 +17,9 @@
 #include <cstdio>
 #include <functional>
 
-#include <readline/readline.h>
-#include <readline/history.h>
-
 #ifdef Q_OS_UNIX
+#  include <readline/readline.h>
+#  include <readline/history.h>
 #  include <termios.h>
 #  include <unistd.h>
 #endif
@@ -252,6 +251,8 @@ static QString truncate(const QString& text, int maxLen = 72) {
 
 static QString g_histPath;
 
+#ifdef Q_OS_UNIX
+
 static void initReadline() {
     QString dataDir = QDir::homePath() + "/.local/state/pengy";
     QDir().mkpath(dataDir);
@@ -276,6 +277,24 @@ static QString readline_qstring(const char* prompt_str) {
     free(raw);
     return line;
 }
+
+#else
+// Windows fallback: simple stdin input without readline history
+
+static void initReadline() {}
+
+static void saveReadlineHistory() {}
+
+static QString readline_qstring(const char* prompt_str) {
+    QTextStream out(stdout);
+    out << prompt_str;
+    out.flush();
+    QTextStream in(stdin);
+    QString line = in.readLine();
+    if (line.isNull()) return {}; // EOF
+    return line;
+}
+#endif
 
 // ── CLI application ──────────────────────────────────────────────────
 
