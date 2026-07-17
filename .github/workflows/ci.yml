@@ -16,7 +16,7 @@ jobs:
         run: |
           set -ex
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential cmake qt6-base-dev libgl-dev
+          sudo apt-get install -y -qq build-essential cmake qt6-base-dev libgl-dev libreadline-dev
 
           echo "=== Versions ==="
           g++ --version | head -1
