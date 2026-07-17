@@ -17,6 +17,9 @@
 #include <cstdio>
 #include <functional>
 
+#include <readline/readline.h>
+#include <readline/history.h>
+
 #ifdef Q_OS_UNIX
 #  include <termios.h>
 #  include <unistd.h>
@@ -245,6 +248,35 @@ static QString truncate(const QString& text, int maxLen = 72) {
     return preview.left(maxLen - 1) + QStringLiteral("…");
 }
 
+// ── Readline history ─────────────────────────────────────────────────
+
+static QString g_histPath;
+
+static void initReadline() {
+    QString dataDir = QDir::homePath() + "/.local/state/pengy";
+    QDir().mkpath(dataDir);
+    g_histPath = dataDir + "/cli_history";
+    rl_attempted_completion_function = nullptr;
+    read_history(g_histPath.toUtf8().constData());
+    stifle_history(1000);
+}
+
+static void saveReadlineHistory() {
+    write_history(g_histPath.toUtf8().constData());
+}
+
+static QString readline_qstring(const char* prompt_str) {
+    char* raw = readline(prompt_str);
+    if (!raw) return {}; // EOF
+    QString line = QString::fromUtf8(raw);
+    QString trimmed = line.trimmed();
+    if (!trimmed.isEmpty()) {
+        add_history(trimmed.toUtf8().constData());
+    }
+    free(raw);
+    return line;
+}
+
 // ── CLI application ──────────────────────────────────────────────────
 
 class PengyCliApp {
@@ -308,16 +340,17 @@ public:
         outln(dim("Model: " + cfg.model + "  Tool Confirm: " + cfg.toolConfirmation));
         outln();
 
-        QTextStream in(stdin);
-        while (!in.atEnd()) {
+        initReadline();
+        for (;;) {
             QString title = truncate(chat["title"].toString(), 30);
-            prompt(title + " › You> ");
-            QString line = in.readLine();
+            QString promptLine = title + " › You> ";
+            QString line = readline_qstring(promptLine.toUtf8().constData());
             if (line.isNull()) break;
             line = line.trimmed();
             if (line.isEmpty()) continue;
             if (!handleCommand(line)) runLlm(line);
         }
+        saveReadlineHistory();
         outln();
     }
 
@@ -442,9 +475,7 @@ private:
               bold("[2]") + " Yes to all this turn   " +
               bold("[3]") + " Decline   " +
               bold("[4]") + " Abort run");
-        prompt("Choice [1]: ");
-        QTextStream in(stdin);
-        const QString c = in.readLine().trimmed();
+        QString c = readline_qstring("Choice [1]: ").trimmed();
         if (c == "4") {
             outln(red("Run aborted by user."));
             return {false, false};  // decline + don't yolo
@@ -463,6 +494,7 @@ private:
         const QString arg = parts.size() > 1 ? parts.mid(1).join(' ') : QString();
 
         if (cmd == "/quit" || cmd == "/exit" || cmd == "/q") {
+            saveReadlineHistory();
             outln("Goodbye!");
             exit(0);
 

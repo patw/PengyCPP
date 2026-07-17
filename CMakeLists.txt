@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Pengy VERSION 1.3.7 LANGUAGES CXX)
+project(Pengy VERSION 1.3.8 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -23,7 +23,7 @@ add_executable(pengy_cli
     tools.cpp
     llmclient.cpp
 )
-target_link_libraries(pengy_cli PRIVATE Qt6::Core Qt6::Network)
+target_link_libraries(pengy_cli PRIVATE Qt6::Core Qt6::Network readline)
 target_include_directories(pengy_cli PRIVATE ${CMAKE_BINARY_DIR})
 
 # ── Web UI ───────────────────────────────────────────────────────────
