@@ -436,8 +436,10 @@ private:
         } else if (type == "tool_request") {
             outln();
             outln(cyan(bold("--- Tool: " + ev["name"].toString() + " ---")));
-            outln(dim(QJsonDocument(ev["args"].toObject())
-                        .toJson(QJsonDocument::Indented).trimmed()));
+            QString argsText = QJsonDocument(ev["args"].toObject())
+                        .toJson(QJsonDocument::Indented).trimmed();
+            if (argsText.size() > 4000) argsText = argsText.left(4000) + "\n… [truncated]";
+            outln(dim(argsText));
 
         } else if (type == "tool_result") {
             m_runMsgs.append(QJsonObject{
@@ -494,14 +496,17 @@ private:
               bold("[2]") + " Yes to all this turn   " +
               bold("[3]") + " Decline   " +
               bold("[4]") + " Abort run");
-        QString c = readline_qstring("Choice [1]: ").trimmed();
-        if (c == "4") {
-            outln(red("Run aborted by user."));
-            return {false, false};  // decline + don't yolo
+        for (;;) {
+            QString c = readline_qstring("Choice [1]: ").trimmed();
+            if (c.isEmpty() || c == "1") return {true, false};
+            if (c == "2") return {true, true};
+            if (c == "3") return {false, false};
+            if (c == "4") {
+                outln(red("Run aborted by user."));
+                return {false, false};  // decline + don't yolo
+            }
+            outln(red("Please enter 1, 2, 3, or 4."));
         }
-        if (c == "3") return {false, false};
-        if (c == "2") return {true,  true};
-        return {true, false};
     }
 
     // ── Slash commands ───────────────────────────────────────────────

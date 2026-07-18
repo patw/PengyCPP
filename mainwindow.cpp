@@ -23,6 +23,8 @@
 #include <QMimeType>
 #include <QLabel>
 #include <QDialog>
+#include <QPlainTextEdit>
+#include <QTextOption>
 #include <QInputDialog>
 #include <QLineEdit>
 
@@ -427,17 +429,34 @@ void MainWindow::handleToolConfirm(const QJsonObject& req) {
     dlg.setWindowTitle("Confirm Tool: " + req["name"].toString());
     dlg.setModal(true);
     dlg.resize(480, 320);
+    dlg.setMaximumWidth(600);
     dlg.setStyleSheet(appStyleSheet(theme, m_config.uiScale));
 
     auto* layout = new QVBoxLayout(&dlg);
-    QString info = QString("Execute tool: <b>%1</b><br><br>Arguments:<br><pre>%2</pre>")
-        .arg(req["name"].toString(),
-             QJsonDocument(req["args"].toObject()).toJson(QJsonDocument::Indented));
-    auto* label = new QLabel(info);
-    label->setWordWrap(true);
-    label->setTextFormat(Qt::RichText);
-    label->setStyleSheet(QString("color:%1; padding:8px;").arg(theme["fg"]));
-    layout->addWidget(label);
+    auto* header = new QLabel(QString("Execute tool: <b>%1</b>").arg(req["name"].toString()));
+    header->setTextFormat(Qt::RichText);
+    header->setStyleSheet(QString("color:%1; padding:8px;").arg(theme["fg"]));
+    layout->addWidget(header);
+
+    auto* argsLabel = new QLabel("Arguments:");
+    argsLabel->setStyleSheet(QString("color:%1; padding:0 8px;").arg(theme["fg"]));
+    layout->addWidget(argsLabel);
+
+    // QPlainTextEdit wraps long unbroken tokens (paths, URLs, hashes) that
+    // QLabel's word-wrap would refuse to break; the old <pre>-wrapped QLabel
+    // disabled wrapping altogether, letting any long argument line blow up
+    // the dialog width.
+    QString argsText = QJsonDocument(req["args"].toObject()).toJson(QJsonDocument::Indented);
+    static const int kMaxArgsLen = 4000;
+    if (argsText.length() > kMaxArgsLen) {
+        argsText = argsText.left(kMaxArgsLen) + QString("\n... [truncated, %1 chars total]").arg(argsText.length());
+    }
+    auto* argsEdit = new QPlainTextEdit(argsText);
+    argsEdit->setReadOnly(true);
+    argsEdit->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    argsEdit->setWordWrapMode(QTextOption::WrapAnywhere);
+    argsEdit->setStyleSheet(QString("color:%1; padding:4px;").arg(theme["fg"]));
+    layout->addWidget(argsEdit, 1);
 
     auto* btnLayout = new QHBoxLayout;
 
