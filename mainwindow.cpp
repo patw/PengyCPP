@@ -9,6 +9,7 @@
 #include "config.h"
 #include "chatmanager.h"
 #include "tools.h"
+#include "image_utils.h"
 
 #include <QSplitter>
 #include <QVBoxLayout>
@@ -279,29 +280,19 @@ void MainWindow::sendMessage(const QString& text, const QStringList& images) {
 
     // Current user message (with real image data if any)
     if (!images.isEmpty()) {
+        int maxDim = m_config.imageMaxDimension;
+        double maxMb = m_config.imageMaxMb;
+        int quality = m_config.imageQuality;
+
         QJsonArray parts;
         for (const QString& imgPath : images) {
-            QFile imgFile(imgPath);
-            if (imgFile.open(QIODevice::ReadOnly)) {
-                QByteArray imgData = imgFile.readAll();
-                imgFile.close();
-                QString b64 = QString::fromUtf8(imgData.toBase64());
-
-                QMimeDatabase mimeDb;
-                QString mimeStr = mimeDb.mimeTypeForFile(imgPath).name();
-                if (mimeStr.isEmpty() || !mimeStr.startsWith("image/")) {
-                    QString ext = imgPath.section('.', -1).toLower();
-                    if (ext == "jpg" || ext == "jpeg") mimeStr = "image/jpeg";
-                    else if (ext == "png")  mimeStr = "image/png";
-                    else if (ext == "gif")  mimeStr = "image/gif";
-                    else if (ext == "webp") mimeStr = "image/webp";
-                    else                    mimeStr = "image/jpeg";
-                }
-
+            ImageResult ir = imagePreprocess(imgPath, maxDim, maxMb, quality);
+            if (ir.ok) {
                 QJsonObject imgPart;
                 imgPart["type"] = "image_url";
                 imgPart["image_url"] = QJsonObject{
-                    {"url", QString("data:%1;base64,%2").arg(mimeStr, b64)}
+                    {"url", QString("data:%1;base64,%2")
+                        .arg(ir.mime, QString::fromUtf8(ir.bytes_base64))}
                 };
                 parts.append(imgPart);
             }

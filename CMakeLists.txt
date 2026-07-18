@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Pengy VERSION 1.3.10 LANGUAGES CXX)
+project(Pengy VERSION 1.3.11 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +22,7 @@ add_executable(pengy_cli
     chatmanager.cpp
     tools.cpp
     llmclient.cpp
+    image_utils.cpp
 )
 target_link_libraries(pengy_cli PRIVATE Qt6::Core Qt6::Network)
 if(UNIX AND NOT WIN32)
@@ -39,6 +40,7 @@ add_executable(pengy_web
     chatmanager.cpp
     tools.cpp
     llmclient.cpp
+    image_utils.cpp
 )
 target_link_libraries(pengy_web PRIVATE Qt6::Core Qt6::Network)
 target_include_directories(pengy_web PRIVATE ${CMAKE_BINARY_DIR})
@@ -51,6 +53,7 @@ add_executable(pengy
     taskmanager.cpp
     tools.cpp
     llmclient.cpp
+    image_utils.cpp
     chatworker.cpp
     mainwindow.cpp
     chathistory.cpp
@@ -86,6 +89,7 @@ if(Qt6Test_FOUND)
         taskmanager.cpp
         tools.cpp
         llmclient.cpp
+        image_utils.cpp
         web/webserver.cpp
         web/webchatworker.cpp
         web/web_resources.qrc

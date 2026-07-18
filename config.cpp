@@ -54,6 +54,9 @@ QJsonObject Config::toJson() const {
     o["theme_accent"]       = themeAccent;
     o["user_agent"]         = userAgent;
     o["tool_timeout"]       = toolTimeout;
+    o["image_max_dimension"] = imageMaxDimension;
+    o["image_max_mb"]        = imageMaxMb;
+    o["image_quality"]       = imageQuality;
     return o;
 }
 
@@ -72,6 +75,9 @@ Config Config::fromJson(const QJsonObject& o) {
     if (o.contains("theme_accent"))       c.themeAccent       = o["theme_accent"].toString(c.themeAccent);
     if (o.contains("user_agent"))         c.userAgent         = o["user_agent"].toString(c.userAgent);
     if (o.contains("tool_timeout"))       c.toolTimeout       = o["tool_timeout"].toInt(60);
+    if (o.contains("image_max_dimension")) c.imageMaxDimension = o["image_max_dimension"].toInt(4096);
+    if (o.contains("image_max_mb"))        c.imageMaxMb        = o["image_max_mb"].toDouble(4.5);
+    if (o.contains("image_quality"))       c.imageQuality      = o["image_quality"].toInt(85);
     return c;
 }
 

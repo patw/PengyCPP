@@ -547,7 +547,9 @@ function handleFiles(files) {
     const reader = new FileReader();
     reader.onload = (e) => {
       const base64 = e.target.result.split(',')[1];  // strip data:...;base64, prefix
-      pendingFiles.push({name: f.name, data: base64});
+      const mimeMatch = e.target.result.match(/^data:([^;]+);/);
+      const mime = mimeMatch ? mimeMatch[1] : f.type || '';
+      pendingFiles.push({name: f.name, data: base64, mime: mime});
       showFilePreview();
     };
     reader.readAsDataURL(f);

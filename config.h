@@ -18,6 +18,9 @@ struct Config {
     QString themeAccent      = "default"; // default | blue | teal | green | orange | red | pink | purple
     QString userAgent        = "PengyAgent/1.0";
     int  toolTimeout         = 60;
+    int  imageMaxDimension   = 4096;
+    double imageMaxMb        = 4.5;
+    int  imageQuality        = 85;
 
     QJsonObject toJson() const;
     static Config fromJson(const QJsonObject& obj);

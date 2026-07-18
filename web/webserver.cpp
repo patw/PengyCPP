@@ -2,6 +2,7 @@
 #include "../config.h"
 #include "../chatmanager.h"
 #include "../tools.h"
+#include "../image_utils.h"
 #include <QTcpSocket>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -17,6 +18,7 @@
 #include <QEventLoop>
 #include <QTimer>
 #include <QDir>
+#include <QUuid>
 
 WebServer::WebServer(const QString& host, quint16 port, QObject* parent)
     : QObject(parent), m_host(host), m_port(port),
@@ -163,23 +165,82 @@ void WebServer::routeChatSend(const QString& chatId,
     QJsonObject body = bodyJson(req);
     QString content = body["content"].toString().trimmed();
 
-    // Attached files arrive base64-encoded from the browser; inject them
-    // as fenced blocks ahead of the user's text (same as the Python web).
+    // Attached files arrive base64-encoded from the browser.
+    // Detect images vs text and handle accordingly.
     const QJsonArray files = body["files"].toArray();
+    QStringList textBlocks;
+    QJsonArray imageParts;
+    QStringList displayParts;
+    Config cfg = configLoad();
+
     if (!files.isEmpty()) {
-        QStringList blocks;
         for (const QJsonValue& v : files) {
             QJsonObject f = v.toObject();
             QString fname = f["name"].toString();
             if (fname.isEmpty()) fname = "file";
             QByteArray raw = QByteArray::fromBase64(f["data"].toString().toUtf8());
-            blocks.append(QString("[File: %1]\n```\n%2\n```")
-                              .arg(fname, QString::fromUtf8(raw)));
+
+            // Detect image by extension
+            QString lower = fname.toLower();
+            bool isImage = lower.endsWith(".png") || lower.endsWith(".jpg")
+                || lower.endsWith(".jpeg") || lower.endsWith(".gif")
+                || lower.endsWith(".webp") || lower.endsWith(".bmp");
+
+            if (isImage) {
+                // Write to temp for preprocessing
+                QString ext = fname.section('.', -1).toLower();
+                if (ext.isEmpty()) ext = "png";
+                QString tmpPath = QDir::temp().filePath(
+                    QString("pengy_web_%1.%2").arg(QUuid::createUuid().toString(QUuid::WithoutBraces), ext));
+                QFile tmpFile(tmpPath);
+                if (tmpFile.open(QIODevice::WriteOnly)) {
+                    tmpFile.write(raw);
+                    tmpFile.close();
+                    ImageResult ir = imagePreprocess(tmpPath, cfg.imageMaxDimension, cfg.imageMaxMb, cfg.imageQuality);
+                    QFile::remove(tmpPath);
+                    if (ir.ok) {
+                        QJsonObject imgPart;
+                        imgPart["type"] = "image_url";
+                        imgPart["image_url"] = QJsonObject{
+                            {"url", QString("data:%1;base64,%2")
+                                .arg(ir.mime, QString::fromUtf8(ir.bytes_base64))}
+                        };
+                        imageParts.append(imgPart);
+                        displayParts.append(QString("[Image: %1]").arg(fname));
+                    }
+                }
+            } else {
+                textBlocks.append(QString("[File: %1]\n```\n%2\n```")
+                    .arg(fname, QString::fromUtf8(raw)));
+            }
         }
-        content = blocks.join("\n\n") + "\n" + content;
     }
 
-    if (content.trimmed().isEmpty()) {
+    // Build display content and API message content
+    QString displayContent;
+    QString apiTextContent;
+
+    if (!imageParts.isEmpty()) {
+        // Multimodal: display is placeholders + text + textBlocks
+        QStringList disp = displayParts;
+        if (!textBlocks.isEmpty()) disp.append(textBlocks.join("\n\n"));
+        if (!content.isEmpty()) disp.append(content);
+        displayContent = disp.join("\n");
+
+        apiTextContent = textBlocks.join("\n\n");
+        if (!content.isEmpty()) {
+            if (!apiTextContent.isEmpty()) apiTextContent += "\n";
+            apiTextContent += content;
+        }
+    } else if (!textBlocks.isEmpty()) {
+        displayContent = textBlocks.join("\n\n") + "\n" + content;
+        apiTextContent = displayContent;
+    } else {
+        displayContent = content;
+        apiTextContent = content;
+    }
+
+    if (displayContent.trimmed().isEmpty()) {
         sendJson(socket, 400, {{"error","empty message"}});
         return;
     }
@@ -196,15 +257,20 @@ void WebServer::routeChatSend(const QString& chatId,
         m_workers.remove(chatId);
     }
 
-    Config cfg = configLoad();
     Tools::setUserAgent(cfg.userAgent);
     Tools::setTimeout(cfg.toolTimeout);
 
     QJsonArray hist = chat["messages"].toArray();
-    hist.append(QJsonObject{{"role","user"},{"content",content}});
+    hist.append(QJsonObject{{"role","user"},{"content", displayContent}});
     hist = cleanDanglingToolCalls(hist);
     if (cfg.contextKeepTurns > 0)
         hist = elideOldToolResults(hist, cfg.contextKeepTurns);
+
+    // Update title from first message
+    if (chat["title"].toString() == "New Chat" && !displayContent.isEmpty()) {
+        QString t = displayContent.left(60).replace('\n', ' ');
+        chat["title"] = t;
+    }
 
     QJsonArray sendMsgs;
     if (!cfg.systemMessage.isEmpty())
@@ -212,9 +278,19 @@ void WebServer::routeChatSend(const QString& chatId,
             {"role","system"},
             {"content", configRenderSystemMessage(cfg.systemMessage)}
         });
-    for (const QJsonValue& v : hist) sendMsgs.append(v);
+    // Prior messages from history (cleaned)
+    for (int i = 0; i < hist.size() - 1; ++i) sendMsgs.append(hist[i]);
+    // Current user message — with real multimodal content if images
+    if (!imageParts.isEmpty()) {
+        QJsonArray apiParts = imageParts;
+        if (!apiTextContent.isEmpty())
+            apiParts.append(QJsonObject{{"type","text"},{"text", apiTextContent}});
+        sendMsgs.append(QJsonObject{{"role","user"},{"content", apiParts}});
+    } else {
+        sendMsgs.append(QJsonObject{{"role","user"},{"content", apiTextContent}});
+    }
 
-    m_pending[chatId] = content;
+    m_pending[chatId] = displayContent;
 
     auto* worker = new WebChatWorker(this);
     m_workers[chatId] = worker;
