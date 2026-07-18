@@ -367,8 +367,18 @@ function esc(s) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+function fixFileUrls(html) {
+  // Replace file:// image URLs with /files?path= URLs so browsers can load them
+  return html.replace(/src="file:\/\/([^"]+)"/g, function(match, path) {
+    // Expand ~ to nothing — the server will handle ~ expansion via expanduser
+    return 'src="/files?path=' + encodeURIComponent(path) + '"';
+  });
+}
+
 function renderMd(raw) {
   let s = esc(raw);
+  // Images — before other inline rules so ![alt](url) isn't garbled
+  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1">');
   // fenced code blocks (must run before inline code)
   s = s.replace(/```(?:\w+)?\n?([\s\S]*?)```/g, (_, c) =>
     '<pre><code>' + c + '</code></pre>');
@@ -436,7 +446,7 @@ function appendAssistantMsg(content, usage) {
       tot.toLocaleString() + ' total)</div>';
   }
   d.innerHTML = '<div class="bubble-assistant"><div class="markdown-body">' +
-    (content ? renderMd(content) : '<em class="text-muted">(empty response)</em>') +
+    (content ? fixFileUrls(renderMd(content)) : '<em class="text-muted">(empty response)</em>') +
     '</div>' + usageHtml + '</div>';
   document.getElementById('messages').appendChild(d);
   scrollBottom();

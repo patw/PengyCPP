@@ -16,6 +16,7 @@
 #include <QNetworkRequest>
 #include <QEventLoop>
 #include <QTimer>
+#include <QDir>
 
 WebServer::WebServer(const QString& host, quint16 port, QObject* parent)
     : QObject(parent), m_host(host), m_port(port),
@@ -93,6 +94,8 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
         routeSettings(req, socket);
     } else if (parts[0] == "models" && req.method == "GET") {
         routeModels(socket);
+    } else if (parts[0] == "files" && req.method == "GET") {
+        routeFile(req, socket);
     } else if (parts[0] == "chat") {
         if (parts.size() == 1) {
             routeRoot(socket);
@@ -544,6 +547,100 @@ void WebServer::routeModels(QTcpSocket* socket) {
     }
     ids.sort();
     sendJson(socket, 200, {{"models", QJsonArray::fromStringList(ids)}});
+}
+
+// ── File serving for local images ──────────────────────────────────
+
+void WebServer::routeFile(const HttpRequest& req, QTcpSocket* socket) {
+    // Extract the 'path' query parameter
+    QString rawPath;
+    int qPos = req.path.indexOf('?');
+    if (qPos >= 0) {
+        QString query = req.path.mid(qPos + 1);
+        for (const QString& pair : query.split('&')) {
+            int eq = pair.indexOf('=');
+            if (eq >= 0 && pair.left(eq) == "path") {
+                rawPath = urlDecode(pair.mid(eq + 1).toUtf8());
+                break;
+            }
+        }
+    }
+
+    if (rawPath.isEmpty()) {
+        sendJson(socket, 400, {{"error","Missing path parameter"}});
+        return;
+    }
+
+    // Expand ~ to home directory
+    if (rawPath.startsWith('~')) {
+        rawPath = QDir::homePath() + rawPath.mid(1);
+    }
+
+    QFileInfo fi(rawPath);
+    QString canonical = fi.canonicalFilePath();
+
+    if (canonical.isEmpty() || !QFile::exists(canonical)) {
+        sendJson(socket, 404, {{"error","File not found"}});
+        return;
+    }
+
+    // Security: only serve files under allowed directories
+    QString home = QDir::homePath();
+    QStringList allowed = {
+        home + "/Pictures",
+        home + "/Downloads",
+        home + "/Desktop",
+        "/tmp",
+    };
+
+    bool ok = false;
+    for (const QString& root : allowed) {
+        QFileInfo rootFi(root);
+        QString rootCanon = rootFi.canonicalFilePath();
+        if (canonical == rootCanon || canonical.startsWith(rootCanon + "/")) {
+            ok = true;
+            break;
+        }
+    }
+
+    if (!ok) {
+        sendJson(socket, 403, {{"error","Access denied"}});
+        return;
+    }
+
+    // Guess MIME type
+    QString mime = "image/png"; // default
+    if (canonical.endsWith(".jpg", Qt::CaseInsensitive) || canonical.endsWith(".jpeg", Qt::CaseInsensitive))
+        mime = "image/jpeg";
+    else if (canonical.endsWith(".gif", Qt::CaseInsensitive))
+        mime = "image/gif";
+    else if (canonical.endsWith(".webp", Qt::CaseInsensitive))
+        mime = "image/webp";
+    else if (canonical.endsWith(".svg", Qt::CaseInsensitive))
+        mime = "image/svg+xml";
+    else if (canonical.endsWith(".bmp", Qt::CaseInsensitive))
+        mime = "image/bmp";
+
+    QFile file(canonical);
+    if (!file.open(QIODevice::ReadOnly)) {
+        sendJson(socket, 500, {{"error","Cannot read file"}});
+        return;
+    }
+
+    QByteArray data = file.readAll();
+    file.close();
+
+    QByteArray resp = QString(
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: %1\r\n"
+        "Content-Length: %2\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).arg(mime).arg(data.size()).toUtf8();
+    socket->write(resp);
+    socket->write(data);
+    socket->flush();
+    socket->disconnectFromHost();
 }
 
 void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {

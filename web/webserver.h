@@ -57,6 +57,7 @@ private:
     void routeChatRename(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatCommand(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeModels(QTcpSocket* socket);
+    void routeFile(const HttpRequest& req, QTcpSocket* socket);
     void routeSettings(const HttpRequest& req, QTcpSocket* socket);
 
     void sendResponse(QTcpSocket* socket, int status,
