@@ -7,6 +7,15 @@
 #include <QEventLoop>
 #include <QUrl>
 #include <QStringList>
+#include <QThread>
+#include <random>
+#include <chrono>
+
+static const int    MAX_RETRIES       = 5;
+static const double BASE_DELAY_SECS   = 1.0;
+static const double MAX_DELAY_SECS    = 60.0;
+static const double JITTER            = 0.25;
+static const QList<int> RETRYABLE_STATUSES = {429, 529};
 
 static QJsonObject usage0() {
     return QJsonObject{
@@ -22,38 +31,76 @@ static void addUsage(QJsonObject& acc, const QJsonObject& delta) {
     acc["total_tokens"]      = acc["total_tokens"].toInt()      + delta["total_tokens"].toInt();
 }
 
-static QByteArray syncPost(const QUrl& url, const QByteArray& body,
+static double backoffDelay(int attempt, const QString& retryAfterHeader) {
+    double base = MAX_DELAY_SECS;
+    if (!retryAfterHeader.isEmpty()) {
+        bool ok = false;
+        double ra = retryAfterHeader.toDouble(&ok);
+        if (ok && ra > 0.0) {
+            base = qMin(ra, MAX_DELAY_SECS);
+        }
+    } else {
+        base = qMin(BASE_DELAY_SECS * (1 << attempt), MAX_DELAY_SECS);
+    }
+    // ±JITTER jitter
+    static std::mt19937 rng(std::chrono::steady_clock::now().time_since_epoch().count());
+    std::uniform_real_distribution<double> dist(-JITTER, JITTER);
+    double jitter = base * JITTER * dist(rng);
+    return qMax(0.1, base + jitter);
+}
+
+static void interruptibleSleep(double seconds, const std::function<bool()>& isCancelled) {
+    auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(static_cast<long long>(seconds * 1000.0));
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (isCancelled()) return;
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        auto slice = qMin(remaining.count(), 500LL);
+        if (slice <= 0) break;
+        QThread::msleep(static_cast<unsigned long>(slice));
+    }
+}
+
+static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
                             const QString& apiKey) {
     QNetworkAccessManager mgr;
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     req.setRawHeader("Authorization", ("Bearer " + apiKey).toUtf8());
     req.setRawHeader("api-key",       apiKey.toUtf8());
-    // No hard timeout — LLM calls can be slow
 
     QNetworkReply* reply = mgr.post(req, body);
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
 
-    QByteArray data = reply->readAll();
+    LlmResponse resp;
+    resp.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    resp.body       = reply->readAll();
+
+    // Capture Retry-After headers
+    if (reply->hasRawHeader("retry-after-ms")) {
+        resp.retryAfterHeader = QString::fromUtf8(reply->rawHeader("retry-after-ms"));
+    } else if (reply->hasRawHeader("retry-after")) {
+        resp.retryAfterHeader = QString::fromUtf8(reply->rawHeader("retry-after"));
+    }
 
     if (reply->error() != QNetworkReply::NoError) {
         // HTTP error — try to surface the provider's actual error body,
         // falling back to Qt's errorString() if the body is unhelpful.
-        QJsonDocument doc = QJsonDocument::fromJson(data);
+        QJsonDocument doc = QJsonDocument::fromJson(resp.body);
         if (!doc.isObject() || !doc.object().contains("error")) {
-            // Body is not JSON with an "error" field — wrap raw text
-            QString detail = QString::fromUtf8(data).trimmed();
+            QString detail = QString::fromUtf8(resp.body).trimmed();
             if (detail.isEmpty())
                 detail = reply->errorString();
-            data = QJsonDocument(QJsonObject{
+            resp.body = QJsonDocument(QJsonObject{
                 {"error", QJsonObject{{"message", detail}}}
             }).toJson();
         }
     }
     reply->deleteLater();
-    return data;
+    return resp;
 }
 
 void LlmClient::run(const LlmParams& params,
@@ -87,15 +134,70 @@ void LlmClient::run(const LlmParams& params,
             payload["reasoning_effort"] = params.reasoningEffort;
         }
 
-        QByteArray respData = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact),
-                                       params.apiKey);
-        if (isCancelled()) return;
+        // ── API call with 429 / 529 exponential backoff ──────────
+        LlmResponse lastResp;
+        bool gotSuccess = false;
+        for (int attempt = 0; attempt <= MAX_RETRIES; ++attempt) {
+            if (isCancelled()) return;
 
-        QJsonObject body = QJsonDocument::fromJson(respData).object();
+            lastResp = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact),
+                                params.apiKey);
+            if (isCancelled()) return;
 
-        // Check for API-level error
+            QJsonObject body = QJsonDocument::fromJson(lastResp.body).object();
+
+            int code = lastResp.httpStatus;
+            if (code >= 200 && code < 300) {
+                gotSuccess = true;
+                break;
+            }
+
+            if (RETRYABLE_STATUSES.contains(code) && attempt < MAX_RETRIES) {
+                double delay = backoffDelay(attempt, lastResp.retryAfterHeader);
+                QString msg = body["error"].toObject()["message"].toString(
+                    QString::fromUtf8(lastResp.body));
+                onEvent(QJsonObject{
+                    {"type",         "retrying"},
+                    {"attempt",      attempt + 1},
+                    {"max_attempts", MAX_RETRIES},
+                    {"delay_secs",   qRound(delay * 10.0) / 10.0},
+                    {"status_code",  code},
+                    {"message",      msg},
+                });
+                interruptibleSleep(delay, isCancelled);
+                if (isCancelled()) {
+                    onEvent(QJsonObject{
+                        {"type",    "final_response"},
+                        {"content", "Request cancelled during backoff."},
+                        {"usage",   accUsage},
+                    });
+                    return;
+                }
+                continue;
+            }
+
+            // Non-retryable or final attempt exhausted — fall through to error
+            break;
+        }
+
+        if (!gotSuccess) {
+            QJsonObject body = QJsonDocument::fromJson(lastResp.body).object();
+            QString msg = body["error"].toObject()["message"].toString(
+                QString::fromUtf8(lastResp.body));
+            onEvent(QJsonObject{
+                {"type",    "final_response"},
+                {"content", QString("API error (HTTP %1): %2")
+                    .arg(lastResp.httpStatus).arg(msg)},
+                {"usage",   accUsage}
+            });
+            return;
+        }
+
+        QJsonObject body = QJsonDocument::fromJson(lastResp.body).object();
+
+        // Check for API-level error (shouldn't happen in 2xx, but be safe)
         if (body.contains("error")) {
-            QString msg = body["error"].toObject()["message"].toString(respData);
+            QString msg = body["error"].toObject()["message"].toString(lastResp.body);
             onEvent(QJsonObject{
                 {"type",    "final_response"},
                 {"content", "API error: " + msg},

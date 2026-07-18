@@ -16,6 +16,12 @@ struct LlmParams {
     bool      preserveReasoning = false;
 };
 
+struct LlmResponse {
+    int         httpStatus = 200;
+    QByteArray  body;
+    QString     retryAfterHeader;  // "retry-after" or "retry-after-ms" value
+};
+
 class LlmClient {
 public:
     using EventFn   = std::function<void(const QJsonObject&)>;
