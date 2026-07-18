@@ -9,6 +9,13 @@
 #include <QFile>
 #include <QUrl>
 #include <QTextStream>
+#include <QDateTime>
+#include <QRegularExpression>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QEventLoop>
+#include <QTimer>
 
 WebServer::WebServer(const QString& host, quint16 port, QObject* parent)
     : QObject(parent), m_host(host), m_port(port),
@@ -84,6 +91,8 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
         routeRoot(socket);
     } else if (parts[0] == "settings") {
         routeSettings(req, socket);
+    } else if (parts[0] == "models" && req.method == "GET") {
+        routeModels(socket);
     } else if (parts[0] == "chat") {
         if (parts.size() == 1) {
             routeRoot(socket);
@@ -100,6 +109,9 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
             else if (act == "sudo"    && req.method == "POST") routeChatSudo(id, req, socket);
             else if (act == "stop"    && req.method == "POST") routeChatStop(id, socket);
             else if (act == "delete"  && req.method == "POST") routeChatDelete(id, socket);
+            else if (act == "export"  && req.method == "GET")  routeChatExport(id, socket);
+            else if (act == "rename"  && req.method == "POST") routeChatRename(id, req, socket);
+            else if (act == "command" && req.method == "POST") routeChatCommand(id, req, socket);
             else sendJson(socket, 404, {{"error","not found"}});
         } else {
             sendJson(socket, 404, {{"error","not found"}});
@@ -147,7 +159,24 @@ void WebServer::routeChatSend(const QString& chatId,
                                const HttpRequest& req, QTcpSocket* socket) {
     QJsonObject body = bodyJson(req);
     QString content = body["content"].toString().trimmed();
-    if (content.isEmpty()) {
+
+    // Attached files arrive base64-encoded from the browser; inject them
+    // as fenced blocks ahead of the user's text (same as the Python web).
+    const QJsonArray files = body["files"].toArray();
+    if (!files.isEmpty()) {
+        QStringList blocks;
+        for (const QJsonValue& v : files) {
+            QJsonObject f = v.toObject();
+            QString fname = f["name"].toString();
+            if (fname.isEmpty()) fname = "file";
+            QByteArray raw = QByteArray::fromBase64(f["data"].toString().toUtf8());
+            blocks.append(QString("[File: %1]\n```\n%2\n```")
+                              .arg(fname, QString::fromUtf8(raw)));
+        }
+        content = blocks.join("\n\n") + "\n" + content;
+    }
+
+    if (content.trimmed().isEmpty()) {
         sendJson(socket, 400, {{"error","empty message"}});
         return;
     }
@@ -291,6 +320,232 @@ void WebServer::routeChatDelete(const QString& chatId, QTcpSocket* socket) {
     sendRedirect(socket, "/");
 }
 
+void WebServer::routeChatExport(const QString& chatId, QTcpSocket* socket) {
+    QJsonObject chat = chatGet(chatId);
+    if (chat.isEmpty()) {
+        sendJson(socket, 404, {{"error","chat not found"}});
+        return;
+    }
+
+    QStringList lines;
+    lines << "# " + chat["title"].toString("Chat");
+    lines << "*Exported " + QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") + "*";
+    lines << "";
+
+    const QJsonArray msgs = chat["messages"].toArray();
+    for (const QJsonValue& v : msgs) {
+        QJsonObject msg = v.toObject();
+        const QString role = msg["role"].toString();
+
+        // Multimodal content arrives as an array of parts; flatten to text
+        QString content;
+        if (msg["content"].isArray()) {
+            QStringList parts;
+            for (const QJsonValue& pv : msg["content"].toArray()) {
+                QJsonObject p = pv.toObject();
+                if (p["type"].toString() == "text")            parts << p["text"].toString();
+                else if (p["type"].toString() == "image_url")  parts << "[image]";
+            }
+            content = parts.join(' ');
+        } else {
+            content = msg["content"].toString();
+        }
+
+        if (role == "user") {
+            lines << "### 🧑 You" << content << "";
+        } else if (role == "assistant") {
+            const QJsonArray toolCalls = msg["tool_calls"].toArray();
+            if (!toolCalls.isEmpty()) {
+                lines << "### 🤖 Assistant (tool calls)";
+                for (const QJsonValue& tcv : toolCalls) {
+                    QJsonObject fn = tcv.toObject()["function"].toObject();
+                    lines << "- **" + fn["name"].toString("?") + "**";
+                    QJsonParseError perr;
+                    QJsonDocument argsDoc = QJsonDocument::fromJson(
+                        fn["arguments"].toString("{}").toUtf8(), &perr);
+                    if (perr.error == QJsonParseError::NoError && argsDoc.isObject()) {
+                        QString pretty = QString::fromUtf8(argsDoc.toJson(QJsonDocument::Indented)).trimmed();
+                        pretty.replace("\n", "\n  ");
+                        lines << "  ```json\n  " + pretty + "\n  ```";
+                    } else {
+                        lines << "  `" + fn["arguments"].toString() + "`";
+                    }
+                }
+                lines << "";
+            }
+            if (!content.isEmpty()) {
+                lines << "### 🤖 Assistant" << content << "";
+            }
+        } else if (role == "tool") {
+            lines << "#### 🔧 Tool result (`" + msg["tool_call_id"].toString("?") + "`)";
+            lines << "```" << content << "```" << "";
+        } else if (role == "system") {
+            lines << "*System: " + content.left(200) + "*" << "";
+        }
+    }
+
+    QString safeTitle = chat["title"].toString("chat");
+    safeTitle.remove(QRegularExpression("[^a-zA-Z0-9 _-]"));
+    safeTitle = safeTitle.trimmed().left(50);
+    if (safeTitle.isEmpty()) safeTitle = "chat";
+
+    const QByteArray bodyBytes = lines.join('\n').toUtf8();
+    QByteArray resp = QString(
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/markdown; charset=utf-8\r\n"
+        "Content-Disposition: attachment; filename=\"%1.md\"\r\n"
+        "Content-Length: %2\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).arg(safeTitle).arg(bodyBytes.size()).toUtf8();
+    socket->write(resp);
+    socket->write(bodyBytes);
+    socket->flush();
+    socket->disconnectFromHost();
+}
+
+void WebServer::routeChatRename(const QString& chatId,
+                                 const HttpRequest& req, QTcpSocket* socket) {
+    QJsonObject body = bodyJson(req);
+    const QString newTitle = body["title"].toString().trimmed();
+    if (newTitle.isEmpty()) {
+        sendJson(socket, 400, {{"error","empty title"}});
+        return;
+    }
+    QJsonObject chat = chatGet(chatId);
+    if (chat.isEmpty()) {
+        sendJson(socket, 404, {{"error","chat not found"}});
+        return;
+    }
+    chat["title"] = newTitle;
+    chatSave(chat);
+    sendJson(socket, 200, {{"status","ok"},{"title",newTitle}});
+}
+
+void WebServer::routeChatCommand(const QString& chatId,
+                                  const HttpRequest& req, QTcpSocket* socket) {
+    QJsonObject body = bodyJson(req);
+    const QString cmdText = body["command"].toString().trimmed();
+    if (!cmdText.startsWith('/')) {
+        sendJson(socket, 400, {{"error","Not a command"}});
+        return;
+    }
+
+    const QStringList parts = cmdText.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+    const QString cmd = parts[0].toLower();
+    const QStringList args = parts.mid(1);
+
+    Config cfg = configLoad();
+
+    if (cmd == "/yolo") {
+        const QStringList modes = {"none", "safe", "all"};
+        QString newMode;
+        if (!args.isEmpty() && modes.contains(args[0].toLower())) {
+            newMode = args[0].toLower();
+        } else {
+            int idx = modes.indexOf(cfg.toolConfirmation);
+            newMode = modes[(idx + 1) % 3];
+        }
+        cfg.toolConfirmation = newMode;
+        configSave(cfg);
+        const QString label = newMode == "all" ? "YOLO" : newMode == "safe" ? "Safe" : "None";
+        sendJson(socket, 200, {
+            {"type","config"},
+            {"message","Tool Confirmation: " + label},
+            {"config", QJsonObject{{"model",cfg.model},{"tool_confirmation",newMode}}}
+        });
+        return;
+    }
+
+    if (cmd == "/model" && !args.isEmpty()) {
+        cfg.model = args[0];
+        configSave(cfg);
+        sendJson(socket, 200, {
+            {"type","config"},
+            {"message","Model: " + cfg.model},
+            {"config", QJsonObject{{"model",cfg.model},{"tool_confirmation",cfg.toolConfirmation}}}
+        });
+        return;
+    }
+
+    if (cmd == "/new") {
+        QJsonObject chat = chatCreate("New Chat");
+        sendJson(socket, 200, {{"type","redirect"},{"url","/chat/" + chat["id"].toString()}});
+        return;
+    }
+
+    if (cmd == "/export") {
+        sendJson(socket, 200, {{"type","redirect"},{"url","/chat/" + chatId + "/export"}});
+        return;
+    }
+
+    if (cmd == "/rename" && !args.isEmpty()) {
+        const QString newTitle = args.join(' ');
+        QJsonObject chat = chatGet(chatId);
+        if (!chat.isEmpty()) {
+            chat["title"] = newTitle;
+            chatSave(chat);
+            sendJson(socket, 200, {{"type","rename"},{"title",newTitle}});
+            return;
+        }
+    }
+
+    if (cmd == "/help") {
+        sendJson(socket, 200, {{"type","message"},{"message",
+            "Slash commands: /new /yolo [none|safe|all] /model <name> "
+            "/rename <title> /export /help"}});
+        return;
+    }
+
+    sendJson(socket, 200, {{"type","message"},
+                           {"message","Unknown command: " + cmd + ". Try /help."}});
+}
+
+void WebServer::routeModels(QTcpSocket* socket) {
+    Config cfg = configLoad();
+    QString baseUrl = cfg.baseUrl;
+    while (baseUrl.endsWith('/')) baseUrl.chop(1);
+
+    QNetworkAccessManager nam;
+    QNetworkRequest request(QUrl(baseUrl + "/models"));
+    request.setRawHeader("Authorization", ("Bearer " + cfg.apiKey).toUtf8());
+    request.setRawHeader("api-key", cfg.apiKey.toUtf8());
+    request.setRawHeader("User-Agent", cfg.userAgent.toUtf8());
+
+    QNetworkReply* reply = nam.get(request);
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timeout.start(10000);
+    loop.exec();
+
+    if (!reply->isFinished()) {
+        reply->abort();
+        reply->deleteLater();
+        sendJson(socket, 502, {{"error","timed out fetching models"}});
+        return;
+    }
+    if (reply->error() != QNetworkReply::NoError) {
+        QString err = reply->errorString();
+        reply->deleteLater();
+        sendJson(socket, 502, {{"error",err}});
+        return;
+    }
+
+    QJsonObject data = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+
+    QStringList ids;
+    for (const QJsonValue& v : data["data"].toArray()) {
+        const QString id = v.toObject()["id"].toString();
+        if (!id.isEmpty()) ids << id;
+    }
+    ids.sort();
+    sendJson(socket, 200, {{"models", QJsonArray::fromStringList(ids)}});
+}
+
 void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {
     if (req.method == "POST") {
         const QHash<QString, QString>& f = req.form;
@@ -403,6 +658,7 @@ void WebServer::sendResponse(QTcpSocket* socket, int status,
             case 302: return "Found";
             case 400: return "Bad Request";
             case 404: return "Not Found";
+            case 502: return "Bad Gateway";
             default:  return "Internal Server Error";
         }
     };

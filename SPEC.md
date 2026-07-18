@@ -72,6 +72,9 @@ PengyCPP/
 ├── chatview.cpp/h          # Right-top — QTextBrowser markdown, tables, collapsible tool blocks
 ├── chatinput.cpp/h         # Right-bottom — message input (QPlainTextEdit)
 ├── settingsdialog.cpp/h    # Settings modal + Fetch Models button
+├── taskmanager.cpp/h       # Prompt-template Tasks CRUD (~/.config/pengy/tasks.json)
+├── tasksdialog.cpp/h       # Tasks manager/player dialog
+├── themehelper.h           # Light/dark/accent theme + UI scale helpers
 ├── cli/
 │   └── main.cpp            # Interactive REPL + single-shot mode + slash commands
 ├── web/
@@ -202,6 +205,8 @@ pengy_cli "What is the capital of France?"
 pengy_cli --no-save "quick question"
 ```
 
+Flags (shared with the Python and Rust CLIs): `--no-save`, `--model NAME`, `--system MSG`, `--output pretty|raw|json|silent`, `--config-dir PATH`, `-v/--version`. `--model` and `--system` are in-memory overrides — they never modify `settings.json`.
+
 ### Interactive Mode
 
 On startup:
@@ -223,6 +228,11 @@ The `PengyCliApp` class drives `LlmClient::run()` on the main thread. Tool confi
 |---------|-------------|
 | `/help` | Show the command reference table |
 | `/new` | Start a new chat session |
+| `/show [n]` | Show the full conversation (optional: last n messages) |
+| `/tail [n]` | Show the last n messages (default 5) |
+| `/rename <title>` | Rename the current chat |
+| `/clear` | Clear the terminal screen |
+| `/export [path]` | Export the current chat as Markdown |
 | `/yolo [all\|safe\|none]` | Set tool confirmation: all (YOLO), safe (read-only), none — cycles if no arg |
 | `/config` | Show current configuration (base URL, model, timeout, etc.) |
 | `/model <name>` | Switch models (e.g. `/model gpt-4o`) |
@@ -254,10 +264,13 @@ The Web binary (`pengy_web [port]`) runs a `QTcpServer` HTTP server (default por
 
 ```bash
 pengy_web                            # localhost:5000
-pengy_web 8080                       # custom port
-pengy_web --host 0.0.0.0 --port 8080 # expose beyond localhost
+pengy_web 8080                       # custom port (positional)
+pengy_web 8080 --host 0.0.0.0        # expose beyond localhost (no auth — trusted networks only)
+pengy_web --config-dir PATH          # custom config directory
 pengy_web -h                         # help
 ```
+
+The server prints its URL on startup; it does not auto-open a browser.
 
 ### Layout
 
@@ -279,8 +292,8 @@ pengy_web -h                         # help
 
 - **Sidebar** — Fixed column on md+ screens; offcanvas drawer on mobile. Lists all chats with delete button; "New Chat" button at top.
 - **Chat area** — Server-rendered message history on page load; SSE appends new content live during generation.
-- **Input** — Auto-expanding textarea; Enter to send, Shift+Enter for newline.
-- **Navbar** — Shows current model and tool confirmation mode badge; gear icon links to settings.
+- **Input** — Auto-expanding textarea; Enter to send, Shift+Enter for newline; 📎 attach button (files sent base64, injected as fenced blocks); `/` commands handled via `POST /chat/:id/command`.
+- **Navbar** — Shows current model and tool confirmation mode badge; export (⬇) button downloads the chat as Markdown; double-click the brand to rename; gear icon links to settings.
 
 ### Routes
 
@@ -294,6 +307,10 @@ pengy_web -h                         # help
 | POST | `/chat/:id/confirm` | Unblock tool confirmation (confirmed/declined/yolo) |
 | POST | `/chat/:id/sudo` | Provide sudo password to blocked worker |
 | POST | `/chat/:id/delete` | Delete chat and redirect to index |
+| GET | `/chat/:id/export` | Download the chat as a Markdown file |
+| POST | `/chat/:id/rename` | Rename a chat |
+| POST | `/chat/:id/command` | Web slash commands (`/new /yolo /model /rename /export /help`) typed in the chat input |
+| GET | `/models` | Fetch available models from the endpoint (settings page Fetch button) |
 | GET/POST | `/settings` | View/update all config fields |
 | POST | `/chat/:id/stop` | Cancel running generation for a chat |
 
@@ -475,10 +492,14 @@ Shared with Python Pengy and PengyR at `~/.config/pengy/`.
   "base_url": "https://api.openai.com/v1",
   "api_key": "",
   "model": "gpt-4o",
-  "system_message": "You are a helpful assistant. The current date is {date} and the user is {username} on host {hostname} which is {osinfo}.",
+  "system_message": "You are a helpful assistant named Pengy. The current date is {date} and the user is {username} on host {hostname} which is {osinfo}.",
   "tool_confirmation": "none",
+  "reasoning_effort": "",
+  "preserve_reasoning": false,
   "context_keep_turns": 0,
   "ui_scale": 100,
+  "theme_mode": "system",
+  "theme_accent": "default",
   "user_agent": "PengyAgent/1.0",
   "tool_timeout": 60
 }
@@ -491,8 +512,12 @@ Shared with Python Pengy and PengyR at `~/.config/pengy/`.
 | `model` | string | `gpt-4o` | Model name |
 | `system_message` | string | (see above) | Template; `{date}`, `{username}`, `{hostname}`, `{osinfo}` filled at send time |
 | `tool_confirmation` | string | `"none"` | `"all"` (YOLO), `"safe"` (read-only auto), `"none"` (prompt all) |
+| `reasoning_effort` | string | `""` | Passed as `reasoning_effort` on API calls when set (`none`…`max`; `""` = provider default) |
+| `preserve_reasoning` | bool | `false` | Keep reasoning fields on assistant messages sent back to the API |
 | `context_keep_turns` | int | `0` | Recent turns whose tool results are kept; older ones elided. 0 = keep all |
 | `ui_scale` | int | `100` | Sets `QT_SCALE_FACTOR` on next launch (75/100/125/200); CLI ignores |
+| `theme_mode` | string | `"system"` | Desktop theme: `"system"`, `"light"`, or `"dark"` |
+| `theme_accent` | string | `"default"` | Desktop accent color (`default`/`blue`/`teal`/`green`/`orange`/`red`/`pink`/`purple`) |
 | `user_agent` | string | `PengyAgent/1.0` | User-Agent header for HTTP requests |
 | `tool_timeout` | int | `60` | Timeout in seconds for tool execution (-1 = no timeout) |
 
@@ -643,6 +668,13 @@ REM → Pengy-Windows.zip
 | Image download rendering | ✅ | ✅ | ✅ |
 | CLI (interactive REPL + single-shot) | ✅ | ✅ | ✅ |
 | Web UI (SSE streaming) | ✅ | ✅ | ✅ |
+| Web slash commands (`/command` route) | ✅ | ✅ | ✅ |
+| Web file attachments | ✅ | ✅ | ✅ |
+| Web chat export + rename | ✅ | ✅ | ✅ |
+| Web Fetch Models (`/models` route) | ✅ | ✅ | ✅ |
+| Tasks (prompt templates, GUI dialog) | ✅ | ✅ | ✅ |
+| Theme system (mode + accent) | ✅ | ✅ | ✅ |
+| Reasoning effort / preservation | ✅ | ✅ | ✅ |
 | Context elision | ✅ | ✅ | ✅ |
 | Skills system | ✅ | ✅ | ✅ |
 

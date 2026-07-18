@@ -18,7 +18,7 @@ void setConfigDir(const QString& path) {
     configDirOverride() = path;
 }
 
-static QString pengyConfigDir() {
+QString pengyConfigDirPath() {
     QString& override = configDirOverride();
     if (!override.isEmpty())
         return override;
@@ -29,7 +29,7 @@ static QString pengyConfigDir() {
 }
 
 static QString configFilePath() {
-    return pengyConfigDir() + "/settings.json";
+    return pengyConfigDirPath() + "/settings.json";
 }
 
 static void backupCorruptFile(const QString& path) {

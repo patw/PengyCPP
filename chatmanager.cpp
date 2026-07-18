@@ -1,4 +1,5 @@
 #include "chatmanager.h"
+#include "config.h"
 #include <QFile>
 #include <QDir>
 #include <QFileInfo>
@@ -7,18 +8,8 @@
 #include <QUuid>
 #include <QSet>
 
-/* Resolve the pengy config directory.
- * Uses $XDG_CONFIG_HOME if set, otherwise $HOME/.config — matching the
- * Python and Rust editions so all three share the same settings/chats/tasks. */
-static QString pengyConfigDir() {
-    QString base = qEnvironmentVariable("XDG_CONFIG_HOME");
-    if (base.isEmpty())
-        base = QDir::homePath() + "/.config";
-    return base + "/pengy";
-}
-
 static QString chatsFilePath() {
-    return pengyConfigDir() + "/chats.json";
+    return pengyConfigDirPath() + "/chats.json";
 }
 
 static void backupCorruptFile(const QString& path) {

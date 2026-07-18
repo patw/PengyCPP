@@ -53,6 +53,10 @@ private:
     void routeChatSudo(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatStop(const QString& chatId, QTcpSocket* socket);
     void routeChatDelete(const QString& chatId, QTcpSocket* socket);
+    void routeChatExport(const QString& chatId, QTcpSocket* socket);
+    void routeChatRename(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
+    void routeChatCommand(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
+    void routeModels(QTcpSocket* socket);
     void routeSettings(const HttpRequest& req, QTcpSocket* socket);
 
     void sendResponse(QTcpSocket* socket, int status,

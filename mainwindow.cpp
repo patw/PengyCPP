@@ -480,21 +480,30 @@ void MainWindow::handleToolConfirm(const QJsonObject& req) {
     btnLayout->addWidget(cancelBtn);
     layout->addLayout(btnLayout);
 
+    bool responded = false;
     connect(execBtn, &QPushButton::clicked, &dlg, [&]() {
+        responded = true;
         m_worker->sendConfirmation(true, false);
         dlg.accept();
     });
     connect(yesAllBtn, &QPushButton::clicked, &dlg, [&]() {
+        responded = true;
         m_yoloThisTurn = true;
         m_worker->sendConfirmation(true, true);
         dlg.accept();
     });
     connect(cancelBtn, &QPushButton::clicked, &dlg, [&]() {
+        responded = true;
         m_worker->sendConfirmation(false, false);
         dlg.reject();
     });
 
     dlg.exec();
+
+    // Escape or the window X close the dialog without hitting a button;
+    // the worker is still blocked on the QWaitCondition, so decline it.
+    if (!responded && m_worker)
+        m_worker->sendConfirmation(false, false);
 }
 
 void MainWindow::onWorkerFinished() {

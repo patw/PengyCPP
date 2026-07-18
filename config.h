@@ -27,3 +27,4 @@ Config  configLoad();
 bool    configSave(const Config& cfg);
 QString configRenderSystemMessage(const QString& tmpl);
 void    setConfigDir(const QString& path);
+QString pengyConfigDirPath();

@@ -19,7 +19,9 @@
 #include "config.h"
 #include "chatmanager.h"
 #include "tools.h"
+#include "llmclient.h"
 #include "web/webserver.h"
+#include <QTcpServer>
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -67,6 +69,7 @@ struct WebResp {
     QByteArray body;
     QString    location;
     QString    contentType;
+    QString    disposition;
 };
 
 static WebResp webRequest(const QString& method, quint16 port,
@@ -92,6 +95,7 @@ static WebResp webRequest(const QString& method, quint16 port,
     // rawHeader works for relative Location values; parsed LocationHeader may be empty
     r.location    = QString::fromUtf8(reply->rawHeader("Location"));
     r.contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();
+    r.disposition = QString::fromUtf8(reply->rawHeader("Content-Disposition"));
     reply->deleteLater();
     return r;
 }
@@ -100,6 +104,99 @@ static WebResp webRequest(const QString& method, quint16 port,
 
 static QString cliBin() {
     return QCoreApplication::applicationDirPath() + "/pengy_cli";
+}
+
+// ── Stub LLM server ──────────────────────────────────────────────────
+// Replays queued /chat/completions responses and records request bodies.
+// LlmClient::run()'s inner QEventLoop pumps this server's slots, so both
+// can live on the test thread.
+
+class StubLlmServer : public QObject {
+public:
+    QList<QByteArray>  responses;   // JSON bodies served in order
+    QList<int>         statuses;    // optional per-response HTTP status
+    QList<QJsonObject> requests;    // recorded request payloads
+
+    StubLlmServer() {
+        m_server.listen(QHostAddress::LocalHost, 0);
+        connect(&m_server, &QTcpServer::newConnection, this, [this]() {
+            while (m_server.hasPendingConnections()) {
+                QTcpSocket* sock = m_server.nextPendingConnection();
+                m_bufs[sock] = QByteArray();
+                connect(sock, &QTcpSocket::readyRead, this, [this, sock]() { onData(sock); });
+                connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
+            }
+        });
+    }
+
+    QString baseUrl() const {
+        return "http://127.0.0.1:" + QString::number(m_server.serverPort());
+    }
+
+private:
+    QTcpServer m_server;
+    QHash<QTcpSocket*, QByteArray> m_bufs;
+
+    void onData(QTcpSocket* sock) {
+        QByteArray& buf = m_bufs[sock];
+        buf += sock->readAll();
+        int headerEnd = buf.indexOf("\r\n\r\n");
+        if (headerEnd < 0) return;
+        int contentLength = 0;
+        for (const QByteArray& line : buf.left(headerEnd).split('\n')) {
+            if (line.toLower().trimmed().startsWith("content-length:"))
+                contentLength = line.mid(line.indexOf(':') + 1).trimmed().toInt();
+        }
+        if (buf.size() < headerEnd + 4 + contentLength) return;
+
+        requests.append(QJsonDocument::fromJson(
+            buf.mid(headerEnd + 4, contentLength)).object());
+        m_bufs[sock].clear();
+
+        QByteArray body = responses.isEmpty()
+            ? QByteArray(R"({"error": {"message": "stub exhausted"}})")
+            : responses.takeFirst();
+        int status = statuses.isEmpty() ? 200 : statuses.takeFirst();
+        QByteArray resp = QString(
+            "HTTP/1.1 %1 %2\r\nContent-Type: application/json\r\n"
+            "Content-Length: %3\r\nConnection: close\r\n\r\n")
+            .arg(status).arg(status == 200 ? "OK" : "Error").arg(body.size())
+            .toUtf8() + body;
+        sock->write(resp);
+        sock->flush();
+        sock->disconnectFromHost();
+    }
+};
+
+static QByteArray llmCompletion(const QString& content,
+                                const QJsonArray& toolCalls = {},
+                                int promptToks = 10, int complToks = 5,
+                                const QJsonObject& msgExtra = {}) {
+    QJsonObject message{{"role", "assistant"}, {"content", content}};
+    if (!toolCalls.isEmpty()) message["tool_calls"] = toolCalls;
+    for (auto it = msgExtra.begin(); it != msgExtra.end(); ++it)
+        message[it.key()] = it.value();
+    QJsonObject payload{
+        {"choices", QJsonArray{QJsonObject{
+            {"index", 0}, {"message", message}, {"finish_reason", "stop"}}}},
+        {"usage", QJsonObject{
+            {"prompt_tokens", promptToks},
+            {"completion_tokens", complToks},
+            {"total_tokens", promptToks + complToks}}},
+    };
+    return QJsonDocument(payload).toJson(QJsonDocument::Compact);
+}
+
+static QJsonObject llmToolCall(const QString& id, const QString& name,
+                               const QJsonObject& args) {
+    return QJsonObject{
+        {"id", id},
+        {"type", "function"},
+        {"function", QJsonObject{
+            {"name", name},
+            {"arguments", QString::fromUtf8(
+                QJsonDocument(args).toJson(QJsonDocument::Compact))}}},
+    };
 }
 
 static QString runCli(const QStringList& commands, int timeoutMs = 5000) {
@@ -810,6 +907,534 @@ private slots:
 
         QCOMPARE(status, 200);
         QVERIFY2(ct.startsWith("text/event-stream"), qPrintable(ct));
+    }
+
+    // ── Web server: export / rename / command / models / attachments ─
+    // Parity tests for the routes shared with the Python and Rust webs.
+
+    void webExportReturnsMarkdown() {
+        QJsonObject chat = chatCreate("Export Test");
+        QJsonArray msgs;
+        msgs.append(userMsg("hello"));
+        QJsonObject asst = assistantWithTools({"tc1"});
+        asst["content"] = "using a tool";
+        msgs.append(asst);
+        msgs.append(toolMsg("tc1", "tool output data"));
+        msgs.append(assistantMsg("all done"));
+        chat["messages"] = msgs;
+        chatSave(chat);
+
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(),
+                               "/chat/" + chat["id"].toString() + "/export");
+        QCOMPARE(r.status, 200);
+        QVERIFY(r.contentType.contains("markdown"));
+        QVERIFY(r.disposition.contains("attachment"));
+        QVERIFY(r.disposition.contains("Export Test.md"));
+        QString body = QString::fromUtf8(r.body);
+        QVERIFY(body.contains("# Export Test"));
+        QVERIFY(body.contains("🧑 You"));
+        QVERIFY(body.contains("hello"));
+        QVERIFY(body.contains("test_tool"));
+        QVERIFY(body.contains("tool output data"));
+        QVERIFY(body.contains("all done"));
+    }
+
+    void webExportUnknownChat404() {
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(), "/chat/nope/export");
+        QCOMPARE(r.status, 404);
+    }
+
+    void webRenameUpdatesTitle() {
+        QJsonObject chat = chatCreate("Old Title");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/rename",
+                               R"({"title": "Fresh Title"})", "application/json");
+        QCOMPARE(r.status, 200);
+        QCOMPARE(chatGet(chat["id"].toString())["title"].toString(),
+                 QString("Fresh Title"));
+    }
+
+    void webRenameEmptyTitle400() {
+        QJsonObject chat = chatCreate("Old Title");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/rename",
+                               R"({"title": "  "})", "application/json");
+        QCOMPARE(r.status, 400);
+    }
+
+    void webCommandYoloPersists() {
+        QJsonObject chat = chatCreate("Cmd Test");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/command",
+                               R"({"command": "/yolo safe"})", "application/json");
+        QCOMPARE(r.status, 200);
+        QJsonObject data = QJsonDocument::fromJson(r.body).object();
+        QCOMPARE(data["type"].toString(), QString("config"));
+        QVERIFY(data["message"].toString().contains("Safe"));
+        QCOMPARE(configLoad().toolConfirmation, QString("safe"));
+    }
+
+    void webCommandModelPersists() {
+        QJsonObject chat = chatCreate("Cmd Test");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/command",
+                               R"({"command": "/model test-model-9"})",
+                               "application/json");
+        QJsonObject data = QJsonDocument::fromJson(r.body).object();
+        QCOMPARE(data["type"].toString(), QString("config"));
+        QCOMPARE(configLoad().model, QString("test-model-9"));
+    }
+
+    void webCommandNewRedirects() {
+        QJsonObject chat = chatCreate("Cmd Test");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/command",
+                               R"({"command": "/new"})", "application/json");
+        QJsonObject data = QJsonDocument::fromJson(r.body).object();
+        QCOMPARE(data["type"].toString(), QString("redirect"));
+        QVERIFY(data["url"].toString().contains("/chat/"));
+    }
+
+    void webCommandRenamePersists() {
+        QJsonObject chat = chatCreate("Cmd Test");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/command",
+                               R"({"command": "/rename Renamed Via Cmd"})",
+                               "application/json");
+        QJsonObject data = QJsonDocument::fromJson(r.body).object();
+        QCOMPARE(data["type"].toString(), QString("rename"));
+        QCOMPARE(chatGet(chat["id"].toString())["title"].toString(),
+                 QString("Renamed Via Cmd"));
+    }
+
+    void webCommandHelpAndUnknown() {
+        QJsonObject chat = chatCreate("Cmd Test");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+
+        WebResp help = webRequest("POST", server.port(),
+                                  "/chat/" + chat["id"].toString() + "/command",
+                                  R"({"command": "/help"})", "application/json");
+        QJsonObject helpData = QJsonDocument::fromJson(help.body).object();
+        QCOMPARE(helpData["type"].toString(), QString("message"));
+        QVERIFY(helpData["message"].toString().contains("/yolo"));
+
+        WebResp unk = webRequest("POST", server.port(),
+                                 "/chat/" + chat["id"].toString() + "/command",
+                                 R"({"command": "/wat"})", "application/json");
+        QJsonObject unkData = QJsonDocument::fromJson(unk.body).object();
+        QVERIFY(unkData["message"].toString().contains("Unknown command"));
+
+        WebResp plain = webRequest("POST", server.port(),
+                                   "/chat/" + chat["id"].toString() + "/command",
+                                   R"({"command": "just text"})", "application/json");
+        QCOMPARE(plain.status, 400);
+    }
+
+    void webModelsFetchesSortedIds() {
+        StubLlmServer stub;
+        stub.responses << QByteArray(
+            R"({"data": [{"id": "zeta-model"}, {"id": "alpha-model"}]})");
+        Config cfg = configLoad();
+        cfg.baseUrl = stub.baseUrl();
+        configSave(cfg);
+
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(), "/models");
+        QCOMPARE(r.status, 200);
+        QJsonArray models = QJsonDocument::fromJson(r.body).object()["models"].toArray();
+        QCOMPARE(models.size(), 2);
+        QCOMPARE(models[0].toString(), QString("alpha-model"));
+        QCOMPARE(models[1].toString(), QString("zeta-model"));
+    }
+
+    void webModelsUnreachable502() {
+        Config cfg = configLoad();
+        cfg.baseUrl = "http://127.0.0.1:9";  // discard port — refused fast
+        configSave(cfg);
+
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(), "/models");
+        QCOMPARE(r.status, 502);
+    }
+
+    void webSendInjectsAttachments() {
+        StubLlmServer llm;
+        llm.responses << llmCompletion("attachment received");
+        Config cfg = configLoad();
+        cfg.baseUrl = llm.baseUrl();
+        cfg.apiKey = "test";
+        configSave(cfg);
+
+        QJsonObject chat = chatCreate("Attach Test");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+
+        QByteArray fileB64 = QByteArray("attachment body").toBase64();
+        QByteArray payload = QJsonDocument(QJsonObject{
+            {"content", "what is in this file?"},
+            {"files", QJsonArray{QJsonObject{
+                {"name", "note.txt"},
+                {"data", QString::fromUtf8(fileB64)}}}},
+        }).toJson(QJsonDocument::Compact);
+
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/send",
+                               payload, "application/json");
+        QCOMPARE(r.status, 200);
+
+        // The worker saves the chat when the conversation finishes.
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !chatGet(chat["id"].toString())["messages"].toArray().isEmpty(), 5000);
+
+        QJsonArray msgs = chatGet(chat["id"].toString())["messages"].toArray();
+        QString userContent = msgs[0].toObject()["content"].toString();
+        QVERIFY(userContent.contains("[File: note.txt]"));
+        QVERIFY(userContent.contains("attachment body"));
+        QVERIFY(userContent.endsWith("what is in this file?"));
+        QCOMPARE(msgs.last().toObject()["content"].toString(),
+                 QString("attachment received"));
+    }
+
+    void webSendFilesOnlyAccepted() {
+        StubLlmServer llm;
+        llm.responses << llmCompletion("got it");
+        Config cfg = configLoad();
+        cfg.baseUrl = llm.baseUrl();
+        configSave(cfg);
+
+        QJsonObject chat = chatCreate("Files Only");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+
+        QByteArray payload = QJsonDocument(QJsonObject{
+            {"content", ""},
+            {"files", QJsonArray{QJsonObject{
+                {"name", "a.txt"},
+                {"data", QString::fromUtf8(QByteArray("just the file").toBase64())}}}},
+        }).toJson(QJsonDocument::Compact);
+
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/send",
+                               payload, "application/json");
+        QCOMPARE(r.status, 200);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !chatGet(chat["id"].toString())["messages"].toArray().isEmpty(), 5000);
+    }
+
+    // ── LlmClient conversation-loop tests (stub server) ──────────────
+    // Mirrors Pengy's tests/test_llm_loop.py and PengyR's loop_tests —
+    // keep scenarios in sync across the three editions.
+
+    void llmFinalResponseNoTools() {
+        StubLlmServer stub;
+        stub.responses << llmCompletion("hello there");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.apiKey = "test-key";
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hi")};
+        p.toolConfirmation = "none";
+
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; });
+
+        QCOMPARE(events.size(), 1);
+        QCOMPARE(events[0]["type"].toString(), QString("final_response"));
+        QCOMPARE(events[0]["content"].toString(), QString("hello there"));
+        QCOMPARE(events[0]["usage"].toObject()["total_tokens"].toInt(), 15);
+
+        QCOMPARE(stub.requests.size(), 1);
+        QCOMPARE(stub.requests[0]["model"].toString(), QString("stub-model"));
+        QCOMPARE(stub.requests[0]["tools"].toArray().size(), 11);
+        QVERIFY(!stub.requests[0].contains("reasoning_effort"));
+    }
+
+    void llmReasoningEffortSent() {
+        StubLlmServer stub;
+        stub.responses << llmCompletion("ok");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hi")};
+        p.toolConfirmation = "none";
+        p.reasoningEffort = "high";
+
+        LlmClient().run(p, [](const QJsonObject&) {},
+            []() { return std::make_pair(true, false); },
+            []() { return false; });
+
+        QCOMPARE(stub.requests[0]["reasoning_effort"].toString(), QString("high"));
+    }
+
+    void llmAllModeExecutesToolAndFeedsResult() {
+        QTemporaryDir dir;
+        QString file = dir.path() + "/note.txt";
+        { QFile f(file); f.open(QIODevice::WriteOnly); f.write("file body here"); }
+
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_file",
+                                 QJsonObject{{"path", file}})}, 100, 20)
+            << llmCompletion("done", {}, 200, 30);
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("read it")};
+        p.toolConfirmation = "all";
+
+        QList<QJsonObject> events;
+        int confirms = 0;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            [&]() { confirms++; return std::make_pair(true, false); },
+            []() { return false; });
+
+        QCOMPARE(confirms, 0);
+        QStringList types;
+        for (const auto& ev : events) types << ev["type"].toString();
+        QCOMPARE(types, QStringList({"assistant_tool_calls", "tool_request",
+                                     "tool_result", "final_response"}));
+        QVERIFY(events[2]["content"].toString().contains("file body here"));
+        QCOMPARE(events[2]["declined"].toBool(), false);
+
+        // Usage accumulated across both round-trips
+        QJsonObject usage = events[3]["usage"].toObject();
+        QCOMPARE(usage["prompt_tokens"].toInt(), 300);
+        QCOMPARE(usage["completion_tokens"].toInt(), 50);
+
+        // Second request carries assistant tool_calls + tool result
+        QJsonArray msgs = stub.requests[1]["messages"].toArray();
+        QJsonObject last = msgs.last().toObject();
+        QCOMPARE(last["role"].toString(), QString("tool"));
+        QCOMPARE(last["tool_call_id"].toString(), QString("tc1"));
+        QJsonObject secondLast = msgs[msgs.size() - 2].toObject();
+        QCOMPARE(secondLast["role"].toString(), QString("assistant"));
+        QVERIFY(!secondLast["tool_calls"].toArray().isEmpty());
+    }
+
+    void llmSafeModePausesForWriteTool() {
+        QTemporaryDir dir;
+        QString target = dir.path() + "/out.txt";
+
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tc1", "write_file",
+                                 QJsonObject{{"path", target}, {"content", "written!"}})})
+            << llmCompletion("done");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("write")};
+        p.toolConfirmation = "safe";
+
+        int confirms = 0;
+        LlmClient().run(p, [](const QJsonObject&) {},
+            [&]() { confirms++; return std::make_pair(true, false); },
+            []() { return false; });
+
+        QCOMPARE(confirms, 1);
+        QFile f(target);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("written!"));
+    }
+
+    void llmSafeModeAutoApprovesReadonly() {
+        QTemporaryDir dir;
+        QString file = dir.path() + "/note.txt";
+        { QFile f(file); f.open(QIODevice::WriteOnly); f.write("safe read"); }
+
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_file",
+                                 QJsonObject{{"path", file}})})
+            << llmCompletion("done");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("read")};
+        p.toolConfirmation = "safe";
+
+        int confirms = 0;
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            [&]() { confirms++; return std::make_pair(true, false); },
+            []() { return false; });
+
+        QCOMPARE(confirms, 0);
+        QVERIFY(events[2]["content"].toString().contains("safe read"));
+    }
+
+    void llmDeclineFeedsDeclinedMessage() {
+        QTemporaryDir dir;
+        QString target = dir.path() + "/out.txt";
+
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tc1", "write_file",
+                                 QJsonObject{{"path", target}, {"content", "x"}})})
+            << llmCompletion("understood");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("write")};
+        p.toolConfirmation = "none";
+
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(false, false); },
+            []() { return false; });
+
+        QJsonObject result = events[2];
+        QCOMPARE(result["type"].toString(), QString("tool_result"));
+        QCOMPARE(result["declined"].toBool(), true);
+        QVERIFY(!QFile::exists(target));
+
+        QJsonArray msgs = stub.requests[1]["messages"].toArray();
+        QCOMPARE(msgs.last().toObject()["content"].toString(),
+                 QString("Tool execution was declined by user."));
+    }
+
+    void llmYoloTurnSkipsRemainingConfirms() {
+        QTemporaryDir dir;
+        QString f1 = dir.path() + "/a.txt";
+        QString f2 = dir.path() + "/b.txt";
+
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{
+                   llmToolCall("tc1", "write_file", QJsonObject{{"path", f1}, {"content", "one"}}),
+                   llmToolCall("tc2", "write_file", QJsonObject{{"path", f2}, {"content", "two"}})})
+            << llmCompletion("done");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("write both")};
+        p.toolConfirmation = "none";
+
+        int confirms = 0;
+        LlmClient().run(p, [](const QJsonObject&) {},
+            [&]() { confirms++; return std::make_pair(true, true); },  // yolo turn
+            []() { return false; });
+
+        QCOMPARE(confirms, 1);  // second tool call must not re-prompt
+        QVERIFY(QFile::exists(f1));
+        QVERIFY(QFile::exists(f2));
+    }
+
+    void llmYoloTurnResetsNextRound() {
+        QTemporaryDir dir;
+        QString f1 = dir.path() + "/a.txt";
+        QString f2 = dir.path() + "/b.txt";
+
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tc1", "write_file",
+                                 QJsonObject{{"path", f1}, {"content", "one"}})})
+            << llmCompletion("", QJsonArray{llmToolCall("tc2", "write_file",
+                                 QJsonObject{{"path", f2}, {"content", "two"}})})
+            << llmCompletion("done");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("write twice")};
+        p.toolConfirmation = "none";
+
+        int confirms = 0;
+        LlmClient().run(p, [](const QJsonObject&) {},
+            [&]() { confirms++; return std::make_pair(true, true); },
+            []() { return false; });
+
+        // yolo from round 1 must not leak into round 2
+        QCOMPARE(confirms, 2);
+        QVERIFY(QFile::exists(f2));
+    }
+
+    void llmPreserveReasoningKeepsFields() {
+        QTemporaryDir dir;
+        QString file = dir.path() + "/a.txt";
+        { QFile f(file); f.open(QIODevice::WriteOnly); f.write("data"); }
+
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_file",
+                                 QJsonObject{{"path", file}})}, 10, 5,
+                             QJsonObject{{"reasoning_content", "thinking..."}})
+            << llmCompletion("done");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("read")};
+        p.toolConfirmation = "all";
+        p.preserveReasoning = true;
+
+        LlmClient().run(p, [](const QJsonObject&) {},
+            []() { return std::make_pair(true, false); },
+            []() { return false; });
+
+        QJsonArray msgs = stub.requests[1]["messages"].toArray();
+        bool found = false;
+        for (const QJsonValue& v : msgs) {
+            QJsonObject m = v.toObject();
+            if (m["role"].toString() == "assistant" &&
+                m["reasoning_content"].toString() == "thinking...") found = true;
+        }
+        QVERIFY2(found, "reasoning_content should be preserved in follow-up request");
+    }
+
+    void llmHttpErrorProducesApiError() {
+        StubLlmServer stub;
+        stub.responses << QByteArray(R"({"error": {"message": "boom"}})");
+        stub.statuses << 500;
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hi")};
+        p.toolConfirmation = "none";
+
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; });
+
+        QCOMPARE(events.size(), 1);
+        QCOMPARE(events[0]["type"].toString(), QString("final_response"));
+        QVERIFY(events[0]["content"].toString().contains("API error"));
+        QVERIFY(events[0]["content"].toString().contains("boom"));
     }
 
     // ── CLI tests (subprocess) ───────────────────────────────────────

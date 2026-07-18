@@ -9,7 +9,6 @@ int main(int argc, char* argv[]) {
 
     quint16 port = 5000;
     QString host = "127.0.0.1";
-    bool noBrowser = false;
     const QStringList args = app.arguments().mid(1);
     for (int i = 0; i < args.size(); i++) {
         if (args[i] == "-v" || args[i] == "--version") {
@@ -28,7 +27,6 @@ int main(int argc, char* argv[]) {
                 << "                 run_bash/run_python tools, so only do this\n"
                 << "                 on a trusted network.\n"
                 << "  --config-dir PATH  Use a custom config directory.\n"
-                << "  --no-browser    Don't auto-open a browser on startup.\n"
                 << "  -v, --version   Show version information and exit.\n"
                 << "  -h, --help      Show this help message and exit\n";
             return 0;
@@ -38,8 +36,6 @@ int main(int argc, char* argv[]) {
             }
         } else if (args[i] == "--config-dir" && i + 1 < args.size()) {
             setConfigDir(args[++i]);
-        } else if (args[i] == "--no-browser") {
-            noBrowser = true;
         } else {
             bool ok;
             int p = args[i].toInt(&ok);
