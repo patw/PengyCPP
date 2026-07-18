@@ -22,7 +22,6 @@ add_executable(pengy_cli
     chatmanager.cpp
     tools.cpp
     llmclient.cpp
-    image_utils.cpp
 )
 target_link_libraries(pengy_cli PRIVATE Qt6::Core Qt6::Network)
 if(UNIX AND NOT WIN32)
@@ -42,7 +41,7 @@ add_executable(pengy_web
     llmclient.cpp
     image_utils.cpp
 )
-target_link_libraries(pengy_web PRIVATE Qt6::Core Qt6::Network)
+target_link_libraries(pengy_web PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
 target_include_directories(pengy_web PRIVATE ${CMAKE_BINARY_DIR})
 
 # ── Desktop GUI ──────────────────────────────────────────────────────
