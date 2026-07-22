@@ -124,8 +124,9 @@ static QJsonObject td(const QString& name, const QString& desc,
     };
 }
 
-QJsonArray toolDefinitions() {
-    return QJsonArray{
+const QJsonArray& toolDefinitions() {
+    // Built once; QJsonArray is implicitly shared so callers copy cheaply.
+    static const QJsonArray defs = QJsonArray{
         td("read_file", "Read the contents of a file",
             QJsonObject{{"path", prop("string", "The file path to read")}},
             QJsonArray{"path"}),
@@ -195,6 +196,7 @@ QJsonArray toolDefinitions() {
                 {"max_results",   prop("integer", "Maximum number of matches to return (default: 50)")}},
             QJsonArray{"pattern", "path"}),
     };
+    return defs;
 }
 
 bool isReadOnly(const QString& name) {
@@ -317,17 +319,21 @@ static QString decodeEntities(QString s) {
     s.replace("&nbsp;", " ");
     s.replace("&#39;",  "'");
     s.replace("&#x27;", "'");
-    s.remove(QRegularExpression("&#\\d+;"));
+    static QRegularExpression numericEntityRx("&#\\d+;");
+    s.remove(numericEntityRx);
     return s;
 }
 
 static QString stripTags(const QString& html) {
     QString s = html;
-    s.remove(QRegularExpression("<script[^>]*>[\\s\\S]*?</script>",
-                                QRegularExpression::CaseInsensitiveOption));
-    s.remove(QRegularExpression("<style[^>]*>[\\s\\S]*?</style>",
-                                QRegularExpression::CaseInsensitiveOption));
-    s.remove(QRegularExpression("<[^>]+>"));
+    static QRegularExpression scriptRx("<script[^>]*>[\\s\\S]*?</script>",
+                                QRegularExpression::CaseInsensitiveOption);
+    static QRegularExpression styleRx("<style[^>]*>[\\s\\S]*?</style>",
+                                QRegularExpression::CaseInsensitiveOption);
+    static QRegularExpression tagRx("<[^>]+>");
+    s.remove(scriptRx);
+    s.remove(styleRx);
+    s.remove(tagRx);
     return decodeEntities(s).trimmed();
 }
 
@@ -605,7 +611,8 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
     QString err = readAndRemove(tmpFiles.stderrPath);
 
     // Strip sudo password prompt lines from stderr only
-    err.remove(QRegularExpression("^\\[sudo[^\\]]*\\].*\\n?", QRegularExpression::MultilineOption));
+    static QRegularExpression sudoPromptRx("^\\[sudo[^\\]]*\\].*\\n?", QRegularExpression::MultilineOption);
+    err.remove(sudoPromptRx);
     err = err.trimmed();
 
     if (!err.isEmpty()) {
@@ -894,8 +901,9 @@ static QList<WebSearchHit> parseYandex(const QString& html, int maxResults) {
 // ── Dedup, ranking, and formatting ───────────────────────────────────
 
 static QStringList queryTokens(const QString& query) {
+    static QRegularExpression splitRx("[^a-zA-Z0-9]+");
     QStringList tokens;
-    for (const QString& word : query.split(QRegularExpression("[^a-zA-Z0-9]+"))) {
+    for (const QString& word : query.split(splitRx)) {
         QString lower = word.toLower();
         if (lower.size() >= 3) tokens.append(lower);
     }
@@ -1286,18 +1294,20 @@ static QString toolFetchUrl(const QJsonObject& args) {
     if (raw.size() > maxRaw) raw = raw.left(maxRaw);
 
     QString text = QString::fromUtf8(raw);
+    QString textLower = text.toLower();
     bool isHtml = contentType.contains("html") ||
-                  text.toLower().contains("<html") ||
-                  text.toLower().contains("<!doctype");
+                  textLower.contains("<html") ||
+                  textLower.contains("<!doctype");
 
     if (isHtml) {
         // Extract <body> content for cleaner text
-        QRegularExpression bodyRx("<body[^>]*>([\\s\\S]*)</body>",
+        static QRegularExpression bodyRx("<body[^>]*>([\\s\\S]*)</body>",
                                   QRegularExpression::CaseInsensitiveOption);
         auto bm = bodyRx.match(text);
         QString bodyHtml = bm.hasMatch() ? bm.captured(1) : text;
         text = stripTags(bodyHtml);
-        text.replace(QRegularExpression("\\n{3,}"), "\n\n");
+        static QRegularExpression newlineRx("\\n{3,}");
+        text.replace(newlineRx, "\n\n");
         text = text.trimmed();
     }
 
@@ -1553,7 +1563,7 @@ static bool isLikelyText(const QFileInfo& fi) {
 }
 
 static bool matchesGlob(const QString& name, const QString& glob) {
-    QRegularExpression braceRx(R"(^(.*)\{([^}]+)\}(.*)$)");
+    static QRegularExpression braceRx(R"(^(.*)\{([^}]+)\}(.*)$)");
     auto m = braceRx.match(glob);
     if (m.hasMatch()) {
         QString pre  = m.captured(1);
@@ -1568,11 +1578,18 @@ static bool matchesGlob(const QString& name, const QString& glob) {
         }
         return false;
     }
-    QString pat = QString(glob);
-    pat.replace(QLatin1Char('.'), QLatin1String("\\."));
-    pat.replace(QLatin1Char('*'), QLatin1String(".*"));
-    pat.replace(QLatin1Char('?'), QLatin1String("."));
-    return QRegularExpression("^" + pat + "$").match(name).hasMatch();
+    // Cache compiled glob regexes — the glob is constant for an entire
+    // search_content call, so this avoids recompiling per file.
+    static QHash<QString, QRegularExpression> globCache;
+    auto it = globCache.constFind(glob);
+    if (it == globCache.constEnd()) {
+        QString pat = QString(glob);
+        pat.replace(QLatin1Char('.'), QLatin1String("\\."));
+        pat.replace(QLatin1Char('*'), QLatin1String(".*"));
+        pat.replace(QLatin1Char('?'), QLatin1String("."));
+        it = globCache.insert(glob, QRegularExpression("^" + pat + "$"));
+    }
+    return it.value().match(name).hasMatch();
 }
 
 static bool searchOneFile(const QString& filepath, const QRegularExpression& rx,

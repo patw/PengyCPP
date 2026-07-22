@@ -7,7 +7,7 @@
 
 namespace Tools {
 
-QJsonArray toolDefinitions();
+const QJsonArray& toolDefinitions();
 bool       isReadOnly(const QString& name);
 void       setUserAgent(const QString& ua);
 void       setTimeout(int secs);

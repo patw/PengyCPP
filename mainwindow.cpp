@@ -258,7 +258,6 @@ void MainWindow::sendMessage(const QString& text, const QStringList& images) {
     }
 
     chatSave(m_currentChat);
-    loadChatList();
     m_stopBtn->show();
 
     // Build API message list
@@ -375,7 +374,6 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
             m_chatView->appendMessage("assistant", display);
 
             chatSave(m_currentChat);
-            loadChatList();
         }
 
         m_chatHistory->setThinking(false);

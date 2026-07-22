@@ -40,7 +40,7 @@ private:
     void render();
     QString buildHtml();
     QString buildCss() const;
-    QString renderMessage(const QJsonObject& msg) const;
+    QString renderMessage(const QJsonObject& msg, int idx) const;
     QString renderToolBlock(const QJsonObject& msg) const;
     QString renderReasoningBlock(const QString& reasoning, int idx) const;
     QString markdownToHtml(const QString& md) const;
@@ -53,6 +53,7 @@ private:
 
     Theme m_theme;
     int m_scale = 100;
+    QString m_cachedCss;  // rebuilt only in applyTheme()
 
     QJsonArray m_messages;
     QSet<QString> m_expandedTools;

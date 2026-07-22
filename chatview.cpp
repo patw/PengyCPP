@@ -29,6 +29,7 @@ void ChatView::applyTheme(const Theme& theme, int scale) {
     setStyleSheet(QString("QTextBrowser { background-color:%1; color:%2; border:none; padding:0; }")
                   .arg(m_theme["bg"], m_theme["fg"]));
     document()->setDefaultStyleSheet(buildCss());
+    m_cachedCss = buildCss();  // cache for use in buildHtml()
     if (!m_messages.isEmpty()) render();
 }
 
@@ -173,15 +174,15 @@ void ChatView::render() {
 }
 
 QString ChatView::buildHtml() {
-    QString html = QString("<html><head><style>%1</style></head><body>").arg(buildCss());
-    for (const QJsonValue& v : m_messages) {
-        html += renderMessage(v.toObject());
+    QString html = QString("<html><head><style>%1</style></head><body>").arg(m_cachedCss);
+    for (int i = 0; i < m_messages.size(); ++i) {
+        html += renderMessage(m_messages[i].toObject(), i);
     }
     html += "</body></html>";
     return html;
 }
 
-QString ChatView::renderMessage(const QJsonObject& msg) const {
+QString ChatView::renderMessage(const QJsonObject& msg, int idx) const {
     QString role = msg["role"].toString();
 
     if (role == "user") {
@@ -195,11 +196,6 @@ QString ChatView::renderMessage(const QJsonObject& msg) const {
         if (content.isEmpty()) return "";
         QString parts;
         if (msg.contains("reasoning_content")) {
-            // Find message index for toggle anchor
-            int idx = -1;
-            for (int i = 0; i < m_messages.size(); ++i) {
-                if (m_messages[i].toObject() == msg) { idx = i; break; }
-            }
             parts += renderReasoningBlock(msg["reasoning_content"].toString(), idx);
         }
         parts += QString(
