@@ -29,7 +29,7 @@
 namespace Tools {
 
 static QString   g_userAgent = "PengyAgent/1.0";
-static int       g_timeout   = 60;
+static int       g_timeout   = 300;
 static QMutex    g_mutex;
 
 // ── Sudo password provider (installed by the GUI before each LLM run) ─

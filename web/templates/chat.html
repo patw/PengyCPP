@@ -229,6 +229,7 @@ let es = null, processing = false, currentTurnDiv = null;
 let thinkingEl = null;
 let confirmModal, sudoModal, renameModal;
 let pendingFiles = [];
+let wakeLock = null;
 
 // ── Bootstrap init ─────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -296,6 +297,29 @@ document.addEventListener('DOMContentLoaded', () => {
   brand.title = 'Double-click to rename';
   brand.addEventListener('dblclick', showRename);
 
+  // ── Mobile resilience: visibility & bfcache ───────────────────
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && processing) {
+      acquireWakeLock();
+      if (!es || es.readyState !== EventSource.OPEN) {
+        connectSSE();
+      }
+    }
+  });
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted && processing) {
+      acquireWakeLock();
+      if (!es || es.readyState !== EventSource.OPEN) {
+        connectSSE();
+      }
+    }
+  });
+  const draft = sessionStorage.getItem('pengy_draft_' + CHAT_ID);
+  if (draft) {
+    document.getElementById('messageInput').value = draft;
+    sessionStorage.removeItem('pengy_draft_' + CHAT_ID);
+  }
+
   // Dismiss offcanvas when clicking a chat link on mobile
   document.addEventListener('click', function(e) {
     const link = e.target.closest('.chat-list-item');
@@ -336,6 +360,35 @@ function showThinking() {
 
 function hideThinking() {
   if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+}
+
+// ── Wake Lock (prevents screen sleep during tasks) ───────────
+
+async function acquireWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch (err) {
+    // Silently ignore — wake lock is best-effort
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock) {
+    wakeLock.release();
+    wakeLock = null;
+  }
+}
+
+// ── Sync reload ────────────────────────────────────────────
+
+function reloadToSync() {
+  const input = document.getElementById('messageInput');
+  if (input && input.value.trim()) {
+    sessionStorage.setItem('pengy_draft_' + CHAT_ID, input.value);
+  }
+  window.location.reload();
 }
 
 // ── Sidebar ────────────────────────────────────────────────────────
@@ -676,7 +729,19 @@ function connectSSE() {
   currentTurnDiv = null;
   es = new EventSource('/chat/' + CHAT_ID + '/stream');
   es.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch(_){} };
-  es.onerror   = () => { if (processing) { disconnectSSE(); hideThinking(); setProcessing(false); } };
+  es.onerror   = () => {
+    // Only act if CLOSED (non-retryable HTTP status). Let browser
+    // auto-reconnect on CONNECTING (phone sleep, app switch, etc).
+    if (es && es.readyState === EventSource.CLOSED) {
+      es.close(); es = null;
+      if (processing) {
+        reloadToSync();
+      } else {
+        hideThinking();
+        setProcessing(false);
+      }
+    }
+  };
 }
 
 function disconnectSSE() { if (es) { es.close(); es = null; } }
@@ -716,6 +781,15 @@ function handleEvent(ev) {
 
   } else if (ev.type === 'error') {
     hideThinking();
+    if (ev.message === 'No active task') {
+      if (es) { es.close(); es = null; }
+      if (processing) {
+        reloadToSync();
+      } else {
+        setProcessing(false);
+      }
+      return;
+    }
     appendAssistantMsg('⚠️ ' + (ev.message || 'Unknown error'));
     disconnectSSE();
     setProcessing(false);
@@ -734,6 +808,11 @@ function setProcessing(on) {
   document.getElementById('messageInput').disabled = on;
   document.getElementById('btn-send').disabled = on;
   document.getElementById('btn-stop').classList.toggle('d-none', !on);
+  if (on) {
+    acquireWakeLock();
+  } else {
+    releaseWakeLock();
+  }
   if (!on) document.getElementById('messageInput').focus();
 }
 

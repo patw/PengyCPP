@@ -19,6 +19,7 @@
 #include <QTimer>
 #include <QDir>
 #include <QUuid>
+#include <QSet>
 
 WebServer::WebServer(const QString& host, quint16 port, QObject* parent)
     : QObject(parent), m_host(host), m_port(port),
@@ -332,7 +333,7 @@ void WebServer::routeChatSend(const QString& chatId,
         worker->deleteLater();
     });
 
-    worker->start(cfg.baseUrl, cfg.apiKey, cfg.model, sendMsgs, cfg.toolConfirmation, cfg.reasoningEffort, cfg.preserveReasoning);
+    worker->start(cfg.baseUrl, cfg.apiKey, cfg.model, sendMsgs, cfg.toolConfirmation, cfg.reasoningEffort, cfg.preserveReasoning, cfg.llmTimeout);
     sendJson(socket, 200, {{"status","started"}});
 }
 
@@ -732,6 +733,7 @@ void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {
         if (f.contains("reasoning_effort"))   cfg.reasoningEffort  = f["reasoning_effort"];
         if (f.contains("user_agent"))        cfg.userAgent        = f["user_agent"];
         cfg.preserveReasoning = f.contains("preserve_reasoning");
+        if (f.contains("llm_timeout"))        cfg.llmTimeout       = f["llm_timeout"].toInt();
         if (f.contains("tool_timeout"))      cfg.toolTimeout      = f["tool_timeout"].toInt();
         if (f.contains("context_keep_turns"))cfg.contextKeepTurns = f["context_keep_turns"].toInt();
         configSave(cfg);
@@ -754,6 +756,12 @@ void WebServer::pushSse(const QString& chatId, const QJsonObject& event) {
     }
     for (auto* sock : clients) {
         if (sock->isOpen()) {
+            // Send retry:1000 on first write so browsers reconnect faster
+            static QSet<QTcpSocket*> seen;
+            if (!seen.contains(sock)) {
+                seen.insert(sock);
+                sock->write("retry: 1000\n\n");
+            }
             sock->write(data);
             sock->flush();
         }
@@ -800,6 +808,7 @@ QByteArray WebServer::renderSettingsPage() {
     html.replace("{{API_KEY_STATUS}}",   cfg.apiKey.isEmpty() ? "not set" : "set");
     html.replace("{{MODEL}}",            cfg.model.toHtmlEscaped());
     html.replace("{{SYSTEM_MESSAGE}}",   cfg.systemMessage.toHtmlEscaped());
+    html.replace("{{LLM_TIMEOUT}}",     QString::number(cfg.llmTimeout));
     html.replace("{{TOOL_TIMEOUT}}",     QString::number(cfg.toolTimeout));
     html.replace("{{CONTEXT_KEEP_TURNS}}",QString::number(cfg.contextKeepTurns));
     html.replace("{{USER_AGENT}}",       cfg.userAgent.toHtmlEscaped());

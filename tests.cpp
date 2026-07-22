@@ -251,7 +251,8 @@ private slots:
         QCOMPARE(c.model, "gpt-4o");
         QCOMPARE(c.toolConfirmation, "none");
         QCOMPARE(c.uiScale, 100);
-        QCOMPARE(c.toolTimeout, 60);
+        QCOMPARE(c.toolTimeout, 300);
+        QCOMPARE(c.llmTimeout, 300);
         QCOMPARE(c.contextKeepTurns, 0);
         QVERIFY(c.apiKey.isEmpty());
     }
@@ -288,7 +289,8 @@ private slots:
         QCOMPARE(c.baseUrl, "https://api.openai.com/v1");
         QCOMPARE(c.toolConfirmation, "none");
         QCOMPARE(c.uiScale, 100);
-        QCOMPARE(c.toolTimeout, 60);
+        QCOMPARE(c.toolTimeout, 300);
+        QCOMPARE(c.llmTimeout, 300);
     }
 
     void configFromJsonEmpty() {

@@ -63,12 +63,13 @@ static void interruptibleSleep(double seconds, const std::function<bool()>& isCa
 }
 
 static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
-                            const QString& apiKey) {
+                            const QString& apiKey, int timeoutMs) {
     QNetworkAccessManager mgr;
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     req.setRawHeader("Authorization", ("Bearer " + apiKey).toUtf8());
     req.setRawHeader("api-key",       apiKey.toUtf8());
+    req.setTransferTimeout(timeoutMs);
 
     QNetworkReply* reply = mgr.post(req, body);
     QEventLoop loop;
@@ -141,7 +142,7 @@ void LlmClient::run(const LlmParams& params,
             if (isCancelled()) return;
 
             lastResp = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact),
-                                params.apiKey);
+                                params.apiKey, params.llmTimeout * 1000);
             if (isCancelled()) return;
 
             QJsonObject body = QJsonDocument::fromJson(lastResp.body).object();

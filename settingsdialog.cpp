@@ -137,6 +137,13 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     }
     form->addRow("Accent color:", m_themeAccent);
 
+    m_llmTimeout = new QSpinBox;
+    m_llmTimeout->setRange(1, 3600);
+    m_llmTimeout->setSuffix(" sec");
+    m_llmTimeout->setToolTip("HTTP timeout for each LLM API request");
+    m_llmTimeout->setValue(cfg.llmTimeout);
+    form->addRow("LLM timeout:", m_llmTimeout);
+
     m_toolTimeout = new QSpinBox;
     m_toolTimeout->setRange(-1, 3600);
     m_toolTimeout->setSpecialValueText("No timeout");
@@ -161,6 +168,7 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
         m_config.uiScale           = m_uiScale->currentData().toInt();
         m_config.themeMode         = m_themeMode->currentData().toString();
         m_config.themeAccent       = m_themeAccent->currentData().toString();
+        m_config.llmTimeout       = m_llmTimeout->value();
         m_config.toolTimeout       = m_toolTimeout->value();
         accept();
     });

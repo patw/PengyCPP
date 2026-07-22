@@ -403,7 +403,7 @@ private:
 
         LlmClient client;
         client.run(
-            LlmParams{cfg.baseUrl, cfg.apiKey, cfg.model, sendMsgs, cfg.toolConfirmation, cfg.reasoningEffort, cfg.preserveReasoning},
+            LlmParams{cfg.baseUrl, cfg.apiKey, cfg.model, sendMsgs, cfg.toolConfirmation, cfg.reasoningEffort, cfg.preserveReasoning, cfg.llmTimeout},
             [this](const QJsonObject& ev) { onEvent(ev); },
             [this]() -> std::pair<bool,bool> { return onConfirm(); },
             []() -> bool { return false; }
@@ -551,6 +551,7 @@ private:
             outln("  model:            " + cfg.model);
             outln("  tool_confirm:     " + cfg.toolConfirmation);
             outln("  context_keep:     " + QString::number(cfg.contextKeepTurns));
+            outln("  llm_timeout:     " + QString::number(cfg.llmTimeout) + "s");
             outln("  tool_timeout:     " + QString::number(cfg.toolTimeout) + "s");
             outln("  api_key:          " + (cfg.apiKey.isEmpty() ? dim("(not set)") : dim("***")));
             outln("  system_message:   " + (cfg.systemMessage.isEmpty()
@@ -573,6 +574,12 @@ private:
         } else if (cmd == "/apikey") {
             if (arg.isEmpty()) outln("api_key: " + (cfg.apiKey.isEmpty() ? dim("(not set)") : dim("***")));
             else { cfg.apiKey = arg; configSave(cfg); outln(dim("API key updated.")); }
+
+        } else if (cmd == "/llm-timeout") {
+            bool ok; int n = arg.toInt(&ok);
+            if (!ok || n <= 0) outln("Usage: /llm-timeout <seconds>");
+            else { cfg.llmTimeout = n; configSave(cfg);
+                   outln(dim("LLM timeout → " + QString::number(n) + "s")); }
 
         } else if (cmd == "/timeout") {
             bool ok; int n = arg.toInt(&ok);
@@ -817,6 +824,7 @@ private:
             {"/system [msg]",        "Show or set system message template"},
             {"/yolo [none|safe|all]","Cycle or set tool confirmation mode"},
             {"/context-keep <n>",    "Keep last N turns full (0 = keep all)"},
+            {"/llm-timeout <n>",      "Set LLM API request timeout in seconds"},
             {"/timeout <n>",         "Set tool execution timeout in seconds"},
             {"/agent [str]",         "Show or set user agent string"},
             {"/compact",             "Elide old tool results in current chat"},

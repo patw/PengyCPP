@@ -14,7 +14,7 @@ public:
     void start(const QString& baseUrl, const QString& apiKey,
                const QString& model, const QJsonArray& messages,
                const QString& toolConfirmation, const QString& reasoningEffort = QString(),
-               bool preserveReasoning = false);
+               bool preserveReasoning = false, int llmTimeout = 300);
     void cancel();
     void sendConfirmation(bool confirmed, bool yoloTurn);
     void sendSudoPassword(const QString& password);

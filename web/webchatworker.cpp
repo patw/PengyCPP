@@ -8,7 +8,7 @@ WebChatWorker::WebChatWorker(QObject* parent) : QObject(parent) {}
 void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
                            const QString& model, const QJsonArray& messages,
                            const QString& toolConfirmation, const QString& reasoningEffort,
-                           bool preserveReasoning) {
+                           bool preserveReasoning, int llmTimeout) {
     m_baseUrl          = baseUrl;
     m_apiKey           = apiKey;
     m_model            = model;
@@ -40,7 +40,7 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
         return m_cancelled ? QString() : m_sudoPassword;
     });
 
-    auto* thread = QThread::create([this] {
+    auto* thread = QThread::create([this, llmTimeout] {
         QJsonArray accMsgs;
         bool yoloThisTurn = false;
 
@@ -98,7 +98,7 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
         LlmClient::CancelFn isCancelled = [this]() -> bool { return m_cancelled; };
 
         LlmClient client;
-        client.run(LlmParams{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation, m_reasoningEffort, m_preserveReasoning},
+        client.run(LlmParams{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation, m_reasoningEffort, m_preserveReasoning, llmTimeout},
                    onEvent, onConfirm, isCancelled);
 
         Tools::clearSudoPasswordProvider();

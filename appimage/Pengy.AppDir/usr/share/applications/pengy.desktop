@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Pengy
+Comment=LLM Chat Desktop Application
+Exec=pengy
+Icon=pengy
+Type=Application
+Categories=Utility;Development;
+Terminal=false

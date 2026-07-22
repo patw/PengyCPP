@@ -32,5 +32,6 @@ private:
     QComboBox*  m_uiScale;
     QComboBox*  m_themeMode;
     QComboBox*  m_themeAccent;
+    QSpinBox*   m_llmTimeout;
     QSpinBox*   m_toolTimeout;
 };

@@ -14,6 +14,7 @@ struct LlmParams {
     QString   toolConfirmation; // "all" | "safe" | "none"
     QString   reasoningEffort;  // empty = provider default / omit
     bool      preserveReasoning = false;
+    int       llmTimeout        = 300;
 };
 
 struct LlmResponse {
