@@ -14,10 +14,14 @@ class ChatView : public QTextBrowser {
     Q_OBJECT
 public:
     explicit ChatView(QWidget* parent = nullptr);
-    void appendMessage(const QString& role, const QJsonValue& content);
-    void appendMessageText(const QString& role, const QString& text) {
-        appendMessage(role, QJsonValue(text));
+    // doRender=false appends without rebuilding the document. Use it to batch a
+    // bulk load, then call renderNow() once — rendering per message is O(n^2)
+    // (each append rebuilds the full HTML and calls setHtml).
+    void appendMessage(const QString& role, const QJsonValue& content, bool doRender = true);
+    void appendMessageText(const QString& role, const QString& text, bool doRender = true) {
+        appendMessage(role, QJsonValue(text), doRender);
     }
+    void renderNow();
     void clear();
     void applyTheme(const Theme& theme, int scale = 100);
 

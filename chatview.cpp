@@ -2,6 +2,7 @@
 #include <QScrollBar>
 #include <QDesktopServices>
 #include <QRegularExpression>
+#include <QHash>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QUrl>
@@ -69,7 +70,7 @@ h1 { font-size:14pt; } h2 { font-size:13pt; } h3 { font-size:11pt; } h4 { font-s
              m_theme["reasoning_border"], m_theme["reasoning_bg"], m_theme["reasoning_fg"]).arg(reasoningLabelPt);
 }
 
-void ChatView::appendMessage(const QString& role, const QJsonValue& content) {
+void ChatView::appendMessage(const QString& role, const QJsonValue& content, bool doRender) {
     if (role == "tool_request") {
         // Create a unified tool_block with result = null (not yet available)
         QJsonObject obj = content.toObject();
@@ -108,6 +109,11 @@ void ChatView::appendMessage(const QString& role, const QJsonValue& content) {
         }
         m_messages.append(msg);
     }
+    if (doRender)
+        render();
+}
+
+void ChatView::renderNow() {
     render();
 }
 
@@ -563,7 +569,15 @@ QString ChatView::highlightCode(const QString& code, const QString& lang) const 
         roles << "keyword";
     }
 
-    QRegularExpression rx(altParts.join('|'));
+    // The pattern depends only on `family`, so compile once per language and
+    // reuse. Recompiling per code block showed up when rendering long chats.
+    // GUI-thread only, so a plain static cache is safe here.
+    static QHash<QString, QRegularExpression> rxCache;
+    auto cached = rxCache.constFind(family);
+    if (cached == rxCache.constEnd())
+        cached = rxCache.insert(family, QRegularExpression(altParts.join('|')));
+    const QRegularExpression& rx = *cached;
+
     bool lightMode = (m_theme["mode"] != "dark");
 
     QString out;

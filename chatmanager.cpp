@@ -7,6 +7,8 @@
 #include <QDateTime>
 #include <QUuid>
 #include <QSet>
+#include <QMutex>
+#include <QMutexLocker>
 
 static QString chatsFilePath() {
     return pengyConfigDirPath() + "/chats.json";
@@ -19,19 +21,63 @@ static void backupCorruptFile(const QString& path) {
     QFile::rename(path, backup);
 }
 
+// ---------------------------------------------------------------------------
+// in-memory cache
+// ---------------------------------------------------------------------------
+// chats.json is a single (potentially large) file that was fully re-parsed on
+// every read: startup loads it, then chatGet() re-loads it; chatSave() loads
+// it again before writing. We cache the parsed array keyed by the file's
+// (lastModified, size). Any external writer (the CLI, or the Python/Rust
+// editions sharing ~/.config/pengy/) bumps mtime and invalidates us.
+static QMutex     g_cacheMutex;
+static bool       g_cacheValid = false;
+static qint64     g_cacheMTime = -1;
+static qint64     g_cacheSize  = -1;
+static QJsonArray g_cacheChats;
+
+static void cacheStatLocked(const QString& path, qint64* mtime, qint64* size) {
+    QFileInfo fi(path);
+    if (fi.exists()) {
+        *mtime = fi.lastModified().toMSecsSinceEpoch();
+        *size  = fi.size();
+    } else {
+        *mtime = -1;
+        *size  = -1;
+    }
+}
+
+void chatsInvalidateCache() {
+    QMutexLocker lock(&g_cacheMutex);
+    g_cacheValid = false;
+    g_cacheChats = QJsonArray();
+}
+
 QJsonArray chatsLoad() {
     QString path = chatsFilePath();
+
+    QMutexLocker lock(&g_cacheMutex);
+    qint64 mtime, size;
+    cacheStatLocked(path, &mtime, &size);
+    if (g_cacheValid && mtime == g_cacheMTime && size == g_cacheSize && mtime != -1)
+        return g_cacheChats;   // QJsonArray is implicitly shared (copy-on-write)
+
     QFile f(path);
     if (f.open(QIODevice::ReadOnly)) {
         QByteArray data = f.readAll();
         f.close();
         QJsonParseError err;
         QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-        if (err.error == QJsonParseError::NoError && doc.isArray())
-            return doc.array();
+        if (err.error == QJsonParseError::NoError && doc.isArray()) {
+            g_cacheChats = doc.array();
+            cacheStatLocked(path, &g_cacheMTime, &g_cacheSize);
+            g_cacheValid = true;
+            return g_cacheChats;
+        }
         backupCorruptFile(path);
     }
-    return QJsonArray();
+    g_cacheChats = QJsonArray();
+    g_cacheValid = false;
+    return g_cacheChats;
 }
 
 bool chatsSave(const QJsonArray& chats) {
@@ -46,7 +92,19 @@ bool chatsSave(const QJsonArray& chats) {
     f.write(json);
     f.close();
     QFile::remove(path);
-    return QFile::rename(tmp, path);
+    if (!QFile::rename(tmp, path)) {
+        chatsInvalidateCache();
+        return false;
+    }
+    // Prime the cache with what we just wrote so the next chatsLoad() (e.g. the
+    // load->mutate->save cycle in chatSave) skips a re-parse.
+    {
+        QMutexLocker lock(&g_cacheMutex);
+        g_cacheChats = chats;
+        cacheStatLocked(path, &g_cacheMTime, &g_cacheSize);
+        g_cacheValid = (g_cacheMTime != -1);
+    }
+    return true;
 }
 
 QJsonObject chatCreate(const QString& title) {

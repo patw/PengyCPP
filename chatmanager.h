@@ -7,6 +7,8 @@
 // serialization format and minimize conversion boilerplate.
 
 QJsonArray  chatsLoad();
+// Drop the in-memory chats cache (forces a re-read on next chatsLoad).
+void        chatsInvalidateCache();
 bool        chatsSave(const QJsonArray& chats);
 QJsonObject chatCreate(const QString& title);
 bool        chatDelete(const QString& id);
