@@ -837,7 +837,32 @@ QVariant ChatView::loadResource(int type, const QUrl& url) {
         }
     }
 
-    // ── Base class for anything else (data URIs, etc.) ───────────────
+    // ── Data URIs: Qt doesn't handle data: natively, decode ourselves ─
+    if (urlStr.startsWith("data:")) {
+        // Format: data:[<mediatype>][;base64],<data>
+        int commaIdx = urlStr.indexOf(",");
+        if (commaIdx > 0) {
+            QString header = urlStr.left(commaIdx);
+            bool isBase64 = header.contains(";base64");
+            QByteArray encoded = urlStr.mid(commaIdx + 1).toUtf8();
+            QByteArray raw;
+            if (isBase64) {
+                raw = QByteArray::fromBase64(encoded);
+            } else {
+                raw = QByteArray::fromPercentEncoding(encoded);
+            }
+            QImage image;
+            if (image.loadFromData(raw)) {
+                if (image.width() > 600) {
+                    image = image.scaledToWidth(600, Qt::SmoothTransformation);
+                }
+                return QVariant::fromValue(image);
+            }
+        }
+        return QVariant();
+    }
+
+    // ── Base class for anything else ─────────────────────────────────
     return QTextBrowser::loadResource(type, url);
 }
 
