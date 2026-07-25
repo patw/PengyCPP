@@ -891,6 +891,16 @@ private:
         if (idx < 0 || idx >= chats.size()) { outln(red("No chat at that index.")); return; }
         const QString id    = chats[idx].toObject()["id"].toString();
         const QString title = chats[idx].toObject()["title"].toString();
+
+        // Deletion is immediate and unrecoverable; ask first.
+        out(QString("Delete \"%1\"? This cannot be undone. [y/N] ").arg(title));
+        QTextStream in(stdin);
+        QString answer = in.readLine().trimmed();
+        if (answer.toLower() != "y" && answer.toLower() != "yes") {
+            outln(dim("Cancelled."));
+            return;
+        }
+
         chatDelete(id);
         outln(dim("Deleted: " + title));
         if (id == chat["id"].toString()) {

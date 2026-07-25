@@ -83,7 +83,7 @@ void ChatHistoryWidget::setupUi() {
     m_modelLabel->setStyleSheet(QString("color: %1;").arg(m_theme["fg"]));
     qsLayout->addWidget(m_modelLabel);
 
-    m_confirmLabel = new QLabel("Tool Confirm: None");
+    m_confirmLabel = new QLabel("Tool Confirm: Confirm All");
     m_confirmLabel->setStyleSheet(QString("color: %1;").arg(m_theme["fg"]));
     qsLayout->addWidget(m_confirmLabel);
 
@@ -268,7 +268,7 @@ void ChatHistoryWidget::updateQuickSettings(const QString& model, const QString&
     QString label;
     if (confirm == "all")       label = "Tool Confirm: YOLO";
     else if (confirm == "safe") label = "Tool Confirm: Safe";
-    else                        label = "Tool Confirm: None";
+    else                        label = "Tool Confirm: Confirm All";
     m_confirmLabel->setText(label);
 }
 

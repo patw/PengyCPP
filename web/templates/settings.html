@@ -63,7 +63,7 @@
 
 <!-- App shell -->
 <div class="app-shell">
-  <nav class="navbar navbar-light bg-light border-bottom px-2 py-2 flex-shrink-0">
+  <nav class="navbar bg-body-tertiary border-bottom px-2 py-2 flex-shrink-0">
     <div class="d-flex align-items-center gap-1">
       <button class="btn btn-outline-secondary d-md-none" type="button" data-bs-toggle="offcanvas" data-bs-target="#sidebarOffcanvas" aria-label="Open sidebar">
         <i class="bi bi-list"></i>
@@ -224,7 +224,7 @@ async function fetchModels() {
       const current = document.getElementById('modelInput').value;
       for (const m of data.models) {
         const active = m === current ? ' active fw-bold' : '';
-        html += '<span class="badge bg-light text-dark me-1 mb-1' + active + '" style="cursor:pointer;font-size:0.8rem" data-model="' + esc(m) + '">' + esc(m) + '</span>';
+        html += '<span class="badge text-bg-secondary me-1 mb-1' + active + '" style="cursor:pointer;font-size:0.8rem" data-model="' + esc(m) + '">' + esc(m) + '</span>';
       }
       list.innerHTML = html;
       list.querySelectorAll('.badge').forEach(b => {

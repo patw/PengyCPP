@@ -51,7 +51,23 @@
   .tool-header { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 0.4rem; }
   .tool-args, .tool-output { background: #f6f8fa; border-radius: 4px; padding: 0.5rem 0.6rem; margin-top: 0.4rem; max-height: 250px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; color: #24292e; }
   .msg-thinking { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.85rem; color: var(--bs-secondary-color); font-size: 0.85rem; }
-  .input-area { padding: 0.6rem 0.75rem; border-top: 1px solid var(--bs-border-color); background: var(--bs-body-bg); padding-bottom: calc(0.6rem + env(safe-area-inset-bottom, 0px)); }
+  /* ── Jump to bottom ──────────────────────────────────────── */
+  #jumpBottomBtn {
+    position: absolute;
+    right: 1rem;
+    top: -3rem;
+    z-index: 5;
+    border-radius: 999px;
+    width: 2.5rem;
+    height: 2.5rem;
+    padding: 0;
+    display: none;
+    box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  }
+  #jumpBottomBtn.show { display: block; }
+  .input-area {
+    position: relative;
+    padding: 0.6rem 0.75rem; border-top: 1px solid var(--bs-border-color); background: var(--bs-body-bg); padding-bottom: calc(0.6rem + env(safe-area-inset-bottom, 0px)); }
   @media (min-width: 576px) { .input-area { padding: 0.75rem 1rem; } }
   #messageInput { resize: none; max-height: 180px; overflow-y: auto; font-size: 16px; }
   .markdown-body { line-height: 1.6; }
@@ -95,7 +111,7 @@
 
 <!-- App shell -->
 <div class="app-shell">
-  <nav class="navbar navbar-light bg-light border-bottom px-2 py-2 flex-shrink-0">
+  <nav class="navbar bg-body-tertiary border-bottom px-2 py-2 flex-shrink-0">
     <div class="d-flex align-items-center gap-1">
       <button class="btn btn-outline-secondary d-md-none" type="button" data-bs-toggle="offcanvas" data-bs-target="#sidebarOffcanvas" aria-label="Open sidebar">
         <i class="bi bi-list"></i>
@@ -122,6 +138,10 @@
     <div class="flex-grow-1 d-flex flex-column overflow-hidden">
       <div class="messages-area" id="messages"></div>
       <div class="input-area">
+        <button type="button" id="jumpBottomBtn" class="btn btn-secondary"
+                title="Jump to latest" aria-label="Jump to latest">
+          <i class="bi bi-arrow-down"></i>
+        </button>
         <form id="form-send" class="d-flex gap-2" novalidate>
           <input type="file" id="fileInput" style="display:none" multiple
                  onchange="handleFiles(this.files)">
@@ -240,7 +260,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Navbar model + badge
   document.getElementById('navbar-model').textContent = MODEL;
   const tcBadge = document.getElementById('navbar-tc-badge');
-  const tcMap = { all: ['YOLO', 'bg-warning text-dark'], safe: ['Safe', 'bg-info text-dark'], none: ['Confirm', 'bg-secondary'] };
+  const tcMap = { all: ['YOLO', 'text-bg-warning'], safe: ['Safe', 'text-bg-info'], none: ['Confirm All', 'text-bg-secondary'] };
   const tc = tcMap[TOOL_CONF] || tcMap.none;
   tcBadge.textContent = tc[0];
   tcBadge.className = 'badge small ' + tc[1];
@@ -282,6 +302,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('btn-stop').addEventListener('click', stopGeneration);
+  document.getElementById('jumpBottomBtn').addEventListener('click', scrollBottom);
+  document.getElementById('messages').addEventListener('scroll', updateJumpBtn, { passive: true });
 
   document.getElementById('sudo-pwd').addEventListener('keydown', e => {
     if (e.key === 'Enter') submitSudo();
@@ -521,7 +543,7 @@ function addToolCard(container, name, args, tcId, autoApproved) {
     '<div class="tool-header" data-bs-toggle="collapse" data-bs-target="#body-' + sid + '">' +
       '<i class="bi bi-gear-fill text-warning" style="font-size:0.8rem"></i>' +
       '<code class="fw-semibold text-warning">' + esc(name) + '</code>' +
-      '<span class="badge ' + (autoApproved ? 'bg-secondary' : 'bg-warning text-dark') + ' ms-1" id="badge-' + sid + '">' +
+      '<span class="badge ' + (autoApproved ? 'bg-secondary' : 'text-bg-warning') + ' ms-1" id="badge-' + sid + '">' +
         (autoApproved ? 'running…' : 'pending') +
       '</span>' +
       '<i class="bi bi-chevron-down ms-auto" style="font-size:0.7rem"></i>' +
@@ -668,7 +690,7 @@ async function handleSlashCommand(text) {
         if (data.config.model)
           document.getElementById('navbar-model').textContent = data.config.model;
         const badge = document.getElementById('navbar-tc-badge');
-        const tcMap = { all: ['YOLO', 'bg-warning text-dark'], safe: ['Safe', 'bg-info text-dark'], none: ['Confirm', 'bg-secondary'] };
+        const tcMap = { all: ['YOLO', 'text-bg-warning'], safe: ['Safe', 'text-bg-info'], none: ['Confirm All', 'text-bg-secondary'] };
         const tc = tcMap[data.config.tool_confirmation] || tcMap.none;
         badge.textContent = tc[0];
         badge.className = 'badge small ' + tc[1];
@@ -819,6 +841,26 @@ function setProcessing(on) {
 function scrollBottom() {
   const m = document.getElementById('messages');
   m.scrollTop = m.scrollHeight;
+  updateJumpBtn();
+}
+
+// ── Sticky scroll: only follow new content if user was at bottom ─
+const NEAR_BOTTOM_PX = 60;
+
+function isNearBottom() {
+  const area = document.getElementById('messages');
+  return area.scrollHeight - area.scrollTop - area.clientHeight <= NEAR_BOTTOM_PX;
+}
+
+function updateJumpBtn() {
+  const btn = document.getElementById('jumpBottomBtn');
+  if (btn) btn.classList.toggle('show', !isNearBottom());
+}
+
+function appendToArea(el) {
+  const pinned = isNearBottom();
+  document.getElementById('messages').appendChild(el);
+  if (pinned) scrollBottom(); else updateJumpBtn();
 }
 
 // ── Confirm modal ──────────────────────────────────────────────────

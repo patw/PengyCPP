@@ -146,6 +146,16 @@ void MainWindow::createNewChat() {
 }
 
 void MainWindow::deleteChat(const QString& chatId) {
+    // Deletion is immediate and unrecoverable — confirm first.
+    QJsonObject chat = chatGet(chatId);
+    QString title = chat["title"].toString("this chat");
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        this, "Delete Chat",
+        QString("Delete \"%1\"?\n\nThis cannot be undone.").arg(title),
+        QMessageBox::Yes | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    if (reply != QMessageBox::Yes) return;
+
     chatDelete(chatId);
     loadChatList();
     if (m_currentChatId == chatId) {

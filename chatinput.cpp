@@ -28,12 +28,31 @@ void InputEdit::applyTheme(const Theme& theme, int scale) {
     auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPointSizeF(scaledFont(10, scale));
     setFont(font);
-    setMaximumHeight(scaledSize(60, scale));
-    setMinimumHeight(scaledSize(40, scale));
+    m_theme = theme;
+    m_scale = scale;
+    m_minH = scaledSize(40, scale);
+    m_maxH = scaledSize(200, scale);
     setStyleSheet(QString(R"(
 QTextEdit { background-color:%1; color:%2; border:1px solid %3; border-radius:8px; padding:6px 10px; }
 QTextEdit:focus { border-color:%4; }
 )" ).arg(theme["input_bg"], theme["input_fg"], theme["border"], theme["focus"]));
+    connect(this, &QTextEdit::textChanged, this, &InputEdit::autoSize);
+    autoSize();
+}
+
+void InputEdit::autoSize() {
+    int lo = m_minH > 0 ? m_minH : scaledSize(40, m_scale);
+    int hi = m_maxH > 0 ? m_maxH : scaledSize(200, m_scale);
+    document()->setTextWidth(viewport()->width());
+    int margins = int(document()->documentMargin() * 2) + contentsMargins().top() + contentsMargins().bottom() + 4;
+    int wanted = int(document()->size().height()) + margins;
+    setFixedHeight(qMax(lo, qMin(hi, wanted)));
+    setVerticalScrollBarPolicy(wanted > hi ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff);
+}
+
+void InputEdit::resizeEvent(QResizeEvent* event) {
+    QTextEdit::resizeEvent(event);
+    autoSize();
 }
 
 void InputEdit::insertFromMimeData(const QMimeData* source) {

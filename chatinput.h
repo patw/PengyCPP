@@ -55,4 +55,12 @@ signals:
 protected:
     void insertFromMimeData(const QMimeData* source) override;
     bool eventFilter(QObject* obj, QEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+
+private:
+    void autoSize();
+    Theme m_theme;
+    int m_scale = 100;
+    int m_minH = 40;
+    int m_maxH = 200;
 };

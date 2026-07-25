@@ -528,7 +528,7 @@ void WebServer::routeChatCommand(const QString& chatId,
         }
         cfg.toolConfirmation = newMode;
         configSave(cfg);
-        const QString label = newMode == "all" ? "YOLO" : newMode == "safe" ? "Safe" : "None";
+        const QString label = newMode == "all" ? "YOLO" : newMode == "safe" ? "Safe" : "Confirm All";
         sendJson(socket, 200, {
             {"type","config"},
             {"message","Tool Confirmation: " + label},
