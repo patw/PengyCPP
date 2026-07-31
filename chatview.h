@@ -15,8 +15,10 @@ class ChatView : public QTextBrowser {
 public:
     explicit ChatView(QWidget* parent = nullptr);
     // doRender=false appends without rebuilding the document. Use it to batch a
-    // bulk load, then call renderNow() once — rendering per message is O(n^2)
-    // (each append rebuilds the full HTML and calls setHtml).
+    // bulk load, then call renderNow() once. Per-message HTML is memoised (see
+    // m_htmlCache), so an append no longer re-runs markdown over the whole
+    // history — but render() still calls setHtml(), which re-lays-out the whole
+    // document, so batching a bulk load is still worth it.
     void appendMessage(const QString& role, const QJsonValue& content, bool doRender = true);
     void appendMessageText(const QString& role, const QString& text, bool doRender = true) {
         appendMessage(role, QJsonValue(text), doRender);
@@ -27,6 +29,19 @@ public:
 
 #ifdef PENGY_UNIT_TEST
     QString testMarkdownToHtml(const QString& md) const { return markdownToHtml(md); }
+    // Render-cache hooks: testBuildHtml() uses the cache, testBuildHtmlCold()
+    // forces a full re-render. The two must always agree.
+    QString testBuildHtml() { return buildHtml(); }
+    QString testBuildHtmlCold() { invalidateAll(); return buildHtml(); }
+    void testExpandTool(const QString& id) {
+        m_expandedTools.insert(id);
+        invalidate(toolBlockIndex(id));
+    }
+    void testExpandReasoning(int idx) {
+        m_expandedReasoning.insert(idx);
+        invalidate(idx);
+    }
+    int testCacheSize() const { return m_htmlCache.size(); }
 #endif
 
 protected:
@@ -40,6 +55,9 @@ private:
     void render();
     QString buildHtml();
     QString buildCss() const;
+    void invalidate(int idx);
+    void invalidateAll();
+    int toolBlockIndex(const QString& toolCallId) const;
     QString renderMessage(const QJsonObject& msg, int idx) const;
     QString renderToolBlock(const QJsonObject& msg) const;
     QString renderReasoningBlock(const QString& reasoning, int idx) const;
@@ -56,6 +74,11 @@ private:
     QString m_cachedCss;  // rebuilt only in applyTheme()
 
     QJsonArray m_messages;
+    // Rendered HTML per message, parallel to m_messages. A null QString means
+    // "needs render". buildHtml() used to re-run the markdown converter and
+    // syntax highlighter over the entire history on every append, making a
+    // conversation O(n^2) to type into; memoising per message removes it.
+    QList<QString> m_htmlCache;
     QSet<QString> m_expandedTools;
     QSet<int> m_expandedReasoning;
 

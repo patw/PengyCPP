@@ -9,101 +9,335 @@
 #include <QSet>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QPair>
+#include <algorithm>
 
-static QString chatsFilePath() {
+// ---------------------------------------------------------------------------
+// storage layout
+// ---------------------------------------------------------------------------
+// Chats live one per file in <config>/chats/<id>.json.
+//
+// The previous layout was a single <config>/chats.json array, so every save
+// rewrote the whole corpus. Per-chat files make saving and opening proportional
+// to the chat you touched instead of to everything you have ever said.
+//
+// <config>/chats/index.json caches the sidebar summary (id, title, created_at,
+// message count, preview) so listing chats is one small read instead of one per
+// chat. It is a *cache*, never the source of truth: if it is missing, stale,
+// corrupt, or loses a race between two frontends, it is rebuilt by scanning the
+// directory. The per-chat files are authoritative.
+//
+// The legacy chats.json is still read, so a machine that switches between the
+// Python, Rust and C++ editions doesn't appear to lose history. It is never
+// written and never deleted.
+
+static const char* kIndexFile   = "index.json";
+static const int   kIndexVersion = 1;
+static const int   kPreviewChars = 200;
+
+// Serialises index read-modify-write within this process. Across processes the
+// id-set check in ensureCurrent() repairs whatever a lost race dropped.
+static QMutex g_indexMutex;
+
+// The pre-split single-file store. Read-only; never written or removed.
+static QString legacyFilePath() {
     return pengyConfigDirPath() + "/chats.json";
+}
+
+static QString chatsDirPath() {
+    return pengyConfigDirPath() + "/chats";
+}
+
+static QString chatFilePath(const QString& id) {
+    return chatsDirPath() + "/" + id + ".json";
+}
+
+static QString indexFilePath() {
+    return chatsDirPath() + "/" + QString::fromLatin1(kIndexFile);
 }
 
 static void backupCorruptFile(const QString& path) {
     QString ts = QString::number(QDateTime::currentSecsSinceEpoch());
     QFileInfo fi(path);
-    QString backup = fi.dir().filePath(fi.baseName() + ".corrupt-" + ts);
+    QString backup = fi.dir().filePath(fi.fileName() + ".corrupt-" + ts);
     QFile::rename(path, backup);
 }
 
-// ---------------------------------------------------------------------------
-// in-memory cache
-// ---------------------------------------------------------------------------
-// chats.json is a single (potentially large) file that was fully re-parsed on
-// every read: startup loads it, then chatGet() re-loads it; chatSave() loads
-// it again before writing. We cache the parsed array keyed by the file's
-// (lastModified, size). Any external writer (the CLI, or the Python/Rust
-// editions sharing ~/.config/pengy/) bumps mtime and invalidates us.
-static QMutex     g_cacheMutex;
-static bool       g_cacheValid = false;
-static qint64     g_cacheMTime = -1;
-static qint64     g_cacheSize  = -1;
-static QJsonArray g_cacheChats;
-
-static void cacheStatLocked(const QString& path, qint64* mtime, qint64* size) {
+// (lastModified ms, size); mtime -1 means the file doesn't exist.
+static QPair<qint64, qint64> statKey(const QString& path) {
     QFileInfo fi(path);
-    if (fi.exists()) {
-        *mtime = fi.lastModified().toMSecsSinceEpoch();
-        *size  = fi.size();
-    } else {
-        *mtime = -1;
-        *size  = -1;
-    }
+    if (!fi.exists()) return {-1, -1};
+    return {fi.lastModified().toMSecsSinceEpoch(), fi.size()};
 }
 
-void chatsInvalidateCache() {
-    QMutexLocker lock(&g_cacheMutex);
-    g_cacheValid = false;
-    g_cacheChats = QJsonArray();
-}
-
-QJsonArray chatsLoad() {
-    QString path = chatsFilePath();
-
-    QMutexLocker lock(&g_cacheMutex);
-    qint64 mtime, size;
-    cacheStatLocked(path, &mtime, &size);
-    if (g_cacheValid && mtime == g_cacheMTime && size == g_cacheSize && mtime != -1)
-        return g_cacheChats;   // QJsonArray is implicitly shared (copy-on-write)
-
-    QFile f(path);
-    if (f.open(QIODevice::ReadOnly)) {
-        QByteArray data = f.readAll();
-        f.close();
-        QJsonParseError err;
-        QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-        if (err.error == QJsonParseError::NoError && doc.isArray()) {
-            g_cacheChats = doc.array();
-            cacheStatLocked(path, &g_cacheMTime, &g_cacheSize);
-            g_cacheValid = true;
-            return g_cacheChats;
-        }
-        backupCorruptFile(path);
-    }
-    g_cacheChats = QJsonArray();
-    g_cacheValid = false;
-    return g_cacheChats;
-}
-
-bool chatsSave(const QJsonArray& chats) {
-    QString path = chatsFilePath();
+// Write JSON atomically (temp file + rename).
+static bool atomicWrite(const QString& path, const QJsonDocument& doc) {
     QFileInfo fi(path);
     QDir().mkpath(fi.dir().absolutePath());
-
-    QByteArray json = QJsonDocument(chats).toJson(QJsonDocument::Indented);
     QString tmp = path + ".tmp";
     QFile f(tmp);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
-    f.write(json);
+    f.write(doc.toJson(QJsonDocument::Indented));
     f.close();
     QFile::remove(path);
     if (!QFile::rename(tmp, path)) {
-        chatsInvalidateCache();
+        QFile::remove(tmp);
         return false;
     }
-    // Prime the cache with what we just wrote so the next chatsLoad() (e.g. the
-    // load->mutate->save cycle in chatSave) skips a re-parse.
-    {
-        QMutexLocker lock(&g_cacheMutex);
-        g_cacheChats = chats;
-        cacheStatLocked(path, &g_cacheMTime, &g_cacheSize);
-        g_cacheValid = (g_cacheMTime != -1);
+    return true;
+}
+
+// Read and parse a JSON file, moving it aside if it is corrupt.
+// Returns an undefined document when the file is missing or unreadable.
+static QJsonDocument readJson(const QString& path) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return QJsonDocument();
+    QByteArray data = f.readAll();
+    f.close();
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+    if (err.error != QJsonParseError::NoError) {
+        backupCorruptFile(path);
+        return QJsonDocument();
     }
+    return doc;
+}
+
+// ---------------------------------------------------------------------------
+// summaries & index
+// ---------------------------------------------------------------------------
+
+// First user message, truncated -- what /list and the sidebar show.
+static QString previewOf(const QJsonObject& chat) {
+    const QJsonArray msgs = chat["messages"].toArray();
+    for (const QJsonValue& v : msgs) {
+        QJsonObject m = v.toObject();
+        if (m["role"].toString() != "user") continue;
+        QJsonValue content = m["content"];
+        QString text;
+        if (content.isString()) {
+            text = content.toString();
+        } else if (content.isArray()) {
+            // Multipart (image) content: use the first text part.
+            for (const QJsonValue& pv : content.toArray()) {
+                QJsonObject part = pv.toObject();
+                if (part["type"].toString() == "text") {
+                    text = part["text"].toString();
+                    break;
+                }
+            }
+        }
+        return text.left(kPreviewChars);
+    }
+    return QString();
+}
+
+static QJsonObject summarize(const QJsonObject& chat) {
+    QJsonObject e;
+    e["id"]         = chat["id"].toString();
+    e["title"]      = chat["title"].toString("Untitled");
+    e["created_at"] = chat["created_at"].toString();
+    e["msg_count"]  = chat["messages"].toArray().size();
+    e["preview"]    = previewOf(chat);
+    return e;
+}
+
+// Newest first. created_at is unique in practice; id breaks ties.
+static bool newestFirst(const QJsonValue& a, const QJsonValue& b) {
+    QJsonObject oa = a.toObject(), ob = b.toObject();
+    QString ca = oa["created_at"].toString(), cb = ob["created_at"].toString();
+    if (ca != cb) return ca > cb;
+    return oa["id"].toString() > ob["id"].toString();
+}
+
+static QJsonArray sortedNewestFirst(QJsonArray arr) {
+    QList<QJsonValue> items;
+    items.reserve(arr.size());
+    for (const QJsonValue& v : arr) items.append(v);
+    std::sort(items.begin(), items.end(), newestFirst);
+    QJsonArray out;
+    for (const QJsonValue& v : items) out.append(v);
+    return out;
+}
+
+// ids of the per-chat files, from one directory read.
+static QSet<QString> chatIdsOnDisk() {
+    QSet<QString> ids;
+    QDir dir(chatsDirPath());
+    if (!dir.exists()) return ids;
+    const QStringList names = dir.entryList(QStringList() << "*.json", QDir::Files);
+    for (const QString& name : names) {
+        if (name == QString::fromLatin1(kIndexFile)) continue;
+        ids.insert(name.left(name.size() - 5));  // strip ".json"
+    }
+    return ids;
+}
+
+// Read every per-chat file. The fallback when the index can't be trusted.
+static QJsonArray scanChats() {
+    QJsonArray chats;
+    const QSet<QString> ids = chatIdsOnDisk();
+    for (const QString& id : ids) {
+        QJsonDocument doc = readJson(chatFilePath(id));
+        if (doc.isObject() && !doc.object()["id"].toString().isEmpty())
+            chats.append(doc.object());
+    }
+    return sortedNewestFirst(chats);
+}
+
+// Returns an empty object when the index is missing, corrupt or the wrong version.
+static QJsonObject readIndex() {
+    QJsonDocument doc = readJson(indexFilePath());
+    if (!doc.isObject()) return QJsonObject();
+    QJsonObject o = doc.object();
+    if (o["version"].toInt() != kIndexVersion) return QJsonObject();
+    return o;
+}
+
+static void writeIndex(const QJsonArray& entries, const QPair<qint64, qint64>& legacySeen) {
+    QJsonObject o;
+    o["version"] = kIndexVersion;
+    QJsonArray seen;
+    seen.append(static_cast<double>(legacySeen.first));
+    seen.append(static_cast<double>(legacySeen.second));
+    o["legacy_seen"] = seen;
+    o["chats"] = sortedNewestFirst(entries);
+    atomicWrite(indexFilePath(), QJsonDocument(o));
+}
+
+static QPair<qint64, qint64> indexLegacySeen(const QJsonObject& idx) {
+    QJsonArray seen = idx["legacy_seen"].toArray();
+    if (seen.size() != 2) return {-1, -1};
+    return {static_cast<qint64>(seen[0].toDouble()),
+            static_cast<qint64>(seen[1].toDouble())};
+}
+
+// Regenerate the index from the authoritative per-chat files.
+static QJsonArray rebuildIndex(const QPair<qint64, qint64>& legacySeen) {
+    QJsonArray entries;
+    for (const QJsonValue& v : scanChats()) entries.append(summarize(v.toObject()));
+    entries = sortedNewestFirst(entries);
+    writeIndex(entries, legacySeen);
+    return entries;
+}
+
+// Copy chats.json entries that have no per-chat file yet.
+// Existing per-chat files always win -- this only ever adds.
+static void importLegacy() {
+    QJsonDocument doc = readJson(legacyFilePath());
+    if (!doc.isArray()) return;
+    const QSet<QString> have = chatIdsOnDisk();
+    for (const QJsonValue& v : doc.array()) {
+        QJsonObject chat = v.toObject();
+        QString id = chat["id"].toString();
+        if (id.isEmpty() || have.contains(id)) continue;
+        atomicWrite(chatFilePath(id), QJsonDocument(chat));
+    }
+}
+
+// Bring the index in line with disk, then return its entries.
+//
+// Steady state is one directory read plus one small parse. The expensive paths
+// (importing chats.json, rescanning every chat) run only when the cheap checks
+// say something actually changed.
+static QJsonArray ensureCurrent() {
+    QMutexLocker lock(&g_indexMutex);
+    QDir().mkpath(chatsDirPath());
+
+    QJsonObject idx = readIndex();
+    QPair<qint64, qint64> legacyNow = statKey(legacyFilePath());
+
+    // chats.json appeared or was rewritten -- most likely by the Python or Rust
+    // edition on a machine that runs more than one. Re-import so its chats
+    // become visible here.
+    if (legacyNow.first != -1 && (idx.isEmpty() || indexLegacySeen(idx) != legacyNow)) {
+        importLegacy();
+        return rebuildIndex(legacyNow);
+    }
+
+    if (idx.isEmpty() || !idx.contains("chats"))
+        return rebuildIndex(legacyNow);
+
+    // The index is a cache: if it disagrees with the directory (a frontend
+    // crashed mid-write, or two raced on index.json), rebuild from files.
+    QJsonArray entries = idx["chats"].toArray();
+    QSet<QString> indexed;
+    for (const QJsonValue& v : entries) indexed.insert(v.toObject()["id"].toString());
+    if (indexed != chatIdsOnDisk())
+        return rebuildIndex(legacyNow);
+
+    return entries;
+}
+
+// Insert or replace summaries without rescanning everything.
+static void updateIndexEntries(const QJsonArray& chats) {
+    if (chats.isEmpty()) return;
+    QMutexLocker lock(&g_indexMutex);
+
+    QJsonObject idx = readIndex();
+    QPair<qint64, qint64> legacySeen =
+        idx.isEmpty() ? statKey(legacyFilePath()) : indexLegacySeen(idx);
+
+    QJsonArray entries;
+    if (idx.isEmpty() || !idx.contains("chats")) {
+        for (const QJsonValue& v : scanChats()) entries.append(summarize(v.toObject()));
+    } else {
+        QSet<QString> ids;
+        for (const QJsonValue& v : chats) ids.insert(v.toObject()["id"].toString());
+        for (const QJsonValue& v : idx["chats"].toArray()) {
+            if (!ids.contains(v.toObject()["id"].toString()))
+                entries.append(v);
+        }
+        for (const QJsonValue& v : chats) entries.append(summarize(v.toObject()));
+    }
+    writeIndex(entries, legacySeen);
+}
+
+static void dropIndexEntry(const QString& id) {
+    QMutexLocker lock(&g_indexMutex);
+    QJsonObject idx = readIndex();
+    if (idx.isEmpty() || !idx.contains("chats")) return;
+    QJsonArray entries;
+    for (const QJsonValue& v : idx["chats"].toArray()) {
+        if (v.toObject()["id"].toString() != id)
+            entries.append(v);
+    }
+    writeIndex(entries, indexLegacySeen(idx));
+}
+
+// ---------------------------------------------------------------------------
+// public API
+// ---------------------------------------------------------------------------
+
+QJsonArray chatsLoadIndex() {
+    return ensureCurrent();
+}
+
+QJsonArray chatsLoad() {
+    ensureCurrent();
+    return scanChats();
+}
+
+void chatsInvalidateCache() {
+    // No in-memory cache any more: reads go straight to the per-chat files,
+    // and index.json is validated against the directory on every load. Kept so
+    // callers (and the other editions' API surface) don't have to change.
+}
+
+bool chatsSave(const QJsonArray& chats) {
+    // Additive on purpose: it writes and updates, but never deletes. The old
+    // whole-array rewrite made "save this list" and "delete everything else"
+    // the same operation. Use chatDelete() to remove a chat.
+    QDir().mkpath(chatsDirPath());
+    QJsonArray written;
+    for (const QJsonValue& v : chats) {
+        QJsonObject chat = v.toObject();
+        QString id = chat["id"].toString();
+        if (id.isEmpty()) continue;
+        if (!atomicWrite(chatFilePath(id), QJsonDocument(chat))) return false;
+        written.append(chat);
+    }
+    updateIndexEntries(written);
     return true;
 }
 
@@ -114,44 +348,41 @@ QJsonObject chatCreate(const QString& title) {
     chat["messages"]   = QJsonArray();
     chat["created_at"] = QDateTime::currentDateTime().toString("yyyy-MM-ddTHH:mm:ss");
 
-    QJsonArray chats = chatsLoad();
-    chats.prepend(chat);
-    chatsSave(chats);
+    ensureCurrent();
+    QDir().mkpath(chatsDirPath());
+    atomicWrite(chatFilePath(chat["id"].toString()), QJsonDocument(chat));
+    QJsonArray one;
+    one.append(chat);
+    updateIndexEntries(one);
     return chat;
 }
 
 bool chatDelete(const QString& id) {
-    QJsonArray chats = chatsLoad();
-    QJsonArray updated;
-    for (const QJsonValue& v : chats) {
-        if (v.toObject()["id"].toString() != id)
-            updated.append(v);
-    }
-    return chatsSave(updated);
+    ensureCurrent();
+    QFile::remove(chatFilePath(id));
+    dropIndexEntry(id);
+    return true;
 }
 
 bool chatSave(const QJsonObject& chat) {
-    QJsonArray chats = chatsLoad();
     QString id = chat["id"].toString();
-    bool found = false;
-    for (int i = 0; i < chats.size(); ++i) {
-        if (chats[i].toObject()["id"].toString() == id) {
-            chats[i] = chat;
-            found = true;
-            break;
-        }
-    }
-    if (!found) chats.prepend(chat);
-    return chatsSave(chats);
+    if (id.isEmpty()) return false;
+    QDir().mkpath(chatsDirPath());
+    if (!atomicWrite(chatFilePath(id), QJsonDocument(chat))) return false;
+    QJsonArray one;
+    one.append(chat);
+    updateIndexEntries(one);
+    return true;
 }
 
 QJsonObject chatGet(const QString& id) {
-    for (const QJsonValue& v : chatsLoad()) {
-        QJsonObject c = v.toObject();
-        if (c["id"].toString() == id)
-            return c;
-    }
-    return QJsonObject();
+    QJsonDocument doc = readJson(chatFilePath(id));
+    if (doc.isObject()) return doc.object();
+    // Not split out yet (first run after upgrade, or written by another
+    // edition): fall back to the legacy store.
+    ensureCurrent();
+    doc = readJson(chatFilePath(id));
+    return doc.isObject() ? doc.object() : QJsonObject();
 }
 
 QJsonArray cleanDanglingToolCalls(const QJsonArray& messages) {

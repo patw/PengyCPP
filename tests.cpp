@@ -238,7 +238,10 @@ private slots:
     }
 
     void init() {
-        // Fresh config/chat state before each test
+        // Fresh config/chat state before each test. Chats live one per file in
+        // pengy/chats/, so the whole directory goes; chats.json is the legacy
+        // store, which is still read and so must be cleared too.
+        QDir(m_xdgDir.path() + "/pengy/chats").removeRecursively();
         QFile(m_xdgDir.path() + "/pengy/chats.json").remove();
         QFile(m_xdgDir.path() + "/pengy/settings.json").remove();
     }

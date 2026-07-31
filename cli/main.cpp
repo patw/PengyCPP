@@ -327,8 +327,11 @@ public:
                 {"created_at", QDateTime::currentDateTime().toString("yyyy-MM-ddTHH:mm:ss")}
             };
         } else {
-            QJsonArray chats = chatsLoad();
-            chat = chats.isEmpty() ? chatCreate("New Chat") : chats.first().toObject();
+            QJsonArray chats = chatsLoadIndex();
+            chat = chats.isEmpty()
+                       ? chatCreate("New Chat")
+                       : chatGet(chats.first().toObject()["id"].toString());
+            if (chat.isEmpty()) chat = chatCreate("New Chat");
         }
 
         if (singleShot) {
@@ -843,7 +846,7 @@ private:
     }
 
     void listChats() {
-        const QJsonArray chats = chatsLoad();
+        const QJsonArray chats = chatsLoadIndex();
         if (chats.isEmpty()) { outln(dim("No chats.")); return; }
         outln(bold("Chats:"));
         outln(dim(QString("  %1  %2  %3  %4")
@@ -856,17 +859,8 @@ private:
         for (int i = 0; i < chats.size(); i++) {
             const QJsonObject c = chats[i].toObject();
             const bool cur = c["id"].toString() == currentId;
-            int msgCount = c["messages"].toArray().size();
-
-            // Find first user message as preview
-            QString preview;
-            const QJsonArray msgs = c["messages"].toArray();
-            for (const QJsonValue& v : msgs) {
-                if (v.toObject()["role"].toString() == "user") {
-                    preview = truncate(v.toObject()["content"].toString(), 30);
-                    break;
-                }
-            }
+            const int msgCount = c["msg_count"].toInt();
+            const QString preview = truncate(c["preview"].toString(), 30);
 
             outln(QString("  %1 %2 %3  %4")
                 .arg((cur ? green("→") + QString::number(i + 1) : " " + QString::number(i + 1)), -4)
@@ -877,9 +871,11 @@ private:
     }
 
     void loadChat(int idx) {
-        const QJsonArray chats = chatsLoad();
+        const QJsonArray chats = chatsLoadIndex();
         if (idx < 0 || idx >= chats.size()) { outln(red("No chat at that index.")); return; }
-        chat = chats[idx].toObject();
+        const QJsonObject loaded = chatGet(chats[idx].toObject()["id"].toString());
+        if (loaded.isEmpty()) { outln(red("Chat could not be loaded.")); return; }
+        chat = loaded;
         int msgCount = chat["messages"].toArray().size();
         outln(dim("Loaded: " + chat["title"].toString() + " (" + QString::number(msgCount) + " messages)"));
         // Show tail for context
@@ -887,7 +883,7 @@ private:
     }
 
     void deleteChat(int idx) {
-        const QJsonArray chats = chatsLoad();
+        const QJsonArray chats = chatsLoadIndex();
         if (idx < 0 || idx >= chats.size()) { outln(red("No chat at that index.")); return; }
         const QString id    = chats[idx].toObject()["id"].toString();
         const QString title = chats[idx].toObject()["title"].toString();

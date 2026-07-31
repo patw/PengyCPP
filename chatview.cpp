@@ -30,6 +30,9 @@ void ChatView::applyTheme(const Theme& theme, int scale) {
                   .arg(m_theme["bg"], m_theme["fg"]));
     document()->setDefaultStyleSheet(buildCss());
     m_cachedCss = buildCss();  // cache for use in buildHtml()
+    // A new theme means new syntax-highlight colours, so every cached code
+    // block is stale — not just the CSS in the <head>.
+    invalidateAll();
     if (!m_messages.isEmpty()) render();
 }
 
@@ -83,19 +86,19 @@ void ChatView::appendMessage(const QString& role, const QJsonValue& content, boo
         msg["result"] = QJsonValue::Null;
         msg["declined"] = false;
         m_messages.append(msg);
+        m_htmlCache.append(QString());
     } else if (role == "tool_result") {
         // Find matching tool_block and set result
         QJsonObject obj = content.toObject();
         QString tcId = obj["tool_call_id"].toString();
-        for (int i = m_messages.size() - 1; i >= 0; --i) {
+        int i = toolBlockIndex(tcId);
+        if (i >= 0) {
             QJsonObject msg = m_messages[i].toObject();
-            if (msg["role"].toString() == "tool_block"
-                && msg["tool_call_id"].toString() == tcId) {
-                msg["result"] = obj["content"];
-                msg["declined"] = obj["declined"].toBool(false);
-                m_messages[i] = msg;
-                break;
-            }
+            msg["result"] = obj["content"];
+            msg["declined"] = obj["declined"].toBool(false);
+            m_messages[i] = msg;
+            // Mutated in place: its "(running…)" header is now stale.
+            invalidate(i);
         }
     } else {
         QJsonObject msg;
@@ -109,6 +112,7 @@ void ChatView::appendMessage(const QString& role, const QJsonValue& content, boo
             }
         }
         m_messages.append(msg);
+        m_htmlCache.append(QString());
     }
     if (doRender)
         render();
@@ -120,6 +124,7 @@ void ChatView::renderNow() {
 
 void ChatView::clear() {
     m_messages = QJsonArray();
+    m_htmlCache.clear();
     m_expandedTools.clear();
     m_expandedReasoning.clear();
     QTextBrowser::clear();
@@ -135,6 +140,7 @@ void ChatView::mousePressEvent(QMouseEvent* event) {
             } else {
                 m_expandedTools.insert(toolId);
             }
+            invalidate(toolBlockIndex(toolId));
             render();
             return;
         }
@@ -147,6 +153,7 @@ void ChatView::mousePressEvent(QMouseEvent* event) {
                 } else {
                     m_expandedReasoning.insert(idx);
                 }
+                invalidate(idx);
                 render();
                 return;
             }
@@ -173,10 +180,44 @@ void ChatView::render() {
     }
 }
 
+// ── render cache ────────────────────────────────────────────────────────────
+// Anything that changes a message's *rendered output* must invalidate it:
+// content mutation (a tool result arriving), expand/collapse toggles, and theme
+// changes (which alter the syntax highlighter's colours, not just the CSS).
+
+void ChatView::invalidate(int idx) {
+    if (idx >= 0 && idx < m_htmlCache.size())
+        m_htmlCache[idx] = QString();  // null == needs render
+}
+
+void ChatView::invalidateAll() {
+    m_htmlCache.fill(QString());
+}
+
+int ChatView::toolBlockIndex(const QString& toolCallId) const {
+    for (int i = m_messages.size() - 1; i >= 0; --i) {
+        QJsonObject msg = m_messages[i].toObject();
+        if (msg["role"].toString() == "tool_block"
+            && msg["tool_call_id"].toString() == toolCallId)
+            return i;
+    }
+    return -1;
+}
+
 QString ChatView::buildHtml() {
+    // Keep the cache aligned with m_messages so a stale length can't misindex.
+    while (m_htmlCache.size() < m_messages.size()) m_htmlCache.append(QString());
+    while (m_htmlCache.size() > m_messages.size()) m_htmlCache.removeLast();
+
     QString html = QString("<html><head><style>%1</style></head><body>").arg(m_cachedCss);
     for (int i = 0; i < m_messages.size(); ++i) {
-        html += renderMessage(m_messages[i].toObject(), i);
+        if (m_htmlCache[i].isNull()) {
+            QString rendered = renderMessage(m_messages[i].toObject(), i);
+            // renderMessage may legitimately produce nothing (e.g. an empty
+            // assistant message); store empty-but-non-null so it stays cached.
+            m_htmlCache[i] = rendered.isNull() ? QLatin1String("") : rendered;
+        }
+        html += m_htmlCache[i];
     }
     html += "</body></html>";
     return html;

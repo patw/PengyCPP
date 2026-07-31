@@ -130,7 +130,7 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
 // ── Route handlers ───────────────────────────────────────────────────
 
 void WebServer::routeRoot(QTcpSocket* socket) {
-    QJsonArray chats = chatsLoad();
+    QJsonArray chats = chatsLoadIndex();
     if (!chats.isEmpty()) {
         sendRedirect(socket, "/chat/" + chats.first().toObject()["id"].toString());
     } else {
@@ -140,10 +140,10 @@ void WebServer::routeRoot(QTcpSocket* socket) {
 }
 
 void WebServer::routeChatNew(QTcpSocket* socket) {
-    QJsonArray chats = chatsLoad();
+    QJsonArray chats = chatsLoadIndex();
     if (!chats.isEmpty()) {
         QJsonObject first = chats[0].toObject();
-        if (first["title"].toString() == "New Chat" && first["messages"].toArray().isEmpty()) {
+        if (first["title"].toString() == "New Chat" && first["msg_count"].toInt() == 0) {
             sendRedirect(socket, "/chat/" + first["id"].toString());
             return;
         }
@@ -782,7 +782,9 @@ QByteArray WebServer::renderChatPage(const QString& chatId) {
 
     Config cfg = configLoad();
     QJsonObject chat = chatGet(chatId);
-    QJsonArray chats = chatsLoad();
+    // Sidebar summaries only — this is serialised into the page, so sending
+    // every message of every chat to the browser is pure waste.
+    QJsonArray chats = chatsLoadIndex();
 
     html.replace("{{CHAT_ID}}",          chatId);
     html.replace("{{CHAT_TITLE}}",       chat["title"].toString().toHtmlEscaped());
@@ -802,7 +804,7 @@ QByteArray WebServer::renderSettingsPage() {
     QString html = QString::fromUtf8(f.readAll());
 
     Config cfg = configLoad();
-    QJsonArray chats = chatsLoad();
+    QJsonArray chats = chatsLoadIndex();
 
     html.replace("{{BASE_URL}}",         cfg.baseUrl.toHtmlEscaped());
     html.replace("{{API_KEY_STATUS}}",   cfg.apiKey.isEmpty() ? "not set" : "set");
