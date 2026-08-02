@@ -24,6 +24,8 @@ struct Config {
     double imageMaxMb        = 4.5;
     int  imageQuality        = 85;
 
+    QStringList openTabs;   // persisted list of open chat IDs
+
     QJsonObject toJson() const;
     static Config fromJson(const QJsonObject& obj);
 };

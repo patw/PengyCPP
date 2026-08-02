@@ -28,29 +28,44 @@
 #include <QTextOption>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QCloseEvent>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_config = configLoad();
     setupUi();
     applyTheme();
 
-    // Poll for sudo password requests from the worker thread
-    m_confirmTimer = new QTimer(this);
-    m_confirmTimer->setInterval(100);
-    connect(m_confirmTimer, &QTimer::timeout, this, &MainWindow::pollToolConfirmation);
-
     Tools::setUserAgent(m_config.userAgent);
     Tools::setTimeout(m_config.toolTimeout);
     Tools::setToolOutputMaxChars(m_config.toolOutputMaxChars);
 
-    loadChatList();
-    m_chatHistory->updateQuickSettings(m_config.model, m_config.toolConfirmation);
+    // Poll for sudo password requests from any tab's worker
+    m_confirmTimer = new QTimer(this);
+    m_confirmTimer->setInterval(100);
+    connect(m_confirmTimer, &QTimer::timeout, this, &MainWindow::pollToolConfirmation);
 
-    if (m_chats.isEmpty())
-        createNewChat();
-    else
-        loadChat(m_chats[0].toObject()["id"].toString());
+    loadChatList();
+
+    // Restore open tabs from config, or create initial chat
+    QStringList openIds = m_config.openTabs;
+
+    if (!openIds.isEmpty()) {
+        for (const QString& cid : openIds) {
+            QJsonObject chat = chatGet(cid);
+            if (!chat.isEmpty())
+                addTab(chat, (cid == openIds.last()));
+        }
+    }
+
+    if (m_openTabs.isEmpty()) {
+        if (m_chats.isEmpty())
+            createNewChat();
+        else
+            loadIntoNewTab(m_chats[0].toObject()["id"].toString());
+    }
 }
+
+// ── UI setup ──────────────────────────────────────────────────────
 
 void MainWindow::setupUi() {
     setWindowTitle("Pengy 🐧");
@@ -62,16 +77,34 @@ void MainWindow::setupUi() {
     mainLayout->setSpacing(0);
     mainLayout->setContentsMargins(0, 0, 0, 0);
 
+    // Left sidebar
+    auto* leftSplitter = new QSplitter(Qt::Vertical);
     m_chatHistory = new ChatHistoryWidget;
-    connect(m_chatHistory, &ChatHistoryWidget::chatSelected,    this, &MainWindow::loadChat);
-    connect(m_chatHistory, &ChatHistoryWidget::newChatRequested,this, &MainWindow::createNewChat);
-    connect(m_chatHistory, &ChatHistoryWidget::settingsRequested,this,&MainWindow::openSettings);
-    connect(m_chatHistory, &ChatHistoryWidget::tasksRequested,   this,&MainWindow::openTasks);
-    connect(m_chatHistory, &ChatHistoryWidget::deleteRequested, this, &MainWindow::deleteChat);
+    connect(m_chatHistory, &ChatHistoryWidget::chatSelected,     this, &MainWindow::loadChat);
+    connect(m_chatHistory, &ChatHistoryWidget::newChatRequested, this, &MainWindow::createNewChat);
+    connect(m_chatHistory, &ChatHistoryWidget::settingsRequested,this, &MainWindow::openSettings);
+    connect(m_chatHistory, &ChatHistoryWidget::tasksRequested,   this, &MainWindow::openTasks);
+    connect(m_chatHistory, &ChatHistoryWidget::deleteRequested,  this, &MainWindow::deleteChat);
+    leftSplitter->addWidget(m_chatHistory);
 
-    m_chatView  = new ChatView;
+    // Right pane: tab widget + input row
+    auto* rightSplitter = new QSplitter(Qt::Vertical);
+
+    m_tabWidget = new QTabWidget;
+    m_tabWidget->setTabsClosable(true);
+    m_tabWidget->setMovable(true);
+    m_tabWidget->setUsesScrollButtons(true);
+    connect(m_tabWidget, &QTabWidget::tabCloseRequested, this, &MainWindow::closeTab);
+    connect(m_tabWidget, &QTabWidget::currentChanged,    this, &MainWindow::onTabChanged);
+    rightSplitter->addWidget(m_tabWidget);
+
+    // Input row
+    auto* inputRow = new QWidget;
+    auto* inputLayout = new QHBoxLayout(inputRow);
+    inputLayout->setContentsMargins(8, 4, 8, 4);
     m_chatInput = new ChatInputWidget;
     connect(m_chatInput, &ChatInputWidget::messageSent, this, &MainWindow::sendMessage);
+    inputLayout->addWidget(m_chatInput);
 
     m_stopBtn = new QPushButton("⏹ Stop");
     m_stopBtn->setFixedHeight(scaledSize(32, m_config.uiScale));
@@ -81,35 +114,26 @@ void MainWindow::setupUi() {
         "QPushButton:hover { background-color: #e64553; }");
     m_stopBtn->hide();
     connect(m_stopBtn, &QPushButton::clicked, this, &MainWindow::stopWorker);
-
-    // Layout
-    auto* inputRow = new QWidget;
-    auto* inputLayout = new QHBoxLayout(inputRow);
-    inputLayout->setContentsMargins(8, 4, 8, 4);
-    inputLayout->addWidget(m_chatInput);
     inputLayout->addWidget(m_stopBtn);
 
-    auto* leftSplitter = new QSplitter(Qt::Vertical);
-    leftSplitter->addWidget(m_chatHistory);
+    rightSplitter->addWidget(inputRow);
+    rightSplitter->setStretchFactor(0, 1);
 
-    auto* rightPane = new QSplitter(Qt::Vertical);
-    rightPane->addWidget(m_chatView);
-    rightPane->addWidget(inputRow);
-    rightPane->setStretchFactor(0, 1);
-
+    // Main splitter
     auto* mainSplitter = new QSplitter(Qt::Horizontal);
     mainSplitter->addWidget(leftSplitter);
-    mainSplitter->addWidget(rightPane);
+    mainSplitter->addWidget(rightSplitter);
     mainSplitter->setStretchFactor(0, 0);
     mainSplitter->setStretchFactor(1, 1);
     mainSplitter->setSizes({300, 800});
     mainLayout->addWidget(mainSplitter);
 }
 
+// ── Theme ─────────────────────────────────────────────────────────
+
 void MainWindow::applyTheme() {
     Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
     qApp->setStyleSheet(appStyleSheet(theme, m_config.uiScale));
-    if (m_chatView) m_chatView->applyTheme(theme, m_config.uiScale);
     if (m_chatInput) m_chatInput->applyTheme(theme, m_config.uiScale);
     if (m_chatHistory) m_chatHistory->applyTheme(theme, m_config.uiScale);
     if (m_stopBtn) {
@@ -118,37 +142,237 @@ void MainWindow::applyTheme() {
             "QPushButton { background-color:%1; color:white; border:none; border-radius:8px; padding:4px 14px; font-weight:bold; font-size:11pt; }"
             "QPushButton:hover { background-color:%2; }").arg(theme["danger"], theme["danger_hover"]));
     }
+    // Re-theme all open tab chat views
+    for (auto& session : m_openTabs) {
+        if (session.chatView)
+            session.chatView->applyTheme(theme, m_config.uiScale);
+    }
 }
 
 void MainWindow::loadChatList() {
-    // Summaries only — the sidebar needs id and title, not every message.
     m_chats = chatsLoadIndex();
     m_chatHistory->loadChats(m_chats);
 }
 
-void MainWindow::createNewChat() {
-    m_chats = chatsLoadIndex();
-    if (!m_chats.isEmpty()) {
-        QJsonObject first = m_chats[0].toObject();
-        if (first["title"].toString() == "New Chat" && first["msg_count"].toInt() == 0) {
-            m_currentChat   = first;
-            m_currentChatId = first["id"].toString();
-            m_chatHistory->selectChatById(m_currentChatId);
-            m_chatView->clear();
+// ── Tab management ────────────────────────────────────────────────
+
+TabSession* MainWindow::addTab(const QJsonObject& chat, bool switchTo) {
+    auto* chatView = new ChatView;
+
+    TabSession session;
+    session.chat     = chat;
+    session.chatView = chatView;
+
+    // Apply theme FIRST so renderNow() uses the correct colours
+    Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
+    chatView->applyTheme(theme, m_config.uiScale);
+
+    // Render existing messages
+    QJsonArray messages = chat["messages"].toArray();
+    for (const QJsonValue& v : messages)
+        renderMessage(chatView, v.toObject());
+    chatView->renderNow();
+
+    QString chatId = chat["id"].toString();
+    m_openTabs[chatId] = session;
+
+    QString title = chat["title"].toString("New Chat").left(30);
+    int idx = m_tabWidget->addTab(chatView, title);
+
+    if (switchTo)
+        m_tabWidget->setCurrentIndex(idx);
+
+    saveOpenTabs();
+    return &m_openTabs[chatId];
+}
+
+void MainWindow::closeTab(int index) {
+    QWidget* w = m_tabWidget->widget(index);
+    QString chatId;
+    for (auto it = m_openTabs.begin(); it != m_openTabs.end(); ++it) {
+        if (it->chatView == w) {
+            chatId = it.key();
+            break;
+        }
+    }
+
+    if (chatId.isEmpty()) {
+        m_tabWidget->removeTab(index);
+        return;
+    }
+
+    TabSession& session = m_openTabs[chatId];
+    abandonWorkerFor(&session);
+
+    // Save or delete the chat
+    bool isEmptyNew = (session.chat["title"].toString() == "New Chat"
+                       && session.chat["messages"].toArray().isEmpty());
+    if (isEmptyNew)
+        chatDelete(chatId);
+    else
+        chatSave(session.chat);
+
+    m_tabWidget->removeTab(index);
+    m_openTabs.remove(chatId);
+
+    saveOpenTabs();
+
+    // Always give a fresh tab if the user closes the last one
+    if (m_tabWidget->count() == 0)
+        createNewChat();
+}
+
+void MainWindow::onTabChanged(int index) {
+    if (index < 0) return;
+    QWidget* w = m_tabWidget->widget(index);
+    for (auto it = m_openTabs.begin(); it != m_openTabs.end(); ++it) {
+        if (it->chatView == w) {
+            m_activeChatId = it.key();
+            m_chatHistory->selectChatById(it.key());
+            updateQuickSettingsFor(&it.value());
+            m_stopBtn->setVisible(it->thinking);
             return;
         }
     }
+}
+
+TabSession* MainWindow::tabForChat(const QString& chatId) {
+    auto it = m_openTabs.find(chatId);
+    return (it != m_openTabs.end()) ? &it.value() : nullptr;
+}
+
+void MainWindow::saveOpenTabs() {
+    QStringList ids;
+    for (const auto& key : m_openTabs.keys())
+        ids.append(key);
+    m_config.openTabs = ids;
+    configSave(m_config);
+}
+
+void MainWindow::updateTabTitle(TabSession* session) {
+    QString base = session->chat["title"].toString("New Chat").left(30);
+    QString prefix = session->thinking ? "● " : "";
+
+    for (int i = 0; i < m_tabWidget->count(); ++i) {
+        if (m_tabWidget->widget(i) == session->chatView) {
+            m_tabWidget->setTabText(i, prefix + base);
+            return;
+        }
+    }
+}
+
+void MainWindow::loadIntoNewTab(const QString& chatId) {
+    // If there's a single empty "New Chat" tab, replace it
+    if (m_openTabs.size() == 1) {
+        QString onlyId = m_openTabs.firstKey();
+        TabSession& onlySession = m_openTabs.first();
+        if (onlySession.chat["title"].toString() == "New Chat"
+            && onlySession.chat["messages"].toArray().isEmpty()) {
+            chatDelete(onlySession.chat["id"].toString());
+            for (int i = 0; i < m_tabWidget->count(); ++i) {
+                if (m_tabWidget->widget(i) == onlySession.chatView) {
+                    m_tabWidget->removeTab(i);
+                    break;
+                }
+            }
+            m_openTabs.remove(onlyId);
+        }
+    }
+
+    QJsonObject chat = chatGet(chatId);
+    if (chat.isEmpty()) return;
+
+    addTab(chat, true);
+    m_activeChatId = chatId;
+    m_chatHistory->selectChatById(chatId);
+
+    TabSession* session = tabForChat(chatId);
+    if (session) updateQuickSettingsFor(session);
+}
+
+// ── Message rendering ─────────────────────────────────────────────
+
+void MainWindow::renderMessage(ChatView* view, const QJsonObject& msg) {
+    QString role = msg["role"].toString();
+
+    if (role == "user") {
+        QString content = msg["content"].isString()
+            ? msg["content"].toString()
+            : QJsonDocument(msg["content"].toArray()).toJson(QJsonDocument::Compact);
+        view->appendMessageText("user", content, false);
+
+    } else if (role == "assistant") {
+        QJsonArray toolCalls = msg["tool_calls"].toArray();
+        if (!toolCalls.isEmpty()) {
+            for (const QJsonValue& tc : toolCalls) {
+                QJsonObject tcObj = tc.toObject();
+                QJsonObject fn    = tcObj["function"].toObject();
+                QJsonObject argsObj = QJsonDocument::fromJson(
+                    fn["arguments"].toString().toUtf8()).object();
+                QJsonObject req;
+                req["tool_call_id"] = tcObj["id"];
+                req["name"]         = fn["name"];
+                req["args"]         = argsObj;
+                view->appendMessage("tool_request", req, false);
+            }
+            if (!msg["content"].toString().isEmpty()) {
+                QJsonObject display;
+                display["role"] = "assistant";
+                display["content"] = msg["content"].toString();
+                if (msg.contains("reasoning_content"))
+                    display["reasoning_content"] = msg["reasoning_content"];
+                else if (msg.contains("reasoning"))
+                    display["reasoning_content"] = msg["reasoning"];
+                view->appendMessage("assistant", display, false);
+            }
+        } else if (!msg["content"].toString().isEmpty()) {
+            QJsonObject display;
+            display["role"] = "assistant";
+            display["content"] = msg["content"].toString();
+            if (msg.contains("reasoning_content"))
+                display["reasoning_content"] = msg["reasoning_content"];
+            else if (msg.contains("reasoning"))
+                display["reasoning_content"] = msg["reasoning"];
+            view->appendMessage("assistant", display, false);
+        }
+    } else if (role == "tool") {
+        QJsonObject result;
+        result["tool_call_id"] = msg["tool_call_id"];
+        result["content"]      = msg["content"];
+        result["declined"]     = false;
+        view->appendMessage("tool_result", result, false);
+    }
+}
+
+// ── Chat lifecycle ────────────────────────────────────────────────
+
+void MainWindow::createNewChat() {
+    // If any open tab is an empty "New Chat", just switch to it
+    for (auto it = m_openTabs.begin(); it != m_openTabs.end(); ++it) {
+        if (it->chat["title"].toString() == "New Chat"
+            && it->chat["messages"].toArray().isEmpty()) {
+            for (int i = 0; i < m_tabWidget->count(); ++i) {
+                if (m_tabWidget->widget(i) == it->chatView) {
+                    m_tabWidget->setCurrentIndex(i);
+                    return;
+                }
+            }
+        }
+    }
+
     QJsonObject chat = chatCreate("New Chat");
     if (chat.isEmpty()) return;
-    m_currentChat   = chat;
-    m_currentChatId = chat["id"].toString();
+
     loadChatList();
-    m_chatHistory->selectChatById(m_currentChatId);
-    m_chatView->clear();
+    addTab(chat, true);
+    m_activeChatId = chat["id"].toString();
+    m_chatHistory->selectChatById(m_activeChatId);
+
+    TabSession* session = tabForChat(m_activeChatId);
+    if (session) updateQuickSettingsFor(session);
 }
 
 void MainWindow::deleteChat(const QString& chatId) {
-    // Deletion is immediate and unrecoverable — confirm first.
     QJsonObject chat = chatGet(chatId);
     QString title = chat["title"].toString("this chat");
     QMessageBox::StandardButton reply = QMessageBox::question(
@@ -158,89 +382,77 @@ void MainWindow::deleteChat(const QString& chatId) {
         QMessageBox::Cancel);
     if (reply != QMessageBox::Yes) return;
 
+    // Close tab if open
+    TabSession* session = tabForChat(chatId);
+    if (session) {
+        abandonWorkerFor(session);
+        for (int i = 0; i < m_tabWidget->count(); ++i) {
+            if (m_tabWidget->widget(i) == session->chatView) {
+                m_tabWidget->removeTab(i);
+                break;
+            }
+        }
+        m_openTabs.remove(chatId);
+    }
+
     chatDelete(chatId);
     loadChatList();
-    if (m_currentChatId == chatId) {
-        if (!m_chats.isEmpty())
-            loadChat(m_chats[0].toObject()["id"].toString());
-        else
-            createNewChat();
-    }
+
+    if (m_tabWidget->count() == 0)
+        createNewChat();
+
+    saveOpenTabs();
 }
 
 void MainWindow::loadChat(const QString& chatId) {
-    QJsonObject chat = chatGet(chatId);
-    if (chat.isEmpty()) return;
-
-    m_currentChat   = chat;
-    m_currentChatId = chatId;
-    m_chatHistory->selectChatById(chatId);
-    m_chatView->clear();
-
-    QJsonArray messages = chat["messages"].toArray();
-    for (const QJsonValue& v : messages) {
-        QJsonObject msg  = v.toObject();
-        QString     role = msg["role"].toString();
-
-        if (role == "user") {
-            QString content = msg["content"].isString()
-                ? msg["content"].toString()
-                : QJsonDocument(msg["content"].toArray()).toJson(QJsonDocument::Compact);
-            m_chatView->appendMessageText("user", content, false);
-
-        } else if (role == "assistant") {
-            QJsonArray toolCalls = msg["tool_calls"].toArray();
-            if (!toolCalls.isEmpty()) {
-                for (const QJsonValue& tc : toolCalls) {
-                    QJsonObject tcObj = tc.toObject();
-                    QJsonObject fn    = tcObj["function"].toObject();
-                    QJsonObject argsObj = QJsonDocument::fromJson(
-                        fn["arguments"].toString().toUtf8()).object();
-                    QJsonObject req;
-                    req["tool_call_id"] = tcObj["id"];
-                    req["name"]         = fn["name"];
-                    req["args"]         = argsObj;
-                    m_chatView->appendMessage("tool_request", req, false);
-                }
-                if (!msg["content"].toString().isEmpty()) {
-                    QJsonObject display;
-                    display["role"] = "assistant";
-                    display["content"] = msg["content"].toString();
-                    if (msg.contains("reasoning_content"))
-                        display["reasoning_content"] = msg["reasoning_content"];
-                    else if (msg.contains("reasoning"))
-                        display["reasoning_content"] = msg["reasoning"];
-                    m_chatView->appendMessage("assistant", display, false);
-                }
-            } else if (!msg["content"].toString().isEmpty()) {
-                QJsonObject display;
-                display["role"] = "assistant";
-                display["content"] = msg["content"].toString();
-                if (msg.contains("reasoning_content"))
-                    display["reasoning_content"] = msg["reasoning_content"];
-                else if (msg.contains("reasoning"))
-                    display["reasoning_content"] = msg["reasoning"];
-                m_chatView->appendMessage("assistant", display, false);
+    // User clicked a chat in the sidebar
+    TabSession* existing = tabForChat(chatId);
+    if (existing) {
+        // Already open — switch to its tab
+        for (int i = 0; i < m_tabWidget->count(); ++i) {
+            if (m_tabWidget->widget(i) == existing->chatView) {
+                m_tabWidget->setCurrentIndex(i);
+                return;
             }
-        } else if (role == "tool") {
-            QJsonObject result;
-            result["tool_call_id"] = msg["tool_call_id"];
-            result["content"]      = msg["content"];
-            result["declined"]     = false;
-            m_chatView->appendMessage("tool_result", result, false);
         }
+    } else {
+        loadIntoNewTab(chatId);
     }
-
-    // Render once after the batch: appending with render=true is O(n^2).
-    m_chatView->renderNow();
 }
 
-void MainWindow::sendMessage(const QString& text, const QStringList& images) {
-    if (m_currentChat.isEmpty()) return;
+void MainWindow::openSettings() {
+    SettingsDialog dlg(m_config, this);
+    if (dlg.exec() == QDialog::Accepted) {
+        m_config = dlg.config();
+        configSave(m_config);
+        applyTheme();
+        Tools::setUserAgent(m_config.userAgent);
+        Tools::setTimeout(m_config.toolTimeout);
+        Tools::setToolOutputMaxChars(m_config.toolOutputMaxChars);
+        loadChatList();
+        if (!m_activeChatId.isEmpty())
+            m_chatHistory->selectChatById(m_activeChatId);
+        TabSession* session = tabForChat(m_activeChatId);
+        if (session) updateQuickSettingsFor(session);
+    }
+}
 
-    m_yoloThisTurn = false;
-    m_chatHistory->setThinking(true);
-    m_chatHistory->updateTokenUsage(0, 0);
+void MainWindow::openTasks() {
+    Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
+    TasksDialog dlg(theme, this);
+    connect(&dlg, &TasksDialog::taskPlayed, this, [this](const QString& prompt) {
+        sendMessage(prompt, QStringList());
+    });
+    dlg.exec();
+}
+
+// ── Sending messages ──────────────────────────────────────────────
+
+void MainWindow::sendMessage(const QString& text, const QStringList& images) {
+    TabSession* session = tabForChat(m_activeChatId);
+    if (!session || session->chat.isEmpty()) return;
+
+    session->yoloThisTurn = false;
 
     // Build display string with image placeholders
     QStringList placeholders;
@@ -253,29 +465,33 @@ void MainWindow::sendMessage(const QString& text, const QStringList& images) {
     QJsonObject userMsg;
     userMsg["role"]    = "user";
     userMsg["content"] = displayContent;
-    QJsonArray messages = m_currentChat["messages"].toArray();
+    QJsonArray messages = session->chat["messages"].toArray();
     messages.append(userMsg);
-    m_currentChat["messages"] = messages;
-    m_chatView->appendMessageText("user", displayContent);
+    session->chat["messages"] = messages;
+    session->chatView->appendMessageText("user", displayContent);
 
     // Update chat title from first message
-    if (m_currentChat["title"].toString() == "New Chat") {
+    if (session->chat["title"].toString() == "New Chat") {
         QString src = text.isEmpty()
             ? (images.isEmpty() ? "" : images[0].section('/', -1))
             : text;
         QString title = src.left(50);
         if (src.length() > 50) title += "...";
-        m_currentChat["title"] = title;
-        m_chatHistory->updateChatTitle(m_currentChatId, title);
+        session->chat["title"] = title;
+        m_chatHistory->updateChatTitle(session->chat["id"].toString(), title);
+        updateTabTitle(session);  // tab label was "New Chat"
     }
 
-    chatSave(m_currentChat);
+    chatSave(session->chat);
+
+    session->thinking = true;
+    updateTabTitle(session);
+    updateQuickSettingsFor(session);
     m_stopBtn->show();
 
     // Build API message list
     QJsonArray apiMessages;
 
-    // System prompt
     if (!m_config.systemMessage.isEmpty()) {
         QJsonObject sysObj;
         sysObj["role"]    = "system";
@@ -325,109 +541,121 @@ void MainWindow::sendMessage(const QString& text, const QStringList& images) {
         apiMessages.append(textMsg);
     }
 
-    processResponse(apiMessages);
+    processResponse(session, apiMessages);
 }
 
-void MainWindow::processResponse(const QJsonArray& apiMessages) {
-    if (m_worker) {
-        disconnect(m_worker, &ChatWorker::eventReceived, this, nullptr);
-        disconnect(m_worker, &ChatWorker::errorOccurred, this, nullptr);
-        m_worker->cancel();
-        // Don't delete — inner thread still holds 'this'. The finished
-        // signal (still connected) will trigger onWorkerFinished which
-        // calls deleteLater once the thread has actually exited.
-        m_worker = nullptr;
-    }
+void MainWindow::processResponse(TabSession* session, const QJsonArray& apiMessages) {
+    abandonWorkerFor(session);
 
-    m_worker = new ChatWorker(this);
-    connect(m_worker, &ChatWorker::eventReceived, this, &MainWindow::onWorkerEvent,
+    QString toolConfirmation = m_config.toolConfirmation;
+    auto* worker = new ChatWorker(this);
+    m_workerToChat[worker] = session->chat["id"].toString();
+
+    connect(worker, &ChatWorker::eventReceived, this, &MainWindow::onWorkerEvent,
             Qt::QueuedConnection);
-    connect(m_worker, &ChatWorker::finished,      this, &MainWindow::onWorkerFinished,
+    connect(worker, &ChatWorker::finished,      this, &MainWindow::onWorkerFinished,
             Qt::QueuedConnection);
-    connect(m_worker, &ChatWorker::errorOccurred, this, &MainWindow::onWorkerError,
+    connect(worker, &ChatWorker::errorOccurred, this, &MainWindow::onWorkerError,
             Qt::QueuedConnection);
 
-    m_worker->start(m_config.baseUrl, m_config.apiKey, m_config.model,
-                    apiMessages, m_config.toolConfirmation, m_config.reasoningEffort,
-                    m_config.preserveReasoning);
+    worker->start(m_config.baseUrl, m_config.apiKey, m_config.model,
+                  apiMessages, toolConfirmation, m_config.reasoningEffort,
+                  m_config.preserveReasoning);
+
+    session->worker = worker;
     m_confirmTimer->start();
 }
 
+// ── Worker signal handlers ────────────────────────────────────────
+
 void MainWindow::onWorkerEvent(const QString& eventJson) {
-    auto* s = qobject_cast<ChatWorker*>(sender());
-    if (s && s != m_worker) return;
+    auto* worker = qobject_cast<ChatWorker*>(sender());
+    if (!worker) return;
+
+    QString chatId = m_workerToChat.value(worker);
+    if (chatId.isEmpty()) return;
+
+    TabSession* session = tabForChat(chatId);
+    if (!session) return;
 
     QJsonObject event = QJsonDocument::fromJson(eventJson.toUtf8()).object();
     QString     type  = event["type"].toString();
 
     if (type == "final_response") {
-        QString     content = event["content"].toString();
-        QJsonObject usage   = event["usage"].toObject();
-
-        if (!content.isEmpty()) {
-            QJsonObject asstMsg = event["message"].toObject();
-            if (asstMsg.isEmpty()) {
-                asstMsg["role"]    = "assistant";
-                asstMsg["content"] = content;
-            }
-            QJsonArray messages = m_currentChat["messages"].toArray();
-            messages.append(asstMsg);
-            m_currentChat["messages"] = messages;
-
-            // Pass reasoning_content to chat view
-            QJsonObject display;
-            display["role"] = "assistant";
-            display["content"] = content;
-            if (asstMsg.contains("reasoning_content")) {
-                display["reasoning_content"] = asstMsg["reasoning_content"];
-            } else if (asstMsg.contains("reasoning")) {
-                display["reasoning_content"] = asstMsg["reasoning"];
-            }
-            m_chatView->appendMessage("assistant", display);
-
-            chatSave(m_currentChat);
-        }
-
-        m_chatHistory->setThinking(false);
-        m_chatHistory->updateTokenUsage(
-            usage["prompt_tokens"].toInt(),
-            usage["completion_tokens"].toInt());
+        handleFinalResponse(session, event);
 
     } else if (type == "tool_request") {
-        m_chatView->appendMessage("tool_request", event);
-        m_chatHistory->setToolRunning(true);
+        session->thinking    = true;
+        session->toolRunning = true;
+        updateTabTitle(session);
+        session->chatView->appendMessage("tool_request", event);
+
         QString name = event["name"].toString();
         QString tc   = m_config.toolConfirmation;
-
-        bool skipConfirm = (tc == "all") || m_yoloThisTurn ||
+        bool skipConfirm = (tc == "all") || session->yoloThisTurn ||
             (tc == "safe" && Tools::isReadOnly(name));
 
         if (skipConfirm) {
-            m_worker->sendConfirmation(true, false);
+            worker->sendConfirmation(true, false);
         } else {
-            handleToolConfirm(event);
+            handleToolConfirm(session, event);
         }
 
     } else if (type == "assistant_tool_calls") {
-        m_yoloThisTurn = false;
-        QJsonArray messages = m_currentChat["messages"].toArray();
+        session->yoloThisTurn = false;
+        QJsonArray messages = session->chat["messages"].toArray();
         messages.append(event["message"]);
-        m_currentChat["messages"] = messages;
+        session->chat["messages"] = messages;
 
     } else if (type == "tool_result") {
-        m_chatView->appendMessage("tool_result", event);
-        m_chatHistory->setToolRunning(false);
+        session->toolRunning = false;
+        session->thinking    = true;  // still thinking after tool result
+        updateTabTitle(session);
+        session->chatView->appendMessage("tool_result", event);
         QJsonObject toolMsg;
         toolMsg["role"]         = "tool";
         toolMsg["tool_call_id"] = event["tool_call_id"];
         toolMsg["content"]      = event["content"];
-        QJsonArray messages = m_currentChat["messages"].toArray();
+        QJsonArray messages = session->chat["messages"].toArray();
         messages.append(toolMsg);
-        m_currentChat["messages"] = messages;
+        session->chat["messages"] = messages;
     }
 }
 
-void MainWindow::handleToolConfirm(const QJsonObject& req) {
+void MainWindow::handleFinalResponse(TabSession* session, const QJsonObject& response) {
+    QString content = response["content"].toString();
+
+    if (!content.isEmpty()) {
+        QJsonObject asstMsg = response["message"].toObject();
+        if (asstMsg.isEmpty()) {
+            asstMsg["role"]    = "assistant";
+            asstMsg["content"] = content;
+        }
+        QJsonArray messages = session->chat["messages"].toArray();
+        messages.append(asstMsg);
+        session->chat["messages"] = messages;
+
+        QJsonObject display;
+        display["role"] = "assistant";
+        display["content"] = content;
+        if (asstMsg.contains("reasoning_content")) {
+            display["reasoning_content"] = asstMsg["reasoning_content"];
+        } else if (asstMsg.contains("reasoning")) {
+            display["reasoning_content"] = asstMsg["reasoning"];
+        }
+        session->chatView->appendMessage("assistant", display);
+        chatSave(session->chat);
+    }
+
+    QJsonObject usage = response["usage"].toObject();
+    session->promptTokens     = usage["prompt_tokens"].toInt();
+    session->completionTokens = usage["completion_tokens"].toInt();
+
+    if (session == tabForChat(m_activeChatId))
+        updateQuickSettingsFor(session);
+}
+
+void MainWindow::handleToolConfirm(TabSession* session, const QJsonObject& req) {
     Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
     QDialog dlg(this);
     dlg.setWindowTitle("Confirm Tool: " + req["name"].toString());
@@ -446,10 +674,6 @@ void MainWindow::handleToolConfirm(const QJsonObject& req) {
     argsLabel->setStyleSheet(QString("color:%1; padding:0 8px;").arg(theme["fg"]));
     layout->addWidget(argsLabel);
 
-    // QPlainTextEdit wraps long unbroken tokens (paths, URLs, hashes) that
-    // QLabel's word-wrap would refuse to break; the old <pre>-wrapped QLabel
-    // disabled wrapping altogether, letting any long argument line blow up
-    // the dialog width.
     QString argsText = QJsonDocument(req["args"].toObject()).toJson(QJsonDocument::Indented);
     static const int kMaxArgsLen = 4000;
     if (argsText.length() > kMaxArgsLen) {
@@ -484,63 +708,115 @@ void MainWindow::handleToolConfirm(const QJsonObject& req) {
     btnLayout->addWidget(cancelBtn);
     layout->addLayout(btnLayout);
 
+    ChatWorker* worker = session->worker;
     bool responded = false;
     connect(execBtn, &QPushButton::clicked, &dlg, [&]() {
         responded = true;
-        m_worker->sendConfirmation(true, false);
+        if (worker) worker->sendConfirmation(true, false);
         dlg.accept();
     });
     connect(yesAllBtn, &QPushButton::clicked, &dlg, [&]() {
         responded = true;
-        m_yoloThisTurn = true;
-        m_worker->sendConfirmation(true, true);
+        session->yoloThisTurn = true;
+        if (worker) worker->sendConfirmation(true, true);
         dlg.accept();
     });
     connect(cancelBtn, &QPushButton::clicked, &dlg, [&]() {
         responded = true;
-        m_worker->sendConfirmation(false, false);
+        if (worker) worker->sendConfirmation(false, false);
         dlg.reject();
     });
 
     dlg.exec();
 
-    // Escape or the window X close the dialog without hitting a button;
-    // the worker is still blocked on the QWaitCondition, so decline it.
-    if (!responded && m_worker)
-        m_worker->sendConfirmation(false, false);
-}
-
-void MainWindow::onWorkerFinished() {
-    auto* w = qobject_cast<ChatWorker*>(sender());
-
-    if (w && w != m_worker) {
-        // Stale signal from an old cancelled worker whose inner thread
-        // just finished — safe to delete now that the thread is done.
-        w->deleteLater();
-        return;
-    }
-
-    m_stopBtn->hide();
-    m_chatHistory->setThinking(false);
-    m_confirmTimer->stop();
-    if (m_worker) {
-        disconnect(m_worker, nullptr, this, nullptr);
-        m_worker->deleteLater();
-        m_worker = nullptr;
-    }
+    if (!responded && worker)
+        worker->sendConfirmation(false, false);
 }
 
 void MainWindow::onWorkerError(const QString& msg) {
-    auto* s = qobject_cast<ChatWorker*>(sender());
-    if (s && s != m_worker) return;
+    auto* worker = qobject_cast<ChatWorker*>(sender());
+    if (!worker) return;
 
-    m_chatView->appendMessageText("assistant", "Error: " + msg);
-    onWorkerFinished();
+    QString chatId = m_workerToChat.value(worker);
+    TabSession* session = tabForChat(chatId);
+    if (!session) return;
+
+    session->chatView->appendMessageText("assistant", "Error: " + msg);
+    session->thinking    = false;
+    session->toolRunning = false;
+    updateTabTitle(session);
+
+    if (session == tabForChat(m_activeChatId)) {
+        m_stopBtn->hide();
+        updateQuickSettingsFor(session);
+    }
+}
+
+void MainWindow::onWorkerFinished() {
+    auto* worker = qobject_cast<ChatWorker*>(sender());
+    if (!worker) return;
+
+    QString chatId = m_workerToChat.take(worker);
+    TabSession* session = tabForChat(chatId);
+    if (!session) {
+        worker->deleteLater();
+        return;
+    }
+
+    session->worker       = nullptr;
+    session->thinking     = false;
+    session->toolRunning  = false;
+    updateTabTitle(session);
+
+    if (session == tabForChat(m_activeChatId)) {
+        m_stopBtn->hide();
+        m_confirmTimer->stop();
+        updateQuickSettingsFor(session);
+    }
+
+    disconnect(worker, nullptr, this, nullptr);
+    worker->deleteLater();
+}
+
+// ── Worker lifecycle ──────────────────────────────────────────────
+
+void MainWindow::abandonWorkerFor(TabSession* session) {
+    if (!session->worker) return;
+
+    m_workerToChat.remove(session->worker);
+    session->worker->cancel();
+
+    // Disconnect signals — the worker's internal thread will still run
+    // to completion and emit finished(), but we no longer listen.
+    disconnect(session->worker, nullptr, this, nullptr);
+    session->worker = nullptr;
+}
+
+void MainWindow::stopWorker() {
+    TabSession* session = tabForChat(m_activeChatId);
+    if (!session) return;
+
+    abandonWorkerFor(session);
+
+    m_stopBtn->hide();
+    m_confirmTimer->stop();
+    session->thinking    = false;
+    session->toolRunning = false;
+    updateTabTitle(session);
+
+    if (!session->chat.isEmpty()) {
+        QJsonArray msgs = session->chat["messages"].toArray();
+        session->chat["messages"] = cleanDanglingToolCalls(msgs);
+        session->chatView->appendMessageText("assistant", "⏹ *Stopped*");
+        chatSave(session->chat);
+    }
 }
 
 void MainWindow::pollToolConfirmation() {
-    if (!m_worker || !m_worker->isSudoPending()) return;
-    if (m_sudoDialogOpen) return;
+    // Check active tab's worker for pending sudo
+    TabSession* session = tabForChat(m_activeChatId);
+    if (!session || !session->worker || m_sudoDialogOpen) return;
+    if (!session->worker->isSudoPending()) return;
 
     m_sudoDialogOpen = true;
 
@@ -552,47 +828,36 @@ void MainWindow::pollToolConfirmation() {
     m_sudoDialogOpen = false;
 
     if (ok && !password.isEmpty()) {
-        m_worker->sendSudoPassword(password);
+        session->worker->sendSudoPassword(password);
     } else {
-        m_worker->cancelSudo();
+        session->worker->cancelSudo();
     }
 }
 
-void MainWindow::stopWorker() {
-    if (m_worker) {
-        disconnect(m_worker, &ChatWorker::eventReceived, this, nullptr);
-        disconnect(m_worker, &ChatWorker::errorOccurred, this, nullptr);
-        m_worker->cancel();
-        // Keep worker alive — inner thread still references it.
-        // onWorkerFinished will deleteLater when finished() fires.
-        m_worker = nullptr;
-    }
-    m_stopBtn->hide();
-    m_chatHistory->setThinking(false);
-    m_confirmTimer->stop();
-    m_chatView->appendMessageText("assistant", "⏹ *Stopped*");
+// ── Quick settings panel ──────────────────────────────────────────
+
+void MainWindow::updateQuickSettingsFor(TabSession* session) {
+    m_chatHistory->updateQuickSettings(m_config.model, m_config.toolConfirmation);
+
+    if (session->promptTokens || session->completionTokens)
+        m_chatHistory->updateTokenUsage(session->promptTokens, session->completionTokens);
+
+    // Drive the status dot + label from this tab's state
+    if (session->toolRunning)
+        m_chatHistory->setToolRunning(true);
+    else if (session->thinking)
+        m_chatHistory->setThinking(true);
+    else
+        m_chatHistory->setThinking(false);
 }
 
-void MainWindow::openSettings() {
-    SettingsDialog dlg(m_config, this);
-    if (dlg.exec() == QDialog::Accepted) {
-        m_config = dlg.config();
-        configSave(m_config);
-        applyTheme();
-        Tools::setUserAgent(m_config.userAgent);
-        Tools::setTimeout(m_config.toolTimeout);
-        Tools::setToolOutputMaxChars(m_config.toolOutputMaxChars);
-        loadChatList();
-        if (!m_currentChatId.isEmpty()) m_chatHistory->selectChatById(m_currentChatId);
-        m_chatHistory->updateQuickSettings(m_config.model, m_config.toolConfirmation);
-    }
-}
+// ── Clean shutdown ────────────────────────────────────────────────
 
-void MainWindow::openTasks() {
-    Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
-    TasksDialog dlg(theme, this);
-    connect(&dlg, &TasksDialog::taskPlayed, this, [this](const QString& prompt) {
-        sendMessage(prompt, QStringList());
-    });
-    dlg.exec();
+void MainWindow::closeEvent(QCloseEvent* event) {
+    saveOpenTabs();
+    for (auto& session : m_openTabs) {
+        if (!session.chat.isEmpty())
+            chatSave(session.chat);
+    }
+    QMainWindow::closeEvent(event);
 }

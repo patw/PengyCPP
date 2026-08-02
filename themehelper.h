@@ -116,6 +116,11 @@ QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBo
 QDialog { background-color:%1; color:%2; }
 QMenu { background-color:%5; color:%2; border:1px solid %4; }
 QMenu::item:selected { background-color:%6; }
+QTabWidget::pane { background-color:%1; border:none; }
+QTabBar::tab { background-color:%5; color:%2; border:1px solid %3; border-bottom:none; border-top-left-radius:6px; border-top-right-radius:6px; padding:%9px %10px; margin-right:2px; }
+QTabBar::tab:selected { background-color:%1; color:%11; border-bottom:2px solid %11; }
+QTabBar::tab:hover { background-color:%7; }
+QTabBar::tab:!selected { color:%12; }
 )" ).arg(t["bg"], t["fg"], t["border_soft"], t["border"], t["panel"], t["selection"], t["hover"], t["panel_2"])
     .arg(padV).arg(padH).arg(t["primary"], t["muted"], t["input_bg"], t["input_fg"], t["primary_fg"], t["focus"]);
 }

@@ -2,6 +2,7 @@
 #include <QFile>
 #include <QDir>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QDateTime>
 #include <QSysInfo>
 
@@ -59,6 +60,9 @@ QJsonObject Config::toJson() const {
     o["image_max_dimension"] = imageMaxDimension;
     o["image_max_mb"]        = imageMaxMb;
     o["image_quality"]       = imageQuality;
+    QJsonArray tabs;
+    for (const QString& t : openTabs) tabs.append(t);
+    o["open_tabs"] = tabs;
     return o;
 }
 
@@ -82,6 +86,10 @@ Config Config::fromJson(const QJsonObject& o) {
     if (o.contains("image_max_dimension")) c.imageMaxDimension = o["image_max_dimension"].toInt(4096);
     if (o.contains("image_max_mb"))        c.imageMaxMb        = o["image_max_mb"].toDouble(4.5);
     if (o.contains("image_quality"))       c.imageQuality      = o["image_quality"].toInt(85);
+    if (o.contains("open_tabs")) {
+        for (const auto& v : o["open_tabs"].toArray())
+            c.openTabs.append(v.toString());
+    }
     return c;
 }
 
