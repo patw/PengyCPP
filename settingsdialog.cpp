@@ -14,6 +14,7 @@
 #include <QEventLoop>
 #include <QPointer>
 #include <QAbstractItemView>
+#include <QTabWidget>
 
 /* ComboBox whose dropdown popup is ~50% wider than the combo itself,
    so short-content combos (scale %, theme, accent) feel proportional
@@ -28,19 +29,71 @@ public:
     }
 };
 
+/* Helper: create a QLabel with a tooltip */
+static QLabel* labelWithTip(const QString& text, const QString& tip) {
+    auto* lbl = new QLabel(text);
+    lbl->setToolTip(tip);
+    return lbl;
+}
+
 SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     : QDialog(parent), m_config(cfg) {
     setWindowTitle("Settings");
     setModal(true);
-    resize(520, 520);
 
     auto* layout = new QVBoxLayout(this);
-    auto* form   = new QFormLayout;
-    form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    auto* tabs   = new QTabWidget;
+
+    // ── UI tab ──────────────────────────────────────────────────
+    auto* uiTab  = new QWidget;
+    auto* uiForm = new QFormLayout(uiTab);
+    uiForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+
+    m_uiScale = new WidePopupComboBox;
+    int scales[] = {75, 100, 125, 150, 175, 200};
+    int idx = 1;
+    for (int i = 0; i < 6; ++i) {
+        m_uiScale->addItem(QString("%1%").arg(scales[i]), scales[i]);
+        if (scales[i] == cfg.uiScale) idx = i;
+    }
+    m_uiScale->setCurrentIndex(idx);
+    m_uiScale->setToolTip("Scales the entire UI. A restart is needed for the change to take full effect.");
+    uiForm->addRow(labelWithTip("UI Scale:", "Scales the entire UI. A restart is needed for the change to take full effect."), m_uiScale);
+
+    m_themeMode = new WidePopupComboBox;
+    m_themeMode->addItem("System", "system");
+    m_themeMode->addItem("Light", "light");
+    m_themeMode->addItem("Dark", "dark");
+    for (int i = 0; i < m_themeMode->count(); ++i) {
+        if (m_themeMode->itemData(i).toString() == cfg.themeMode) m_themeMode->setCurrentIndex(i);
+    }
+    m_themeMode->setToolTip("System follows your OS theme; Light and Dark override it.");
+    uiForm->addRow(labelWithTip("Theme mode:", "System follows your OS theme; Light and Dark override it."), m_themeMode);
+
+    m_themeAccent = new WidePopupComboBox;
+    const QStringList accents = {"default", "blue", "teal", "green", "orange", "red", "pink", "purple"};
+    for (const QString& a : accents) m_themeAccent->addItem(a.left(1).toUpper() + a.mid(1), a);
+    for (int i = 0; i < m_themeAccent->count(); ++i) {
+        if (m_themeAccent->itemData(i).toString() == cfg.themeAccent) m_themeAccent->setCurrentIndex(i);
+    }
+    m_themeAccent->setToolTip("Highlight color for buttons, links, and selection highlights.");
+    uiForm->addRow(labelWithTip("Accent color:", "Highlight color for buttons, links, and selection highlights."), m_themeAccent);
+
+    tabs->addTab(uiTab, "UI");
+
+    // ── LLM tab ─────────────────────────────────────────────────
+    auto* llmTab  = new QWidget;
+    auto* llmForm = new QFormLayout(llmTab);
+    llmForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
 
     m_baseUrl = new QLineEdit(cfg.baseUrl);
+    m_baseUrl->setToolTip("OpenAI-compatible API endpoint, e.g. https://api.openai.com/v1 or a local llama.cpp server.");
+    llmForm->addRow(labelWithTip("Base URL:", "OpenAI-compatible API endpoint, e.g. https://api.openai.com/v1 or a local llama.cpp server."), m_baseUrl);
+
     m_apiKey  = new QLineEdit(cfg.apiKey);
     m_apiKey->setEchoMode(QLineEdit::Password);
+    m_apiKey->setToolTip("Bearer token sent in the Authorization header to the LLM provider.");
+    llmForm->addRow(labelWithTip("API Key:", "Bearer token sent in the Authorization header to the LLM provider."), m_apiKey);
 
     auto* modelRow = new QHBoxLayout;
     m_model = new QComboBox;
@@ -48,36 +101,21 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     m_model->setInsertPolicy(QComboBox::NoInsert);
     m_model->addItem(cfg.model);
     m_model->setCurrentText(cfg.model);
+    m_model->setToolTip("Model name sent in chat completion requests. Use Fetch to list available models from the endpoint.");
     modelRow->addWidget(m_model, 1);
 
     m_fetchBtn = new QPushButton("↻ Fetch");
-    m_fetchBtn->setToolTip("Fetch available models from the endpoint");
+    m_fetchBtn->setToolTip("Fetch available models from the /models endpoint");
     m_fetchBtn->setFixedWidth(80);
     connect(m_fetchBtn, &QPushButton::clicked, this, &SettingsDialog::fetchModels);
     modelRow->addWidget(m_fetchBtn);
 
-    m_userAgent = new QLineEdit(cfg.userAgent);
-
-    form->addRow("Base URL:",  m_baseUrl);
-    form->addRow("API Key:",   m_apiKey);
-    form->addRow("Model:",     modelRow);
-    form->addRow("User Agent:", m_userAgent);
+    llmForm->addRow(labelWithTip("Model:", "Model name sent in chat completion requests. Use Fetch to list available models from the endpoint."), modelRow);
 
     m_systemMsg = new QTextEdit(cfg.systemMessage);
     m_systemMsg->setMaximumHeight(100);
-    form->addRow("System Message:", m_systemMsg);
-
-    m_toolConfirm = new QComboBox;
-    m_toolConfirm->addItem("YOLO (All) — execute everything, no questions asked",      "all");
-    m_toolConfirm->addItem("Safe Only — auto-approve read-only tools; confirm write/execute", "safe");
-    m_toolConfirm->addItem("None — confirm every tool before execution",               "none");
-    for (int i = 0; i < m_toolConfirm->count(); ++i) {
-        if (m_toolConfirm->itemData(i).toString() == cfg.toolConfirmation) {
-            m_toolConfirm->setCurrentIndex(i);
-            break;
-        }
-    }
-    form->addRow("Tool Confirmation:", m_toolConfirm);
+    m_systemMsg->setToolTip("The system prompt that sets the assistant's behavior, tone, and constraints.");
+    llmForm->addRow(labelWithTip("System Message:", "The system prompt that sets the assistant's behavior, tone, and constraints."), m_systemMsg);
 
     m_reasoningEffort = new QComboBox;
     m_reasoningEffort->addItem("Provider default — do not send reasoning option", "");
@@ -94,74 +132,75 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
             break;
         }
     }
-    m_reasoningEffort->setToolTip("Optional best-effort reasoning depth. Provider default omits the parameter.");
-    form->addRow("Reasoning effort:", m_reasoningEffort);
+    m_reasoningEffort->setToolTip("Optional best-effort reasoning depth hint. Only supported by some models/providers; others may reject unknown values.");
+    llmForm->addRow(labelWithTip("Reasoning effort:", "Optional best-effort reasoning depth hint. Only supported by some models/providers."), m_reasoningEffort);
 
-    m_preserveReasoning = new QCheckBox("Preserve returned reasoning fields");
+    m_preserveReasoning = new QCheckBox("Keep reasoning fields in conversation history");
     m_preserveReasoning->setChecked(cfg.preserveReasoning);
-    m_preserveReasoning->setToolTip("Keeps reasoning_content/reasoning/reasoning_details when providers return them.");
-    form->addRow("Reasoning preservation:", m_preserveReasoning);
+    m_preserveReasoning->setToolTip("When checked, reasoning_content / reasoning / reasoning_details fields returned by the provider are kept. Leave off if your proxy rejects unknown message fields.");
+    llmForm->addRow(labelWithTip("Preserve reasoning:", "When checked, reasoning_content / reasoning / reasoning_details fields returned by the provider are kept."), m_preserveReasoning);
+
+    m_llmTimeout = new QSpinBox;
+    m_llmTimeout->setRange(1, 3600);
+    m_llmTimeout->setSuffix(" sec");
+    m_llmTimeout->setToolTip("HTTP timeout in seconds for each LLM API request. Increase if your model is slow to respond.");
+    m_llmTimeout->setValue(cfg.llmTimeout);
+    llmForm->addRow(labelWithTip("LLM timeout:", "HTTP timeout in seconds for each LLM API request. Increase if your model is slow to respond."), m_llmTimeout);
+
+    tabs->addTab(llmTab, "LLM");
+
+    // ── Tools tab ───────────────────────────────────────────────
+    auto* toolsTab  = new QWidget;
+    auto* toolsForm = new QFormLayout(toolsTab);
+    toolsForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+
+    m_toolConfirm = new QComboBox;
+    m_toolConfirm->addItem("YOLO (All) — execute everything, no questions asked",      "all");
+    m_toolConfirm->addItem("Safe Only — auto-approve read-only tools; confirm write/execute", "safe");
+    m_toolConfirm->addItem("None — confirm every tool before execution",               "none");
+    for (int i = 0; i < m_toolConfirm->count(); ++i) {
+        if (m_toolConfirm->itemData(i).toString() == cfg.toolConfirmation) {
+            m_toolConfirm->setCurrentIndex(i);
+            break;
+        }
+    }
+    m_toolConfirm->setToolTip("YOLO runs everything without asking. Safe auto-approves read-only tools. None confirms every tool call.");
+    toolsForm->addRow(labelWithTip("Tool Confirmation:", "YOLO runs everything without asking. Safe auto-approves read-only tools. None confirms every tool call."), m_toolConfirm);
 
     m_contextKeep = new QSpinBox;
     m_contextKeep->setRange(0, 999);
     m_contextKeep->setSpecialValueText("Keep all");
     m_contextKeep->setSuffix(" turns");
-    m_contextKeep->setToolTip("Tool results older than this many turns are elided to save context window. 0 = keep all.");
+    m_contextKeep->setToolTip("Tool results older than N turns are elided to save context window. 0 = keep everything.");
     m_contextKeep->setValue(cfg.contextKeepTurns);
-    form->addRow("Keep tool results:", m_contextKeep);
-
-    m_uiScale = new WidePopupComboBox;
-    int scales[] = {75, 100, 125, 150, 175, 200};
-    int idx = 1;
-    for (int i = 0; i < 6; ++i) {
-        m_uiScale->addItem(QString("%1%").arg(scales[i]), scales[i]);
-        if (scales[i] == cfg.uiScale) idx = i;
-    }
-    m_uiScale->setCurrentIndex(idx);
-    form->addRow("UI Scale (restart for full UI):", m_uiScale);
-
-    m_themeMode = new WidePopupComboBox;
-    m_themeMode->addItem("System", "system");
-    m_themeMode->addItem("Light", "light");
-    m_themeMode->addItem("Dark", "dark");
-    for (int i = 0; i < m_themeMode->count(); ++i) {
-        if (m_themeMode->itemData(i).toString() == cfg.themeMode) m_themeMode->setCurrentIndex(i);
-    }
-    form->addRow("Theme mode:", m_themeMode);
-
-    m_themeAccent = new WidePopupComboBox;
-    const QStringList accents = {"default", "blue", "teal", "green", "orange", "red", "pink", "purple"};
-    for (const QString& a : accents) m_themeAccent->addItem(a.left(1).toUpper() + a.mid(1), a);
-    for (int i = 0; i < m_themeAccent->count(); ++i) {
-        if (m_themeAccent->itemData(i).toString() == cfg.themeAccent) m_themeAccent->setCurrentIndex(i);
-    }
-    form->addRow("Accent color:", m_themeAccent);
-
-    m_llmTimeout = new QSpinBox;
-    m_llmTimeout->setRange(1, 3600);
-    m_llmTimeout->setSuffix(" sec");
-    m_llmTimeout->setToolTip("HTTP timeout for each LLM API request");
-    m_llmTimeout->setValue(cfg.llmTimeout);
-    form->addRow("LLM timeout:", m_llmTimeout);
+    toolsForm->addRow(labelWithTip("Keep tool results:", "Tool results older than N turns are elided to save context window. 0 = keep everything."), m_contextKeep);
 
     m_toolTimeout = new QSpinBox;
     m_toolTimeout->setRange(-1, 3600);
     m_toolTimeout->setSpecialValueText("No timeout");
     m_toolTimeout->setSuffix(" sec");
+    m_toolTimeout->setToolTip("Maximum wall-clock time a single tool invocation can run before being killed. -1 = no timeout.");
     m_toolTimeout->setValue(cfg.toolTimeout);
-    form->addRow("Tool timeout:", m_toolTimeout);
+    toolsForm->addRow(labelWithTip("Tool timeout:", "Maximum wall-clock time a single tool invocation can run before being killed. -1 = no timeout."), m_toolTimeout);
 
     m_toolOutputMax = new QSpinBox;
     m_toolOutputMax->setRange(0, 500000);
     m_toolOutputMax->setSpecialValueText("No limit");
     m_toolOutputMax->setSuffix(" chars");
-    m_toolOutputMax->setToolTip("Snipped (head+tail) when tool output exceeds this. 0 = no limit.");
+    m_toolOutputMax->setToolTip("Tool output longer than this is snipped (head+tail) to avoid blowing up the context window. 0 = no limit.");
     m_toolOutputMax->setValue(cfg.toolOutputMaxChars);
-    form->addRow("Max tool output:", m_toolOutputMax);
+    toolsForm->addRow(labelWithTip("Max tool output:", "Tool output longer than this is snipped (head+tail) to avoid blowing up the context window. 0 = no limit."), m_toolOutputMax);
 
-    layout->addLayout(form);
+    m_userAgent = new QLineEdit(cfg.userAgent);
+    m_userAgent->setToolTip("HTTP User-Agent header sent with LLM API requests and any HTTP-based tool calls.");
+    toolsForm->addRow(labelWithTip("User Agent:", "HTTP User-Agent header sent with LLM API requests and any HTTP-based tool calls."), m_userAgent);
+
+    tabs->addTab(toolsTab, "Tools");
+
+    layout->addWidget(tabs);
     layout->addStretch();
 
+    // ── buttons ─────────────────────────────────────────────────
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
         m_config.baseUrl           = m_baseUrl->text();
@@ -176,13 +215,15 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
         m_config.uiScale           = m_uiScale->currentData().toInt();
         m_config.themeMode         = m_themeMode->currentData().toString();
         m_config.themeAccent       = m_themeAccent->currentData().toString();
-        m_config.llmTimeout       = m_llmTimeout->value();
+        m_config.llmTimeout        = m_llmTimeout->value();
         m_config.toolTimeout       = m_toolTimeout->value();
         m_config.toolOutputMaxChars = m_toolOutputMax->value();
         accept();
     });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
+
+    adjustSize();
 }
 
 void SettingsDialog::fetchModels() {
