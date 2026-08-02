@@ -318,6 +318,7 @@ public:
             cfg.systemMessage = systemOverride;
         Tools::setUserAgent(cfg.userAgent);
         Tools::setTimeout(cfg.toolTimeout);
+        Tools::setToolOutputMaxChars(cfg.toolOutputMaxChars);
 
         if (singleShot && noSave) {
             chat = QJsonObject{

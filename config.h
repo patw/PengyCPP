@@ -19,6 +19,7 @@ struct Config {
     QString userAgent        = "PengyAgent/1.0";
     int  llmTimeout          = 300;
     int  toolTimeout         = 300;
+    int  toolOutputMaxChars  = 50000;
     int  imageMaxDimension   = 4096;
     double imageMaxMb        = 4.5;
     int  imageQuality        = 85;

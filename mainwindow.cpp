@@ -41,6 +41,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     Tools::setUserAgent(m_config.userAgent);
     Tools::setTimeout(m_config.toolTimeout);
+    Tools::setToolOutputMaxChars(m_config.toolOutputMaxChars);
 
     loadChatList();
     m_chatHistory->updateQuickSettings(m_config.model, m_config.toolConfirmation);
@@ -580,6 +581,7 @@ void MainWindow::openSettings() {
         applyTheme();
         Tools::setUserAgent(m_config.userAgent);
         Tools::setTimeout(m_config.toolTimeout);
+        Tools::setToolOutputMaxChars(m_config.toolOutputMaxChars);
         loadChatList();
         if (!m_currentChatId.isEmpty()) m_chatHistory->selectChatById(m_currentChatId);
         m_chatHistory->updateQuickSettings(m_config.model, m_config.toolConfirmation);

@@ -260,6 +260,7 @@ void WebServer::routeChatSend(const QString& chatId,
 
     Tools::setUserAgent(cfg.userAgent);
     Tools::setTimeout(cfg.toolTimeout);
+    Tools::setToolOutputMaxChars(cfg.toolOutputMaxChars);
 
     QJsonArray hist = chat["messages"].toArray();
     hist.append(QJsonObject{{"role","user"},{"content", displayContent}});
@@ -735,6 +736,7 @@ void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {
         cfg.preserveReasoning = f.contains("preserve_reasoning");
         if (f.contains("llm_timeout"))        cfg.llmTimeout       = f["llm_timeout"].toInt();
         if (f.contains("tool_timeout"))      cfg.toolTimeout      = f["tool_timeout"].toInt();
+        if (f.contains("tool_output_max_chars")) cfg.toolOutputMaxChars = f["tool_output_max_chars"].toInt();
         if (f.contains("context_keep_turns"))cfg.contextKeepTurns = f["context_keep_turns"].toInt();
         configSave(cfg);
         sendRedirect(socket, "/settings?saved=1");
@@ -812,6 +814,7 @@ QByteArray WebServer::renderSettingsPage() {
     html.replace("{{SYSTEM_MESSAGE}}",   cfg.systemMessage.toHtmlEscaped());
     html.replace("{{LLM_TIMEOUT}}",     QString::number(cfg.llmTimeout));
     html.replace("{{TOOL_TIMEOUT}}",     QString::number(cfg.toolTimeout));
+    html.replace("{{TOOL_OUTPUT_MAX}}",  QString::number(cfg.toolOutputMaxChars));
     html.replace("{{CONTEXT_KEEP_TURNS}}",QString::number(cfg.contextKeepTurns));
     html.replace("{{USER_AGENT}}",       cfg.userAgent.toHtmlEscaped());
     html.replace("{{CHATS_JSON}}",

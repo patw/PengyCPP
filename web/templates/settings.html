@@ -147,6 +147,10 @@
           <input name="tool_timeout" type="number" class="form-control" value="{{TOOL_TIMEOUT}}" min="1" max="3600">
         </div>
         <div class="mb-3">
+          <label class="form-label fw-semibold">Max Tool Output (chars, 0=no limit)</label>
+          <input name="tool_output_max_chars" type="number" class="form-control" value="{{TOOL_OUTPUT_MAX}}" min="0" max="500000" step="1000">
+        </div>
+        <div class="mb-3">
           <label class="form-label fw-semibold">Context Keep Turns</label>
           <input name="context_keep_turns" type="number" class="form-control" value="{{CONTEXT_KEEP_TURNS}}" min="0">
           <div class="form-text">Elide tool results older than N turns (0 = keep all)</div>

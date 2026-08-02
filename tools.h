@@ -11,6 +11,7 @@ const QJsonArray& toolDefinitions();
 bool       isReadOnly(const QString& name);
 void       setUserAgent(const QString& ua);
 void       setTimeout(int secs);
+void       setToolOutputMaxChars(int chars);
 QString    execute(const QString& name, const QJsonObject& args,
                    std::atomic<bool>* cancel = nullptr);
 

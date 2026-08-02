@@ -30,6 +30,7 @@ namespace Tools {
 
 static QString   g_userAgent = "PengyAgent/1.0";
 static int       g_timeout   = 300;
+static int       g_toolOutputMaxChars = 50000;
 static QMutex    g_mutex;
 
 // ── Sudo password provider (installed by the GUI before each LLM run) ─
@@ -64,6 +65,10 @@ void setUserAgent(const QString& ua) {
 void setTimeout(int secs) {
     QMutexLocker lock(&g_mutex);
     g_timeout = secs;
+}
+void setToolOutputMaxChars(int chars) {
+    QMutexLocker lock(&g_mutex);
+    g_toolOutputMaxChars = chars;
 }
 static QString userAgent() {
     QMutexLocker lock(&g_mutex);
@@ -408,6 +413,24 @@ static QString urldecode(const QString& s) {
 
 // ── Tool implementations ─────────────────────────────────────────────
 
+static QString snipMiddle(const QString& text) {
+    int limit = g_toolOutputMaxChars;
+    if (limit <= 0 || text.size() <= limit) return text;
+
+    int headChars = qMax(limit / 5, 500);
+    int tailChars = limit - headChars;
+
+    QString head = text.left(headChars);
+    QString tail = text.right(tailChars);
+
+    int snipped = text.size() - head.size() - tail.size();
+    return head
+        + QString("\n\n[... snipped %1 chars from middle — set tool_output_max_chars "
+                   "to change this limit (current: %2) ...]\n\n")
+              .arg(snipped).arg(limit)
+        + tail;
+}
+
 static QString toolReadFile(const QJsonObject& args) {
     QString path = expandHome(aStr(args, "path"));
     if (path.isEmpty()) return "Error: path is required.";
@@ -419,7 +442,7 @@ static QString toolReadFile(const QJsonObject& args) {
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
         return "Error reading file: " + f.errorString();
-    return QString::fromUtf8(f.readAll());
+    return snipMiddle(QString::fromUtf8(f.readAll()));
 }
 
 static QString toolWriteFile(const QJsonObject& args) {
@@ -622,7 +645,7 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
     if (proc.exitCode() != 0)
         out += QString("\n[Exit code: %1]").arg(proc.exitCode());
 
-    return out.trimmed().isEmpty() ? "(No output)" : out;
+    return out.trimmed().isEmpty() ? "(No output)" : snipMiddle(out);
 }
 
 // ── Web search metasearch ────────────────────────────────────────────
@@ -1396,7 +1419,7 @@ static QString toolRunPython(const QJsonObject& args) {
 
     if (proc.exitCode() != 0)
         out += QString("\n[Exit code: %1]").arg(proc.exitCode());
-    return out.trimmed().isEmpty() ? "(No output)" : out;
+    return out.trimmed().isEmpty() ? "(No output)" : snipMiddle(out);
 }
 
 // ── Directory tree ───────────────────────────────────────────────────

@@ -34,4 +34,5 @@ private:
     QComboBox*  m_themeAccent;
     QSpinBox*   m_llmTimeout;
     QSpinBox*   m_toolTimeout;
+    QSpinBox*   m_toolOutputMax;
 };
