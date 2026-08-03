@@ -31,7 +31,7 @@ namespace Tools {
 
 static QString   g_userAgent = "PengyAgent/1.0";
 static int       g_timeout   = 300;
-static int       g_toolOutputMaxChars = 50000;
+static int       g_toolOutputMaxChars = 250000;
 static QMutex    g_mutex;
 
 // ── Rate limiter for web searches ─────────────────────────────────────
@@ -1369,7 +1369,7 @@ static QString toolFetchUrl(const QJsonObject& args) {
         text = text.trimmed();
     }
 
-    const int maxChars = 50000;
+    const int maxChars = 250000;
     if (text.size() > maxChars) {
         text = text.left(maxChars) + "\n\n[... truncated at 50,000 characters ...]";
     }
@@ -1543,7 +1543,7 @@ static QString toolReadMultipleFiles(const QJsonObject& args) {
     if (pathsArr.isEmpty()) return "Error: no paths provided.";
 
     const int MAX_FILES    = 20;
-    const int MAX_PER_FILE = 50000;
+    const int MAX_PER_FILE = 250000;
     const int MAX_TOTAL    = 120000;
 
     if (pathsArr.size() > MAX_FILES)
