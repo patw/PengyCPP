@@ -1531,9 +1531,7 @@ static QString toolDirectoryTree(const QJsonObject& args) {
     if (lines.size() == 1) lines.append("(empty directory)");
 
     QString result = lines.join("\n");
-    if (result.size() > 40000)
-        result = result.left(40000) + "\n\n[... truncated at 40,000 characters ...]";
-    return result;
+    return snipMiddle(result);
 }
 
 // ── Read multiple files ──────────────────────────────────────────────
@@ -1544,7 +1542,7 @@ static QString toolReadMultipleFiles(const QJsonObject& args) {
 
     const int MAX_FILES    = 20;
     const int MAX_PER_FILE = 250000;
-    const int MAX_TOTAL    = 120000;
+    const int MAX_TOTAL    = 1250000;  // 5× the global tool output limit
 
     if (pathsArr.size() > MAX_FILES)
         return QString("Error: too many files (%1). Maximum is %2.").arg(pathsArr.size()).arg(MAX_FILES);
