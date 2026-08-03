@@ -82,6 +82,18 @@ endif()
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
     enable_testing()
+
+    # ChatView render-cache + auto-scroll regression tests (standalone binary,
+    # mirrors PengyR's gui/tests/test_chatview_markdown.cpp).
+    add_executable(pengy_chatview_test
+        test_chatview_scroll.cpp
+        chatview.cpp
+    )
+    target_compile_definitions(pengy_chatview_test PRIVATE PENGY_UNIT_TEST)
+    target_link_libraries(pengy_chatview_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg)
+    target_include_directories(pengy_chatview_test PRIVATE ${CMAKE_BINARY_DIR})
+    add_test(NAME PengyChatViewTest COMMAND pengy_chatview_test)
+
     add_executable(pengy_tests
         tests.cpp
         config.cpp

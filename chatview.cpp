@@ -18,6 +18,11 @@ ChatView::ChatView(QWidget* parent) : QTextBrowser(parent) {
     setOpenLinks(false);
     m_theme = makeTheme("system", "default");
     applyTheme(m_theme, m_scale);
+    // setHtml() programmatically resets the scrollbar to 0, which valueChanged
+    // would misread as "the user scrolled to the top." Track genuine user
+    // scrolls only; the m_rendering guard suppresses the spurious reset.
+    connect(verticalScrollBar(), &QScrollBar::valueChanged,
+            this, &ChatView::onScrollChanged);
 }
 
 void ChatView::applyTheme(const Theme& theme, int scale) {
@@ -124,6 +129,7 @@ void ChatView::clear() {
     m_htmlCache.clear();
     m_expandedTools.clear();
     m_expandedReasoning.clear();
+    m_autoScroll = true;
     QTextBrowser::clear();
 }
 
@@ -163,17 +169,35 @@ void ChatView::mousePressEvent(QMouseEvent* event) {
     QTextBrowser::mousePressEvent(event);
 }
 
+void ChatView::onScrollChanged(int value) {
+    // Update the pinned-to-bottom flag from a *genuine* user scroll.
+    // Suppressed while m_rendering: setHtml() programmatically resets the bar
+    // to 0, which is not a user action and must not clear our auto-scroll
+    // intent (the bug that made the view snap back up to old history).
+    if (m_rendering) return;
+    auto* sb = verticalScrollBar();
+    m_autoScroll = value >= sb->maximum() - 30;
+}
+
 void ChatView::render() {
     auto* sb = verticalScrollBar();
-    bool atBottom = sb->value() >= sb->maximum() - 30;
     int prev = sb->value();
-
+    // setHtml() rebuilds the document and resets the scrollbar to the top.
+    // Guard valueChanged for the setHtml + position-restore so that spurious
+    // reset-to-0 isn't read as "the user scrolled up." The deferred
+    // scroll-to-bottom below runs *after* the guard lifts, so its
+    // valueChanged correctly re-arms m_autoScroll.
+    m_rendering = true;
     setHtml(buildHtml());
-
-    if (atBottom) {
-        sb->setValue(sb->maximum());
+    if (m_autoScroll) {
+        m_rendering = false;
+        // maximum() is stale until Qt lays out the new document, so defer.
+        QTimer::singleShot(0, this, [this]() {
+            verticalScrollBar()->setValue(verticalScrollBar()->maximum());
+        });
     } else {
         sb->setValue(prev);
+        m_rendering = false;
     }
 }
 

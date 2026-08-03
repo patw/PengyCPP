@@ -42,6 +42,7 @@ public:
         invalidate(idx);
     }
     int testCacheSize() const { return m_htmlCache.size(); }
+    bool testAutoScroll() const { return m_autoScroll; }
 #endif
 
 protected:
@@ -50,6 +51,7 @@ protected:
 
 private slots:
     void onImageFetched(const QString& url, const QByteArray& data);
+    void onScrollChanged(int value);
 
 private:
     void render();
@@ -86,4 +88,12 @@ private:
     QMap<QString, QByteArray> m_imageCache;  // url -> raw bytes (empty = failed)
     QSet<QString> m_imagePending;            // urls currently being fetched
     QMutex m_imageMutex;
+
+    // Auto-scroll tracking. setHtml() replaces the whole document and resets
+    // the scrollbar to the top, so sb->value() right after a render is 0 —
+    // *not* a reliable "the user scrolled here" signal. We keep an explicit
+    // m_autoScroll flag updated only by genuine user scrolling (see
+    // onScrollChanged), and guard the spurious reset with m_rendering.
+    bool m_autoScroll = true;
+    bool m_rendering = false;
 };
