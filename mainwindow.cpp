@@ -592,6 +592,11 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
         session->thinking    = true;
         session->toolRunning = true;
         updateTabTitle(session);
+        // Refresh the status dot *before* unblocking the worker below —
+        // setToolRunning() forces an immediate repaint so the orange state
+        // is actually visible for auto-approved tools.
+        if (session == tabForChat(m_activeChatId))
+            updateQuickSettingsFor(session);
         session->chatView->appendMessage("tool_request", event);
 
         QString name = event["name"].toString();
@@ -626,6 +631,8 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
         session->toolRunning = false;
         session->thinking    = true;  // still thinking after tool result
         updateTabTitle(session);
+        if (session == tabForChat(m_activeChatId))
+            updateQuickSettingsFor(session);
         session->chatView->appendMessage("tool_result", event);
         QJsonObject toolMsg;
         toolMsg["role"]         = "tool";

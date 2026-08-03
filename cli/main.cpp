@@ -909,6 +909,22 @@ private:
 
 // ── Entry point ───────────────────────────────────────────────────────
 
+static const QStringList kOutputModes = {"pretty", "raw", "json", "silent"};
+
+/// Report a command-line usage error and exit 2, matching the other frontends.
+[[noreturn]] static void argError(const QString& msg) {
+    QTextStream(stderr) << "error: " << msg << "\n"
+                        << "Try 'pengy_cli --help' for more information.\n";
+    std::exit(2);
+}
+
+/// Consume the value following a flag, or fail if it is missing.
+static QString requireValue(const QStringList& args, int& i, const QString& flag) {
+    if (i + 1 >= args.size())
+        argError(QString("option '%1' requires a value").arg(flag));
+    return args[++i];
+}
+
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
 
@@ -942,17 +958,30 @@ int main(int argc, char* argv[]) {
             outln("  --system MSG     Set the system message (overrides config).");
             outln("  --output FORMAT  Output format: pretty, raw, json, silent (default: pretty).");
             outln("  --config-dir PATH  Use a custom config directory.");
+            outln("  --               Treat all remaining arguments as prompt text.");
             outln("  -v, --version    Show version information and exit.");
             outln("  -h, --help       Show this help message and exit.");
             return 0;
-        } else if (a == "--model" && i + 1 < args.size()) {
-            modelOverride = args[++i];
-        } else if (a == "--system" && i + 1 < args.size()) {
-            systemOverride = args[++i];
-        } else if (a == "--output" && i + 1 < args.size()) {
-            outputMode = args[++i];
-        } else if (a == "--config-dir" && i + 1 < args.size()) {
-            configDir = args[++i];
+        } else if (a == "--model") {
+            modelOverride = requireValue(args, i, "--model");
+        } else if (a == "--system") {
+            systemOverride = requireValue(args, i, "--system");
+        } else if (a == "--output") {
+            outputMode = requireValue(args, i, "--output");
+            if (!kOutputModes.contains(outputMode))
+                argError(QString("invalid --output value '%1' (expected: %2)")
+                             .arg(outputMode, kOutputModes.join(", ")));
+        } else if (a == "--config-dir") {
+            configDir = requireValue(args, i, "--config-dir");
+        } else if (a == "--") {
+            // Everything after -- is prompt text, even if it looks like a flag.
+            for (int j = i + 1; j < args.size(); j++)
+                promptArgs.append(args[j]);
+            break;
+        } else if (a.startsWith('-')) {
+            // Unrecognised flags used to be appended to the prompt, so a typo
+            // was silently sent to the model as part of the question.
+            argError(QString("unknown option '%1'").arg(a));
         } else {
             promptArgs.append(a);
         }

@@ -9,6 +9,7 @@
 #include <QJsonArray>
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
 #include "webchatworker.h"
 
 struct HttpRequest {
@@ -23,6 +24,10 @@ class WebServer : public QObject {
 public:
     explicit WebServer(const QString& host, quint16 port, QObject* parent = nullptr);
     bool start();
+
+    /// Hostnames this server may legitimately be reached as, from
+    /// --trusted-host. Needed only for a reverse proxy on a loopback bind.
+    void setTrustedHosts(const QStringList& hosts);
     quint16 port() const { return m_server->serverPort(); }
 
 private slots:
@@ -31,9 +36,10 @@ private slots:
     void onSocketDisconnected();
 
 private:
-    QString     m_host;
-    quint16     m_port;
-    QTcpServer* m_server;
+    QString       m_host;
+    quint16       m_port;
+    QSet<QString> m_trustedHosts;
+    QTcpServer*   m_server;
 
     QHash<QTcpSocket*, QByteArray>        m_buffers;
     QSet<QTcpSocket*>                     m_sseSockets;
@@ -41,6 +47,10 @@ private:
     QHash<QString, QList<QJsonObject>>    m_eventQueue;
     QHash<QString, WebChatWorker*>        m_workers;
     QHash<QString, QString>               m_pending;
+
+    // Returns false (and has already replied 403) if the request must be
+    // rejected as cross-origin or rebound-DNS.
+    bool checkRequestOrigin(const HttpRequest& req, QTcpSocket* socket);
 
     void handleRequest(const HttpRequest& req, QTcpSocket* socket);
 

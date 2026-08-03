@@ -82,9 +82,86 @@ void WebServer::onSocketDisconnected() {
     socket->deleteLater();
 }
 
+// ── Request origin guard ─────────────────────────────────────────────
+//
+// Pengy Web has no authentication: anything that can reach it runs tools as
+// the current user. Two browser-driven attacks defeat a loopback bind, since
+// both are issued by the user's own browser:
+//
+//   CSRF          — a page on any origin auto-submits a form to 127.0.0.1 and
+//                   rewrites settings (base_url, system_message, YOLO mode).
+//   DNS rebinding — an attacker domain re-resolves to 127.0.0.1, so the
+//                   browser treats it as same-origin and can *read* replies.
+//
+// Two cheap checks close both, with no tokens or sessions to thread through
+// the templates.
+
+// Strip any :port from a Host/Origin authority, keeping [::1] intact.
+static QString hostOnly(const QString& value) {
+    QString v = value.trimmed();
+    if (v.startsWith('[')) {                       // bracketed IPv6 literal
+        int end = v.indexOf(']');
+        if (end != -1) return v.left(end + 1).toLower();
+    }
+    // Only strip a trailing :port when it is unambiguous. A bare IPv6 literal
+    // such as "::1" (from --host ::1) has many colons and no port.
+    if (v.count(':') == 1) v = v.left(v.indexOf(':'));
+    return v.toLower();
+}
+
+static bool isLoopbackHost(const QString& host) {
+    static const QSet<QString> kLoopback = {"localhost", "127.0.0.1", "::1", "[::1]"};
+    return kLoopback.contains(host);
+}
+
+void WebServer::setTrustedHosts(const QStringList& hosts) {
+    m_trustedHosts.clear();
+    for (const QString& h : hosts)
+        if (!h.trimmed().isEmpty())
+            m_trustedHosts.insert(hostOnly(h));
+}
+
+bool WebServer::checkRequestOrigin(const HttpRequest& req, QTcpSocket* socket) {
+    const QString host = hostOnly(req.headers.value("host"));
+
+    // 1. DNS rebinding: when bound to loopback the browser should only ever
+    //    address us as localhost (or a --trusted-host name, for a proxy). An
+    //    attacker-controlled name resolving to 127.0.0.1 arrives with that
+    //    name in Host, so it fails here. Skipped when the operator explicitly
+    //    bound a non-loopback address — they are fronting this with a proxy or
+    //    VM boundary, and Host is then an arbitrary domain of their choosing.
+    if (isLoopbackHost(hostOnly(m_host))) {
+        if (!isLoopbackHost(host) && !m_trustedHosts.contains(host)) {
+            sendJson(socket, 403, {{"error", "Invalid Host header"}});
+            return false;
+        }
+    }
+
+    // 2. CSRF: accept an Origin matching the Host the request was actually
+    //    sent to, or any --trusted-host (a proxy may forward its own upstream
+    //    Host while the browser reports the public origin). An attacker page's
+    //    Origin is its own, and never either of those. Origin is absent on
+    //    non-browser clients (curl) and on same-origin GETs, so only enforce
+    //    it when present.
+    if (req.method != "GET" && req.method != "HEAD" && req.method != "OPTIONS") {
+        const QString origin = req.headers.value("origin");
+        if (!origin.isEmpty()) {
+            const QString originHost = hostOnly(QUrl(origin).authority());
+            if (originHost != host && !m_trustedHosts.contains(originHost)) {
+                sendJson(socket, 403, {{"error", "Cross-origin request blocked"}});
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 // ── Routing ──────────────────────────────────────────────────────────
 
 void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
+    if (!checkRequestOrigin(req, socket)) return;
+
     QString path = req.path;
     int q = path.indexOf('?');
     if (q >= 0) path = path.left(q);
