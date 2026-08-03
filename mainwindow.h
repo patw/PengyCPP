@@ -7,6 +7,7 @@
 #include <QPushButton>
 #include <QTabWidget>
 #include <QMap>
+#include <QVector>
 
 class ChatHistoryWidget;
 class ChatView;
@@ -81,6 +82,10 @@ private:
     // Tab state
     QMap<QString, TabSession> m_openTabs;
     QMap<ChatWorker*, QString> m_workerToChat;
+    // Workers whose tab moved on (Stop / new message) but whose thread may
+    // still be running.  Kept so closeEvent can wait for them before the
+    // MainWindow (their parent) is destroyed.
+    QVector<ChatWorker*> m_abandonedWorkers;
 
     QTimer*     m_confirmTimer = nullptr;
     bool        m_sudoDialogOpen = false;

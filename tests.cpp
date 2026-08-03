@@ -22,6 +22,9 @@
 #include "llmclient.h"
 #include "web/webserver.h"
 #include <QTcpServer>
+#ifdef Q_OS_UNIX
+#include <unistd.h>
+#endif
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -777,6 +780,53 @@ private slots:
 
         QString result = Tools::execute("read_file", QJsonObject{{"path", path}});
         QCOMPARE(result, "dispatch content");
+    }
+
+    // ── Tools: per-run ToolContext isolation ────────────────────────
+
+    void toolContextSudoProviderPerContext() {
+        Tools::ToolContext a, b;
+        a.setSudoProvider([] { return QString("pw-a"); });
+        b.setSudoProvider([] { return QString("pw-b"); });
+        QCOMPARE(a.sudoProvider()(), QString("pw-a"));
+        QCOMPARE(b.sudoProvider()(), QString("pw-b"));
+    }
+
+    void toolContextCachedPasswordNotShared() {
+        Tools::ToolContext a, b;
+        a.setCachedSudoPassword("secret");
+        QVERIFY(b.cachedSudoPassword().isEmpty());
+        a.clearSudo();
+        QVERIFY(a.cachedSudoPassword().isEmpty());
+    }
+
+    void toolContextRunBashRefusesSudoWithoutProvider() {
+        // A context with no provider must refuse sudo regardless of the default.
+        Tools::ToolContext ctx;
+        QString r = Tools::execute("run_bash",
+                                   QJsonObject{{"command", "sudo true"}},
+                                   nullptr, &ctx);
+        QVERIFY(r.contains("no password provider"));
+    }
+
+    void toolContextKillAllOnlyAffectsOwn() {
+#ifdef Q_OS_UNIX
+        Tools::ToolContext a, b;
+        QProcess proc;
+        proc.setProgram("sleep");
+        proc.setArguments({"30"});
+        proc.setChildProcessModifier([] { setsid(); });
+        proc.start();
+        QVERIFY(proc.waitForStarted(3000));
+        qint64 pid = proc.processId();
+        b.registerProcess(pid);
+
+        a.killAll();                       // must NOT kill b's process
+        QCOMPARE(proc.state(), QProcess::Running);
+
+        b.killAll();                       // now it should die
+        QVERIFY(proc.waitForFinished(5000));
+#endif
     }
 
     // ── Web server: startup ──────────────────────────────────────────

@@ -33,29 +33,64 @@ static int       g_timeout   = 300;
 static int       g_toolOutputMaxChars = 50000;
 static QMutex    g_mutex;
 
-// ── Sudo password provider (installed by the GUI before each LLM run) ─
-static Tools::SudoPasswordFn g_sudoProvider;
-static QString               g_cachedSudoPassword;
-static QMutex                g_sudoMutex;
-
-// ── Active process group tracking ─────────────────────────────────────
-static QSet<qint64>  g_activeProcessGroups;
-static QMutex        g_processMutex;
-
 // ── Rate limiter for web searches ─────────────────────────────────────
 static QElapsedTimer g_lastSearchTimer;
 static bool          g_lastSearchTimerStarted = false;
 static QMutex        g_searchTimerMutex;
 
+static void terminateProcessGroup(qint64 pid);   // fwd decl
+
+// ── ToolContext (per-run sudo + subprocess state) ─────────────────────
+
+void ToolContext::setSudoProvider(SudoPasswordFn fn) {
+    QMutexLocker lock(&m_mutex);
+    m_sudoProvider = std::move(fn);
+    m_cachedSudoPassword.clear();
+}
+SudoPasswordFn ToolContext::sudoProvider() {
+    QMutexLocker lock(&m_mutex);
+    return m_sudoProvider;
+}
+QString ToolContext::cachedSudoPassword() {
+    QMutexLocker lock(&m_mutex);
+    return m_cachedSudoPassword;
+}
+void ToolContext::setCachedSudoPassword(const QString& pw) {
+    QMutexLocker lock(&m_mutex);
+    m_cachedSudoPassword = pw;
+}
+void ToolContext::clearSudo() {
+    QMutexLocker lock(&m_mutex);
+    m_cachedSudoPassword.clear();
+}
+void ToolContext::registerProcess(qint64 pid) {
+    QMutexLocker lock(&m_mutex);
+    m_procs.insert(pid);
+}
+void ToolContext::unregisterProcess(qint64 pid) {
+    QMutexLocker lock(&m_mutex);
+    m_procs.remove(pid);
+}
+void ToolContext::killAll() {
+    QSet<qint64> procs;
+    {
+        QMutexLocker lock(&m_mutex);
+        procs = m_procs;
+        m_procs.clear();
+    }
+    for (qint64 pid : procs) {
+        terminateProcessGroup(pid);
+    }
+}
+
+// Context used by callers that don't pass their own (CLI, Web, direct calls).
+static ToolContext g_defaultContext;
+
 void setSudoPasswordProvider(SudoPasswordFn fn) {
-    QMutexLocker lock(&g_sudoMutex);
-    g_sudoProvider = std::move(fn);
-    g_cachedSudoPassword.clear();
+    g_defaultContext.setSudoProvider(std::move(fn));
 }
 void clearSudoPasswordProvider() {
-    QMutexLocker lock(&g_sudoMutex);
-    g_sudoProvider = nullptr;
-    g_cachedSudoPassword.clear();
+    g_defaultContext.setSudoProvider(nullptr);
 }
 
 void setUserAgent(const QString& ua) {
@@ -81,16 +116,6 @@ static int toolTimeout() {
 
 // ── Process group management ──────────────────────────────────────────
 
-static void registerProcess(qint64 pid) {
-    QMutexLocker lock(&g_processMutex);
-    g_activeProcessGroups.insert(pid);
-}
-
-static void unregisterProcess(qint64 pid) {
-    QMutexLocker lock(&g_processMutex);
-    g_activeProcessGroups.remove(pid);
-}
-
 static void terminateProcessGroup(qint64 pid) {
 #ifdef Q_OS_UNIX
     QProcess::execute("kill", {"-9", QString("-%1").arg(pid)});
@@ -100,11 +125,7 @@ static void terminateProcessGroup(qint64 pid) {
 }
 
 void killActiveProcesses() {
-    QMutexLocker lock(&g_processMutex);
-    for (qint64 pid : g_activeProcessGroups) {
-        terminateProcessGroup(pid);
-    }
-    g_activeProcessGroups.clear();
+    g_defaultContext.killAll();
 }
 
 // ── Tool schema helpers ───────────────────────────────────────────────
@@ -517,7 +538,8 @@ static QString toolReplaceInFile(const QJsonObject& args) {
 
 // ── Bash (with temp file output & process groups) ────────────────────
 
-static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
+static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
+                           ToolContext* ctx) {
     QString command = aStr(args, "command");
     if (command.isEmpty()) return "Error: command is required.";
 
@@ -529,19 +551,16 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
     bool needsSudo = sudoRx.match(command).hasMatch();
 
     if (needsSudo) {
-        QMutexLocker lock(&g_sudoMutex);
-        if (g_cachedSudoPassword.isEmpty()) {
-            if (!g_sudoProvider) {
+        if (ctx->cachedSudoPassword().isEmpty()) {
+            auto provider = ctx->sudoProvider();
+            if (!provider) {
                 return "Error: sudo detected but no password provider is configured.";
             }
-            auto provider = g_sudoProvider;
-            lock.unlock();
             QString pw = provider();
-            lock.relock();
             if (pw.isEmpty()) {
                 return "Cancelled: sudo password not provided.";
             }
-            g_cachedSudoPassword = pw;
+            ctx->setCachedSudoPassword(pw);
         }
         // Only rewrite the first eligible "sudo" (not already followed by -S);
         // the piped password is consumed once, so rewriting every occurrence
@@ -577,12 +596,12 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
     }
 
     qint64 pid = proc.processId();
-    registerProcess(pid);
+    ctx->registerProcess(pid);
 
     if (needsSudo) {
-        QMutexLocker lock(&g_sudoMutex);
-        if (!g_cachedSudoPassword.isEmpty()) {
-            proc.write((g_cachedSudoPassword + "\n").toUtf8());
+        QString cachedPw = ctx->cachedSudoPassword();
+        if (!cachedPw.isEmpty()) {
+            proc.write((cachedPw + "\n").toUtf8());
         }
     }
     proc.closeWriteChannel();
@@ -597,7 +616,7 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
                 terminateProcessGroup(pid);
                 proc.kill();
                 proc.waitForFinished(2000);
-                unregisterProcess(pid);
+                ctx->unregisterProcess(pid);
                 removeOutputFiles(tmpFiles);
                 return "Error: Command was cancelled.";
             }
@@ -606,7 +625,7 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
                 terminateProcessGroup(pid);
                 proc.kill();
                 proc.waitForFinished(2000);
-                unregisterProcess(pid);
+                ctx->unregisterProcess(pid);
                 QString out = readAndRemove(tmpFiles.stdoutPath);
                 QString err = readAndRemove(tmpFiles.stderrPath);
                 QString result = out;
@@ -622,13 +641,13 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel) {
             terminateProcessGroup(pid);
             proc.kill();
             proc.waitForFinished(2000);
-            unregisterProcess(pid);
+            ctx->unregisterProcess(pid);
             removeOutputFiles(tmpFiles);
             return QString("Error: Command timed out after %1 seconds.").arg(timeoutSecs);
         }
     }
 
-    unregisterProcess(pid);
+    ctx->unregisterProcess(pid);
 
     QString out = readAndRemove(tmpFiles.stdoutPath);
     QString err = readAndRemove(tmpFiles.stderrPath);
@@ -1359,7 +1378,7 @@ static QString pythonInterpreter() {
     return "python3";
 }
 
-static QString toolRunPython(const QJsonObject& args) {
+static QString toolRunPython(const QJsonObject& args, ToolContext* ctx) {
     QString code = aStr(args, "code");
     if (code.isEmpty()) return "Error: code is required.";
 
@@ -1396,19 +1415,19 @@ static QString toolRunPython(const QJsonObject& args) {
     }
 
     qint64 pid = proc.processId();
-    registerProcess(pid);
+    ctx->registerProcess(pid);
 
     int timeoutMs = toolTimeout() > 0 ? toolTimeout() * 1000 : -1;
     if (!proc.waitForFinished(timeoutMs)) {
         terminateProcessGroup(pid);
         proc.kill();
         proc.waitForFinished(2000);
-        unregisterProcess(pid);
+        ctx->unregisterProcess(pid);
         removeOutputFiles(tmpFiles);
         return "Error: Python execution timed out.";
     }
 
-    unregisterProcess(pid);
+    ctx->unregisterProcess(pid);
 
     QString out = readAndRemove(tmpFiles.stdoutPath);
     QString err = readAndRemove(tmpFiles.stderrPath);
@@ -1736,15 +1755,17 @@ static QString toolSearchContent(const QJsonObject& args) {
 
 // ── Dispatcher ────────────────────────────────────────────────────────
 
-QString execute(const QString& name, const QJsonObject& args, std::atomic<bool>* cancel) {
+QString execute(const QString& name, const QJsonObject& args,
+                std::atomic<bool>* cancel, ToolContext* ctx) {
+    if (!ctx) ctx = &g_defaultContext;
     if (name == "read_file")          return toolReadFile(args);
     if (name == "write_file")         return toolWriteFile(args);
     if (name == "replace_in_file")    return toolReplaceInFile(args);
-    if (name == "run_bash")           return toolRunBash(args, cancel);
+    if (name == "run_bash")           return toolRunBash(args, cancel, ctx);
     if (name == "web_search")         return toolWebSearch(args);
     if (name == "download_file")      return toolDownloadFile(args);
     if (name == "fetch_url")          return toolFetchUrl(args);
-    if (name == "run_python")         return toolRunPython(args);
+    if (name == "run_python")         return toolRunPython(args, ctx);
     if (name == "directory_tree")     return toolDirectoryTree(args);
     if (name == "read_multiple_files") return toolReadMultipleFiles(args);
     if (name == "search_content")     return toolSearchContent(args);

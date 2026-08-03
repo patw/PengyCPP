@@ -783,12 +783,20 @@ void MainWindow::onWorkerFinished() {
 void MainWindow::abandonWorkerFor(TabSession* session) {
     if (!session->worker) return;
 
-    m_workerToChat.remove(session->worker);
-    session->worker->cancel();
+    ChatWorker* worker = session->worker;
+    m_workerToChat.remove(worker);
+    worker->cancel();
 
-    // Disconnect signals — the worker's internal thread will still run
-    // to completion and emit finished(), but we no longer listen.
-    disconnect(session->worker, nullptr, this, nullptr);
+    // Stop listening for UI updates, but keep the worker alive and tracked so
+    // closeEvent can wait for its thread before we (its parent) are destroyed.
+    // Its thread still runs to completion; reap + delete it when it finishes.
+    disconnect(worker, nullptr, this, nullptr);
+    m_abandonedWorkers.append(worker);
+    connect(worker, &ChatWorker::finished, this, [this, worker] {
+        m_abandonedWorkers.removeOne(worker);
+        worker->deleteLater();
+    }, Qt::QueuedConnection);
+
     session->worker = nullptr;
 }
 
@@ -859,5 +867,22 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         if (!session.chat.isEmpty())
             chatSave(session.chat);
     }
+
+    // Cancel every live worker (open tabs + already-abandoned ones) and wait
+    // for its thread to stop.  Workers are parented to this window, so letting
+    // one run past our destruction would use-after-free `this` in its thread.
+    QVector<ChatWorker*> workers;
+    for (auto& session : m_openTabs) {
+        if (session.worker) workers.append(session.worker);
+    }
+    workers += m_abandonedWorkers;
+
+    for (ChatWorker* w : workers) {
+        if (w) w->cancel();
+    }
+    for (ChatWorker* w : workers) {
+        if (w) w->wait(3000);
+    }
+
     QMainWindow::closeEvent(event);
 }

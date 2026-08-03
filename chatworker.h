@@ -4,6 +4,11 @@
 #include <QWaitCondition>
 #include <QJsonArray>
 #include <QString>
+#include <limits.h>
+
+#include "tools.h"
+
+class QThread;
 
 class ChatWorker : public QObject {
     Q_OBJECT
@@ -21,6 +26,11 @@ public:
     bool isSudoPending() const;
     void sendSudoPassword(const QString& password);
     void cancelSudo();
+
+    // Thread lifetime — used by closeEvent to wait for a run to stop before
+    // the worker (parented to MainWindow) is destroyed, avoiding a UAF.
+    bool isRunning() const;
+    bool wait(unsigned long ms = ULONG_MAX);
 
 signals:
     void eventReceived(const QString& eventJson);
@@ -47,4 +57,10 @@ private:
     QString    m_baseUrl, m_apiKey, m_model, m_toolConfirmation, m_reasoningEffort;
     bool       m_preserveReasoning = false;
     QJsonArray m_messages;
+
+    QThread*   m_thread = nullptr;
+
+    // Per-run tool state so concurrent tabs don't share a sudo provider
+    // or kill each other's subprocesses.
+    Tools::ToolContext m_toolContext;
 };

@@ -6,6 +6,8 @@
 #include <atomic>
 #include <utility>
 
+namespace Tools { class ToolContext; }
+
 struct LlmParams {
     QString   baseUrl;
     QString   apiKey;
@@ -15,6 +17,7 @@ struct LlmParams {
     QString   reasoningEffort;  // empty = provider default / omit
     bool      preserveReasoning = false;
     int       llmTimeout        = 300;
+    Tools::ToolContext* toolContext = nullptr;  // per-run sudo/subprocess scope
 };
 
 struct LlmResponse {

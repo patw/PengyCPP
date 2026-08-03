@@ -29,8 +29,10 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
         m_sudoPassword.clear();
     }
 
-    // Install a sudo password provider that blocks on QWaitCondition
-    Tools::setSudoPasswordProvider([this]() -> QString {
+    // Install a per-run sudo password provider that blocks on QWaitCondition.
+    // Scoped to this worker's ToolContext so concurrent tabs never clobber
+    // one another's provider or cached password.
+    m_toolContext.setSudoProvider([this]() -> QString {
         QMutexLocker lock(&m_sudoMutex);
         m_sudoPending = true;
         // Wait for main thread to provide password or cancel
@@ -43,6 +45,7 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
 
     auto* thread = QThread::create([this] {
         LlmParams params{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation, m_reasoningEffort, m_preserveReasoning};
+        params.toolContext = &m_toolContext;
 
         LlmClient::EventFn onEvent = [this](const QJsonObject& ev) {
             if (m_cancelled) return;
@@ -68,17 +71,27 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
         LlmClient client;
         client.run(params, onEvent, onConfirm, isCancelled);
 
-        Tools::clearSudoPasswordProvider();
+        m_toolContext.clearSudo();
         emit finished();
     });
 
+    m_thread = thread;
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    connect(thread, &QThread::finished, this, [this] { m_thread = nullptr; });
     thread->start();
+}
+
+bool ChatWorker::isRunning() const {
+    return m_thread && m_thread->isRunning();
+}
+
+bool ChatWorker::wait(unsigned long ms) {
+    return m_thread ? m_thread->wait(ms) : true;
 }
 
 void ChatWorker::cancel() {
     m_cancelled = true;
-    Tools::killActiveProcesses();
+    m_toolContext.killAll();
     {
         QMutexLocker lock(&m_mutex);
         m_confirmState.status = 3;  // declined

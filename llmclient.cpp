@@ -284,7 +284,7 @@ void LlmClient::run(const LlmParams& params,
                 bool    declined = false;
 
                 if (confirmed) {
-                    result = Tools::execute(name, argsObj);
+                    result = Tools::execute(name, argsObj, nullptr, params.toolContext);
                 } else {
                     result   = "Tool execution was declined by user.";
                     declined = true;
