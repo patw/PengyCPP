@@ -523,8 +523,8 @@ private slots:
 
     // ── Tools: definitions ──────────────────────────────────────────
 
-    void toolDefinitionsHasEleven() {
-        QCOMPARE(Tools::toolDefinitions().size(), 11);
+    void toolDefinitionsHasFourteen() {
+        QCOMPARE(Tools::toolDefinitions().size(), 14);
     }
 
     void toolDefinitionsAllFunctionType() {
@@ -538,7 +538,7 @@ private slots:
         for (const QJsonValue& v : Tools::toolDefinitions()) {
             names.insert(v.toObject()["function"].toObject()["name"].toString());
         }
-        QCOMPARE(names.size(), 11);
+        QCOMPARE(names.size(), 14);
     }
 
     void toolDefinitionsAllHaveRequired() {
@@ -557,7 +557,7 @@ private slots:
         QByteArray json = QJsonDocument(defs).toJson();
         QJsonDocument parsed = QJsonDocument::fromJson(json);
         QVERIFY(parsed.isArray());
-        QCOMPARE(parsed.array().size(), 11);
+        QCOMPARE(parsed.array().size(), 14);
     }
 
     // ── Tools: read_file ────────────────────────────────────────────
@@ -780,6 +780,145 @@ private slots:
 
         QString result = Tools::execute("read_file", QJsonObject{{"path", path}});
         QCOMPARE(result, "dispatch content");
+    }
+
+    // ── Tools: glob ─────────────────────────────────────────────────
+
+    void globFindsPyFiles() {
+        QTemporaryDir dir;
+        { QFile f(dir.path() + "/a.py"); f.open(QIODevice::WriteOnly); f.write("x"); }
+        { QFile f(dir.path() + "/b.rs"); f.open(QIODevice::WriteOnly); f.write("y"); }
+        QDir(dir.path()).mkdir("sub");
+        { QFile f(dir.path() + "/sub/c.py"); f.open(QIODevice::WriteOnly); f.write("z"); }
+
+        QString result = Tools::execute("glob",
+            QJsonObject{{"pattern", "**/*.py"}, {"path", dir.path()}});
+        QVERIFY(result.contains("a.py"));
+        QVERIFY(result.contains("sub/c.py"));
+        QVERIFY(!result.contains("b.rs"));
+    }
+
+    void globNoMatches() {
+        QTemporaryDir dir;
+        QString result = Tools::execute("glob",
+            QJsonObject{{"pattern", "*.xyz"}, {"path", dir.path()}});
+        QVERIFY(result.contains("No files matching"));
+    }
+
+    void globSkipsHiddenByDefault() {
+        QTemporaryDir dir;
+        { QFile f(dir.path() + "/.hidden.py"); f.open(QIODevice::WriteOnly); f.write("x"); }
+        { QFile f(dir.path() + "/visible.py"); f.open(QIODevice::WriteOnly); f.write("y"); }
+
+        QString result = Tools::execute("glob",
+            QJsonObject{{"pattern", "*.py"}, {"path", dir.path()}});
+        QVERIFY(result.contains("visible.py"));
+        QVERIFY(!result.contains(".hidden.py"));
+    }
+
+    void globSkipsNodeModules() {
+        QTemporaryDir dir;
+        QDir(dir.path()).mkdir("node_modules");
+        { QFile f(dir.path() + "/node_modules/foo.js"); f.open(QIODevice::WriteOnly); f.write("x"); }
+        { QFile f(dir.path() + "/src.js"); f.open(QIODevice::WriteOnly); f.write("y"); }
+
+        QString result = Tools::execute("glob",
+            QJsonObject{{"pattern", "**/*.js"}, {"path", dir.path()}});
+        QVERIFY(result.contains("src.js"));
+        QVERIFY(!result.contains("node_modules"));
+    }
+
+    void globDirectoriesShowSlash() {
+        QTemporaryDir dir;
+        QDir(dir.path()).mkdir("mydir");
+
+        QString result = Tools::execute("glob",
+            QJsonObject{{"pattern", "*"}, {"path", dir.path()}});
+        QVERIFY(result.contains("mydir/"));
+    }
+
+    // ── Tools: todowrite ────────────────────────────────────────────
+
+    void todowriteEchoesBackValidTodos() {
+        QJsonArray todos;
+        todos.append(QJsonObject{{"content", "Find auth code"}, {"status", "in_progress"}});
+        todos.append(QJsonObject{{"content", "Add JWT"}, {"status", "pending"}});
+        todos.append(QJsonObject{{"content", "Write tests"}, {"status", "pending"}});
+
+        QString result = Tools::execute("todowrite", QJsonObject{{"todos", todos}});
+        QVERIFY(result.contains("[→] Find auth code"));
+        QVERIFY(result.contains("[ ] Add JWT"));
+        QVERIFY(result.contains("[ ] Write tests"));
+    }
+
+    void todowriteRejectsMultipleInProgress() {
+        QJsonArray todos;
+        todos.append(QJsonObject{{"content", "Task A"}, {"status", "in_progress"}});
+        todos.append(QJsonObject{{"content", "Task B"}, {"status", "in_progress"}});
+
+        QString result = Tools::execute("todowrite", QJsonObject{{"todos", todos}});
+        QVERIFY(result.contains("Error"));
+        QVERIFY(result.contains("in_progress"));
+    }
+
+    void todowriteRejectsInvalidStatus() {
+        QJsonArray todos;
+        todos.append(QJsonObject{{"content", "Task A"}, {"status", "done"}});
+
+        QString result = Tools::execute("todowrite", QJsonObject{{"todos", todos}});
+        QVERIFY(result.contains("invalid status"));
+    }
+
+    void todowriteRejectsEmptyContent() {
+        QJsonArray todos;
+        todos.append(QJsonObject{{"content", ""}, {"status", "pending"}});
+
+        QString result = Tools::execute("todowrite", QJsonObject{{"todos", todos}});
+        QVERIFY(result.contains("content is empty"));
+    }
+
+    void todowriteRejectsEmptyList() {
+        QString result = Tools::execute("todowrite",
+            QJsonObject{{"todos", QJsonArray()}});
+        QVERIFY(result.contains("empty"));
+    }
+
+    void todowriteAllPendingIsValid() {
+        QJsonArray todos;
+        todos.append(QJsonObject{{"content", "Task A"}, {"status", "pending"}});
+        todos.append(QJsonObject{{"content", "Task B"}, {"status", "pending"}});
+
+        QString result = Tools::execute("todowrite", QJsonObject{{"todos", todos}});
+        QVERIFY(!result.contains("Error"));
+    }
+
+    void todowriteAllowsAllCompleted() {
+        QJsonArray todos;
+        todos.append(QJsonObject{{"content", "Task A"}, {"status", "completed"}});
+        todos.append(QJsonObject{{"content", "Task B"}, {"status", "completed"}});
+
+        QString result = Tools::execute("todowrite", QJsonObject{{"todos", todos}});
+        QVERIFY(result.contains("[✓]"));
+    }
+
+    // ── Tools: ask_user_question ────────────────────────────────────
+
+    void askUserQuestionDefinitionExists() {
+        bool found = false;
+        for (const QJsonValue& v : Tools::toolDefinitions()) {
+            if (v.toObject()["function"].toObject()["name"].toString() == "ask_user_question")
+                found = true;
+        }
+        QVERIFY(found);
+    }
+
+    void askUserQuestionExecuteReturnsHarnessMessage() {
+        QString result = Tools::execute("ask_user_question", QJsonObject());
+        QVERIFY(result.contains("harness"));
+    }
+
+    void askUserQuestionIsNotReadonly() {
+        QVERIFY(!Tools::isReadOnly("ask_user_question"));
     }
 
     // ── Tools: per-run ToolContext isolation ────────────────────────
@@ -1223,7 +1362,7 @@ private slots:
 
         QCOMPARE(stub.requests.size(), 1);
         QCOMPARE(stub.requests[0]["model"].toString(), QString("stub-model"));
-        QCOMPARE(stub.requests[0]["tools"].toArray().size(), 11);
+        QCOMPARE(stub.requests[0]["tools"].toArray().size(), 14);
         QVERIFY(!stub.requests[0].contains("reasoning_effort"));
     }
 

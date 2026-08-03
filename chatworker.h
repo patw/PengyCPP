@@ -27,6 +27,8 @@ public:
     bool isSudoPending() const;
     void sendSudoPassword(const QString& password);
     void cancelSudo();
+    void sendQuestionAnswers(const QStringList& answers);
+    bool isQuestionPending() const;
 
     // Thread lifetime — used by closeEvent to wait for a run to stop before
     // the worker (parented to MainWindow) is destroyed, avoiding a UAF.
@@ -37,6 +39,7 @@ signals:
     void eventReceived(const QString& eventJson);
     void finished();
     void errorOccurred(const QString& message);
+    void questionRequested();
 
 private:
     struct ConfirmState {
@@ -64,4 +67,11 @@ private:
     // Per-run tool state so concurrent tabs don't share a sudo provider
     // or kill each other's subprocesses.
     Tools::ToolContext m_toolContext;
+
+    // Question state
+    mutable QMutex  m_questionMutex;
+    QWaitCondition  m_questionCond;
+    bool            m_questionPending = false;
+    QStringList     m_questionAnswers;
+    QJsonArray      m_pendingQuestions;
 };

@@ -107,7 +107,8 @@ static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
 void LlmClient::run(const LlmParams& params,
                     EventFn   onEvent,
                     ConfirmFn onConfirm,
-                    CancelFn  isCancelled) {
+                    CancelFn  isCancelled,
+                    QuestionFn onQuestion) {
 
     enum class TcMode { All, Safe, None };
     TcMode tcMode = TcMode::None;
@@ -257,6 +258,58 @@ void LlmClient::run(const LlmParams& params,
                 QString     name  = fn["name"].toString();
                 QString     argsStr = fn["arguments"].toString();
                 QJsonObject argsObj = QJsonDocument::fromJson(argsStr.toUtf8()).object();
+
+                // ask_user_question is handled at the harness level
+                if (name == "ask_user_question") {
+                    QJsonArray questions = argsObj["questions"].toArray();
+                    onEvent(QJsonObject{
+                        {"type",         "question_request"},
+                        {"name",         name},
+                        {"args",         argsObj},
+                        {"tool_call_id", tcId},
+                        {"questions",    questions}
+                    });
+                    QStringList answers = onQuestion(questions);
+                    QJsonObject toolMsg;
+                    toolMsg["role"]         = "tool";
+                    toolMsg["tool_call_id"] = tcId;
+                    if (!answers.isEmpty()) {
+                        // Format answers as tool result
+                        QStringList answerLines;
+                        for (int i = 0; i < questions.size(); ++i) {
+                            QJsonObject q = questions[i].toObject();
+                            QString header = q["header"].toString();
+                            QString answer = i < answers.size() ? answers[i] : "(no answer)";
+                            QJsonArray opts = q["options"].toArray();
+                            QString detail;
+                            for (const QJsonValue& ov : opts) {
+                                QJsonObject opt = ov.toObject();
+                                if (opt["label"].toString() == answer)
+                                    detail = " — " + opt["description"].toString();
+                            }
+                            answerLines.append(QString("**%1**: %2%3").arg(header, answer, detail));
+                        }
+                        toolMsg["content"] = answerLines.join("\n");
+                        onEvent(QJsonObject{
+                            {"type",         "question_result"},
+                            {"tool_call_id", tcId},
+                            {"name",         name},
+                            {"content",      answerLines.join("\n")}
+                        });
+                    } else {
+                        toolMsg["content"] = "User cancelled the question.";
+                        onEvent(QJsonObject{
+                            {"type",         "tool_result"},
+                            {"tool_call_id", tcId},
+                            {"name",         name},
+                            {"args",         argsObj},
+                            {"content",      "User cancelled the question."},
+                            {"declined",     true}
+                        });
+                    }
+                    current.append(toolMsg);
+                    continue;
+                }
 
                 bool skipConfirm =
                     tcMode == TcMode::All ||

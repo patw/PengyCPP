@@ -68,8 +68,20 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
             return {confirmed, yolo};
         };
 
+        LlmClient::QuestionFn onQuestion = [this](const QJsonArray& questions) -> QStringList {
+            m_pendingQuestions = questions;
+            m_questionPending = true;
+            emit questionRequested();
+            QMutexLocker lock(&m_questionMutex);
+            while (m_questionPending && !m_cancelled) {
+                m_questionCond.wait(&m_questionMutex);
+            }
+            if (m_cancelled) return QStringList();
+            return m_questionAnswers;
+        };
+
         LlmClient client;
-        client.run(params, onEvent, onConfirm, isCancelled);
+        client.run(params, onEvent, onConfirm, isCancelled, onQuestion);
 
         m_toolContext.clearSudo();
         emit finished();
@@ -102,6 +114,11 @@ void ChatWorker::cancel() {
         m_sudoPending = false;
         m_sudoCond.wakeAll();
     }
+    {
+        QMutexLocker lock(&m_questionMutex);
+        m_questionPending = false;
+        m_questionCond.wakeAll();
+    }
 }
 
 void ChatWorker::sendConfirmation(bool confirmed, bool yoloTurn) {
@@ -128,4 +145,15 @@ void ChatWorker::cancelSudo() {
     m_sudoPassword.clear();
     m_sudoPending = false;
     m_sudoCond.wakeAll();
+}
+
+void ChatWorker::sendQuestionAnswers(const QStringList& answers) {
+    QMutexLocker lock(&m_questionMutex);
+    m_questionAnswers = answers;
+    m_questionPending = false;
+    m_questionCond.wakeAll();
+}
+
+bool ChatWorker::isQuestionPending() const {
+    return m_questionPending;
 }

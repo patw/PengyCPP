@@ -31,11 +31,13 @@ public:
     using EventFn   = std::function<void(const QJsonObject&)>;
     using CancelFn  = std::function<bool()>;
     // Returns {confirmed, yoloTurn}
-    using ConfirmFn = std::function<std::pair<bool,bool>()>;
+    using ConfirmFn  = std::function<std::pair<bool,bool>()>;
+    using QuestionFn = std::function<QStringList(const QJsonArray&)>;
 
     // Blocks the calling thread until the conversation ends or is cancelled.
     void run(const LlmParams& params,
              EventFn   onEvent,
              ConfirmFn onConfirm,
-             CancelFn  isCancelled);
+             CancelFn  isCancelled,
+             QuestionFn onQuestion = nullptr);
 };

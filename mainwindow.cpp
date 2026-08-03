@@ -29,6 +29,10 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QCloseEvent>
+#include <QScrollArea>
+#include <QGroupBox>
+#include <QButtonGroup>
+#include <QRadioButton>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_config = configLoad();
@@ -607,6 +611,17 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
         messages.append(event["message"]);
         session->chat["messages"] = messages;
 
+    } else if (type == "question_request") {
+        session->thinking    = true;
+        updateTabTitle(session);
+        session->chatView->appendMessage("tool_request", event);
+        handleQuestionRequest(session, event);
+
+    } else if (type == "question_result") {
+        session->thinking    = true;
+        updateTabTitle(session);
+        session->chatView->appendMessage("tool_result", event);
+
     } else if (type == "tool_result") {
         session->toolRunning = false;
         session->thinking    = true;  // still thinking after tool result
@@ -860,6 +875,86 @@ void MainWindow::updateQuickSettingsFor(TabSession* session) {
 }
 
 // ── Clean shutdown ────────────────────────────────────────────────
+
+
+void MainWindow::handleQuestionRequest(TabSession* session, const QJsonObject& event) {
+    ChatWorker* worker = session->worker;
+    if (!worker) return;
+
+    QJsonArray questions = event["questions"].toArray();
+    if (questions.isEmpty()) {
+        worker->sendQuestionAnswers(QStringList());
+        return;
+    }
+
+    // Show a simple dialog
+    Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
+    QDialog dlg(this);
+    dlg.setWindowTitle("Pengy — Questions");
+    dlg.setModal(true);
+    dlg.setMinimumWidth(450);
+
+    QVBoxLayout* layout = new QVBoxLayout(&dlg);
+    QLabel* header = new QLabel("The assistant needs your input:");
+    header->setStyleSheet(QString("color:%1; font-weight:bold; padding:4px;").arg(theme["fg"]));
+    layout->addWidget(header);
+
+    QVector<QButtonGroup*> groups;
+    QScrollArea* scroll = new QScrollArea;
+    QWidget* scrollW = new QWidget;
+    QVBoxLayout* scrollL = new QVBoxLayout(scrollW);
+
+    for (int qi = 0; qi < questions.size(); ++qi) {
+        QJsonObject q = questions[qi].toObject();
+        QGroupBox* gb = new QGroupBox(q["header"].toString());
+        gb->setStyleSheet(QString("QGroupBox { color:%1; font-weight:bold; border:1px solid %2; border-radius:6px; margin-top:8px; padding:12px 8px 8px 8px; } QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }").arg(theme["primary"], theme["border_soft"]));
+        QVBoxLayout* gl = new QVBoxLayout(gb);
+        gl->addWidget(new QLabel(q["question"].toString()));
+        QButtonGroup* bg = new QButtonGroup(&dlg);
+        groups.append(bg);
+        QJsonArray opts = q["options"].toArray();
+        for (int oi = 0; oi < opts.size(); ++oi) {
+            QJsonObject opt = opts[oi].toObject();
+            QRadioButton* rb = new QRadioButton(QString("%1  —  %2").arg(opt["label"].toString(), opt["description"].toString()));
+            bg->addButton(rb, oi);
+            gl->addWidget(rb);
+            if (oi == 0) rb->setChecked(true);
+        }
+        scrollL->addWidget(gb);
+    }
+    scrollL->addStretch();
+    scroll->setWidget(scrollW);
+    layout->addWidget(scroll, 1);
+
+    QHBoxLayout* btnL = new QHBoxLayout;
+    QPushButton* submit = new QPushButton("Submit Answers");
+    submit->setStyleSheet(QString("QPushButton{background-color:%1;color:%2;border:none;border-radius:6px;padding:8px 24px;font-weight:bold;}").arg(theme["primary"], theme["primary_fg"]));
+    QPushButton* cancel = new QPushButton("Cancel");
+    cancel->setStyleSheet(QString("QPushButton{background-color:%1;color:white;border:none;border-radius:6px;padding:8px 24px;font-weight:bold;}").arg(theme["danger"]));
+    btnL->addWidget(submit);
+    btnL->addWidget(cancel);
+    layout->addLayout(btnL);
+
+    connect(submit, &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        QStringList answers;
+        for (auto* bg : groups) {
+            QAbstractButton* checked = bg->checkedButton();
+            if (checked) {
+                QString text = checked->text();
+                int dash = text.indexOf("  —  ");
+                answers.append(dash > 0 ? text.left(dash) : text);
+            } else {
+                answers.append("");
+            }
+        }
+        worker->sendQuestionAnswers(answers);
+    } else {
+        worker->sendQuestionAnswers(QStringList());
+    }
+}
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     saveOpenTabs();

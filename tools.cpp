@@ -14,6 +14,7 @@
 #include <QTemporaryFile>
 #include <QMutex>
 #include <QSet>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QElapsedTimer>
 #include <QUuid>
@@ -221,6 +222,20 @@ const QJsonArray& toolDefinitions() {
                 {"context_lines", prop("integer", "Number of lines of context (default: 0)")},
                 {"max_results",   prop("integer", "Maximum number of matches to return (default: 50)")}},
             QJsonArray{"pattern", "path"}),
+
+        td("glob", "Find files matching a glob pattern. Returns sorted file paths with sizes. Use ** for recursive.",
+            QJsonObject{
+                {"pattern", prop("string", "The glob pattern to match against file paths")},
+                {"path",    prop("string", "The directory to search in (default: cwd)")}},
+            QJsonArray{"pattern"}),
+
+        td("todowrite", "Create and update a structured task list. Send the COMPLETE list every time.",
+            QJsonObject{{"todos", prop("array", "The complete list of tasks with content and status (pending/in_progress/completed)")}},
+            QJsonArray{"todos"}),
+
+        td("ask_user_question", "Ask the user one or more multiple-choice questions to clarify requirements.",
+            QJsonObject{{"questions", prop("array", "One or more questions with header, question text, and options")}},
+            QJsonArray{"questions"}),
     };
     return defs;
 }
@@ -228,7 +243,8 @@ const QJsonArray& toolDefinitions() {
 bool isReadOnly(const QString& name) {
     static const QSet<QString> ro{
         "read_file", "read_multiple_files", "directory_tree",
-        "search_content", "web_search", "fetch_url"
+        "search_content", "web_search", "fetch_url",
+        "glob", "todowrite"
     };
     return ro.contains(name);
 }
@@ -1753,6 +1769,9 @@ static QString toolSearchContent(const QJsonObject& args) {
     return summary + "\n" + QString(60, QChar(0x2500)) + "\n" + results.join("\n\n");
 }
 
+static QString toolGlob(const QJsonObject& args);
+static QString toolTodowrite(const QJsonObject& args);
+
 // ── Dispatcher ────────────────────────────────────────────────────────
 
 QString execute(const QString& name, const QJsonObject& args,
@@ -1769,7 +1788,120 @@ QString execute(const QString& name, const QJsonObject& args,
     if (name == "directory_tree")     return toolDirectoryTree(args);
     if (name == "read_multiple_files") return toolReadMultipleFiles(args);
     if (name == "search_content")     return toolSearchContent(args);
+    if (name == "glob")              return toolGlob(args);
+    if (name == "todowrite")         return toolTodowrite(args);
+    if (name == "ask_user_question") return "ask_user_question must be handled by the harness — it should never reach execute_tool directly.";
     return "Unknown tool: " + name;
+}
+
+
+// ── glob ──────────────────────────────────────────────────────────
+
+static QString toolGlob(const QJsonObject& args) {
+    QString pattern = args["pattern"].toString();
+    QString pathStr = expandHome(args["path"].toString());
+    QDir searchDir(pathStr.isEmpty() ? QDir::currentPath() : pathStr);
+    if (!searchDir.exists())
+        return QString("Error: Directory not found: %1").arg(searchDir.path());
+
+    bool recursive = pattern.contains("**");
+    QStringList parts = pattern.split('/');
+    // The filename pattern is the last component of the glob
+    QString nameFilter = parts.last();
+
+    QStringList matches;
+    QDirIterator::IteratorFlags flags = QDirIterator::NoIteratorFlags;
+    if (recursive)
+        flags |= QDirIterator::Subdirectories;
+
+    // Convert glob wildcards to Qt wildcards: * → *, ? → ?
+    // Qt already uses the same wildcard syntax; pass through as-is.
+    QStringList nameFilters;
+    nameFilters << nameFilter;
+
+    QSet<QString> skipDirs = {".git", ".svn", ".hg", "__pycache__", "node_modules",
+                               ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".eggs",
+                               ".venv", "venv", "build", "dist", "target"};
+
+    QDirIterator it(searchDir.path(), nameFilters, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, flags);
+    while (it.hasNext()) {
+        it.next();
+        QString fname = it.fileName();
+        if (skipDirs.contains(fname)) continue;
+        if (fname.startsWith('.') && !pattern.startsWith('.')) continue;
+
+        QFileInfo fi = it.fileInfo();
+        QString absPath = fi.absoluteFilePath();
+        // Also skip entries whose parent path goes through a skipped directory
+        QString rel = searchDir.relativeFilePath(absPath);
+        bool inSkipDir = false;
+        for (const QString& part : rel.split('/')) {
+            if (skipDirs.contains(part)) { inSkipDir = true; break; }
+        }
+        if (inSkipDir) continue;
+
+        if (fi.isDir())
+            matches.append(rel + "/");
+        else
+            matches.append(QString("%1  (%2 B)").arg(rel).arg(fi.size()));
+    }
+
+    if (matches.isEmpty())
+        return QString("No files matching '%1' in %2").arg(pattern, searchDir.path());
+
+    matches.sort();
+    int maxResults = 200;
+    QStringList result;
+    for (int i = 0; i < qMin(matches.size(), maxResults); ++i)
+        result.append(matches[i]);
+    if (matches.size() > maxResults)
+        result.append(QString("... and %1 more (truncated at %2)").arg(matches.size() - maxResults).arg(maxResults));
+
+    return result.join("\n");
+}
+
+// ── todowrite ─────────────────────────────────────────────────────
+
+static QString toolTodowrite(const QJsonObject& args) {
+    QJsonArray todos = args["todos"].toArray();
+    if (todos.isEmpty())
+        return "Error: todos list is empty. Provide at least one task.";
+
+    int inProgressCount = 0;
+    QStringList errors;
+
+    for (int i = 0; i < todos.size(); ++i) {
+        QJsonObject t = todos[i].toObject();
+        QString contentText = t["content"].toString();
+        QString status = t["status"].toString();
+
+        if (contentText.isEmpty())
+            errors.append(QString("Item %1: content is empty").arg(i));
+        if (status != "pending" && status != "in_progress" && status != "completed")
+            errors.append(QString("Item %1: invalid status '%2'").arg(i).arg(status));
+        if (status == "in_progress")
+            inProgressCount++;
+    }
+
+    if (!errors.isEmpty())
+        return "Error validating todos:\n" + errors.join("\n");
+
+    if (inProgressCount > 1)
+        return QString("Error: %1 tasks marked in_progress. Exactly one must be in_progress.").arg(inProgressCount);
+
+    QStringList lines;
+    for (const QJsonValue& v : todos) {
+        QJsonObject t = v.toObject();
+        QString contentText = t["content"].toString();
+        QString status = t["status"].toString();
+        QString icon;
+        if (status == "pending")      icon = "[ ]";
+        else if (status == "in_progress") icon = "[→]";
+        else if (status == "completed")   icon = "[✓]";
+        else icon = "[?]";
+        lines.append(QString("%1 %2").arg(icon, contentText));
+    }
+    return lines.join("\n");
 }
 
 } // namespace Tools

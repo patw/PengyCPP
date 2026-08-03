@@ -100,7 +100,7 @@ REM → Pengy-Windows\pengy.exe  (Qt DLLs bundled)
 ## Features
 
 - **OpenAI-compatible** — Works with OpenAI, Ollama, vLLM, LM Studio, OpenRouter, Groq, or any local endpoint
-- **11 built-in tools** — Read, write, and edit files; run bash (with sudo support) and Python code; search the web and fetch URLs; explore directory trees and search codebases
+- **14 built-in tools** — Read, write, and edit files; run bash (with sudo support) and Python code; search the web and fetch URLs; explore directory trees and search codebases; find files by glob patterns; track multi-step tasks with structured todo lists; ask clarifying questions when ambiguous
 - **Agentic workflow** — The LLM can call multiple tools per turn, chaining them to accomplish complex tasks
 - **Tool confirmation** — Three modes: YOLO (All) skips all confirmations, Safe auto-approves read-only tools, None confirms everything
 - **Context management** — Elide old tool results to save context window space; configurable per-chat
@@ -190,12 +190,17 @@ PengyCPP gives the LLM these tools to operate on your machine:
 | `fetch_url` | Fetch a URL's text content into context |
 | `directory_tree` | Visual directory structure listing |
 | `search_content` | Regex search across files in a codebase |
+| `glob` | Find files by glob pattern (`**/*.py`); respects `.gitignore`-style skips |
+| `todowrite` | Structured task list for tracking complex multi-step operations |
+| `ask_user_question` | Ask clarifying multiple-choice questions when instructions are vague |
+
+`glob`, `todowrite`, and `ask_user_question` were added to address the **cognitive** gaps beyond mechanical file/code/web operations: `glob` replaces slow, noisy `find`/`ls` commands with fast structured results; `todowrite` gives the LLM a persistent scratchpad that survives context truncation; `ask_user_question` lets the agent pause and clarify instead of guessing when instructions are vague.
 
 ---
 
 ## Skills
 
-The 11 built-in tools cover the basics, but PengyCPP is designed to be extended with **skills** — your own custom instructions and scripts stored as plain markdown files.
+The 14 built-in tools cover the basics, but PengyCPP is designed to be extended with **skills** — your own custom instructions and scripts stored as plain markdown files.
 
 Skills are not a plugin system. There is no SDK, no manifest file, no packaging. A skill is just a `skillname/skillname_skill.md` file with instructions PengyCPP can read, optionally backed by a bash or Python script. You point PengyCPP at a directory of these, and it uses them automatically.
 
@@ -237,7 +242,7 @@ PengyCPP is a **single CMake project** — no Rust, no Python, no FFI. All logic
 | `chatmanager` | Chat CRUD, `~/.config/pengy/chats.json`, message cleaning, context elision |
 | `taskmanager` | Task template CRUD, `~/.config/pengy/tasks.json`, `%placeholder%` extraction/rendering |
 | `themehelper` | System/light/dark mode resolution, accent palette, UI-scale helpers, app stylesheet |
-| `tools` | 11 tools using `QFile`, `QProcess`, `QNetworkAccessManager`, `QDirIterator` |
+| `tools` | 14 tools using `QFile`, `QProcess`, `QNetworkAccessManager`, `QDirIterator` |
 | `llmclient` | Blocking OpenAI-compatible chat loop via `QNetworkAccessManager` + local `QEventLoop` |
 | `chatworker` | Runs `LlmClient::run()` on a `QThread`; `QWaitCondition` for tool confirmation (zero-CPU wait) |
 | `webchatworker` | Same as chatworker but for `pengy_web`; emits SSE events via Qt signals |
@@ -259,7 +264,7 @@ PengyCPP/
 ├── config.cpp/h            # Settings: ~/.config/pengy/settings.json
 ├── chatmanager.cpp/h       # Chats: ~/.config/pengy/chats.json
 ├── taskmanager.cpp/h       # Tasks: ~/.config/pengy/tasks.json
-├── tools.cpp/h             # 11 OpenAI function-calling tools
+├── tools.cpp/h             # 14 OpenAI function-calling tools
 ├── llmclient.cpp/h         # Blocking LLM chat loop (QNetworkAccessManager)
 ├── chatworker.cpp/h        # QThread worker + QWaitCondition confirmation
 ├── mainwindow.cpp/h        # Three-pane main window
@@ -359,7 +364,7 @@ PengyCPP is the **highest-performance edition** of Pengy — smallest binary, lo
 | [**PengyR**](https://github.com/patw/PengyR) | Rust + Qt6 | High-performance native binary, statically-linked core |
 | [**PengyCPP**](https://github.com/patw/PengyCPP) | C++17 + Qt6 | Highest performance, smallest memory footprint, zero external dependencies |
 
-All three offer the same 11 tools, desktop theme controls, reusable task templates, three interfaces (GUI/CLI/Web), and full chat/task interop.
+All three offer the same 14 tools, desktop theme controls, reusable task templates, three interfaces (GUI/CLI/Web), and full chat/task interop.
 
 ---
 

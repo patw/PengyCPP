@@ -64,7 +64,7 @@ PengyCPP/
 ├── main.cpp                # Desktop GUI entry point — QApplication setup
 ├── config.cpp/h            # Settings load/save + system message rendering
 ├── chatmanager.cpp/h       # Chat session CRUD + message cleaning + context elision
-├── tools.cpp/h             # 11 OpenAI function-calling tools (Qt APIs)
+├── tools.cpp/h             # 14 OpenAI function-calling tools (Qt APIs)
 ├── llmclient.cpp/h         # Blocking LLM chat loop (QNetworkAccessManager + QEventLoop)
 ├── chatworker.cpp/h        # QThread worker — runs LlmClient + confirmation QWaitCondition
 ├── mainwindow.cpp/h        # Three-pane main window, tool confirmation dialog
@@ -105,7 +105,7 @@ All three binaries share these modules — no code duplication, no FFI:
 |--------|-------|---------------|
 | `Config` | `config.cpp/h` | Load/save `~/.config/pengy/settings.json` with default merging; `configRenderSystemMessage()` fills `{date}`, `{username}`, `{hostname}`, `{osinfo}` at send time |
 | `ChatManager` | `chatmanager.cpp/h` | CRUD for `~/.config/pengy/chats.json`; `cleanDanglingToolCalls()` removes orphaned tool_calls; `elideOldToolResults()` replaces old tool content with `[elided]` |
-| `Tools` | `tools.cpp/h` | 11 OpenAI function-calling tool schemas and execution via Qt APIs; `isReadOnly()` classification; sudo password provider callback |
+| `Tools` | `tools.cpp/h` | 14 OpenAI function-calling tool schemas and execution via Qt APIs; `isReadOnly()` classification; sudo password provider callback |
 | `LlmClient` | `llmclient.cpp/h` | Blocking chat loop via `QNetworkAccessManager` + local `QEventLoop`; emits events via `std::function` callbacks |
 
 ---
@@ -540,7 +540,7 @@ Array of chat session objects with `user`, `assistant` (including `tool_calls`),
 
 ## Tools
 
-All 11 tools implemented in `tools.cpp` using Qt APIs:
+All 14 tools implemented in `tools.cpp` using Qt APIs:
 
 | Tool | Read-only | Implementation |
 |------|:---:|---|
@@ -555,8 +555,11 @@ All 11 tools implemented in `tools.cpp` using Qt APIs:
 | `fetch_url` | ✅ | `QNetworkAccessManager` + HTML tag-strip (50K char limit) |
 | `directory_tree` | ✅ | `QDirIterator` with Unicode box-drawing (500 entry cap) |
 | `search_content` | ✅ | `QDirIterator` + `QRegularExpression` with context lines and region grouping |
+| `glob` | ✅ | `QDirIterator` with name-filter; pattern matching via `QRegularExpression`; skips `.git`, `node_modules`, `venv`, `build`, etc. |
+| `todowrite` | ✅ | Validates task list (pending/in_progress/completed), enforces single-active-task rule, echoes back formatted list |
+| `ask_user_question` | — | Harness-handled tool; returns fixed message if it ever reaches `execute_tool` directly |
 
-`Tools::isReadOnly(name)` is used by the tool confirmation logic to auto-approve in `"safe"` mode. Read-only: `read_file`, `read_multiple_files`, `directory_tree`, `search_content`, `web_search`, `fetch_url`. Mutating: everything else.
+`Tools::isReadOnly(name)` is used by the tool confirmation logic to auto-approve in `"safe"` mode. Read-only: `read_file`, `read_multiple_files`, `directory_tree`, `search_content`, `web_search`, `fetch_url`, `glob`, `todowrite`. Mutating: everything else.
 
 ---
 
@@ -653,7 +656,7 @@ REM → Pengy-Windows.zip
 | Feature | Pengy (Python) | PengyR (Rust) | PengyCPP |
 |---------|:---:|:---:|:---:|
 | OpenAI-compatible LLM API | ✅ | ✅ | ✅ |
-| 11 tools (bash, python, files, web, etc.) | ✅ | ✅ | ✅ |
+| 14 tools (bash, python, files, web, etc.) | ✅ | ✅ | ✅ |
 | Three-pane Qt6 desktop GUI | ✅ | ✅ | ✅ |
 | Markdown rendering + syntax highlighting | ✅ | ✅ | ✅ |
 | Collapsible tool call blocks | ✅ | ✅ | ✅ |
