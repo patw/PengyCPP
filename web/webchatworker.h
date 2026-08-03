@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <atomic>
 
 class WebChatWorker : public QObject {
     Q_OBJECT
@@ -31,7 +32,7 @@ private:
     ConfirmState   m_confirmState;
     QMutex         m_mutex;
     QWaitCondition m_cond;
-    bool           m_cancelled = false;
+    std::atomic<bool> m_cancelled = false;
 
     mutable QMutex m_sudoMutex;
     QWaitCondition m_sudoCond;

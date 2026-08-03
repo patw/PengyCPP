@@ -4,6 +4,7 @@
 #include <QWaitCondition>
 #include <QJsonArray>
 #include <QString>
+#include <atomic>
 #include <limits.h>
 
 #include "tools.h"
@@ -46,7 +47,7 @@ private:
     ConfirmState    m_confirmState;
     QMutex          m_mutex;
     QWaitCondition  m_cond;
-    bool            m_cancelled = false;
+    std::atomic<bool> m_cancelled = false;
 
     // ── Sudo state ────────────────────────────────────────────────
     mutable QMutex  m_sudoMutex;
