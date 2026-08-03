@@ -963,6 +963,88 @@ private slots:
         QVERIFY(!Tools::isReadOnly("ask_user_question"));
     }
 
+    // ── Tools: schema content validation ──────────────────────────
+
+    static QJsonObject findTool(const QString& name) {
+        for (const QJsonValue& v : Tools::toolDefinitions()) {
+            QJsonObject fn = v.toObject()["function"].toObject();
+            if (fn["name"].toString() == name)
+                return fn;
+        }
+        return {};
+    }
+
+    void todowriteSchemaItemsAreObjectsNotStrings() {
+        QJsonObject fn = findTool("todowrite");
+        QVERIFY(!fn.isEmpty());
+        QJsonObject params = fn["parameters"].toObject();
+        QJsonObject todos = params["properties"].toObject()["todos"].toObject();
+        QCOMPARE(todos["type"].toString(), QString("array"));
+        QJsonObject items = todos["items"].toObject();
+        QCOMPARE(items["type"].toString(), QString("object"));
+        QJsonArray req = items["required"].toArray();
+        QVERIFY(req.contains("content"));
+        QVERIFY(req.contains("status"));
+        QJsonObject props = items["properties"].toObject();
+        QCOMPARE(props["content"].toObject()["type"].toString(), QString("string"));
+        QCOMPARE(props["status"].toObject()["type"].toString(), QString("string"));
+        QJsonArray statusEnum = props["status"].toObject()["enum"].toArray();
+        QVERIFY(statusEnum.contains("pending"));
+        QVERIFY(statusEnum.contains("in_progress"));
+        QVERIFY(statusEnum.contains("completed"));
+    }
+
+    void applyChangesSchemaHasFullOperationProperties() {
+        QJsonObject fn = findTool("apply_changes");
+        QVERIFY(!fn.isEmpty());
+        QJsonObject params = fn["parameters"].toObject();
+        QJsonObject props = params["properties"].toObject();
+
+        // changes array
+        QJsonObject changes = props["changes"].toObject();
+        QCOMPARE(changes["type"].toString(), QString("array"));
+        QJsonObject changeItems = changes["items"].toObject();
+        QCOMPARE(changeItems["type"].toString(), QString("object"));
+        QJsonArray changeReq = changeItems["required"].toArray();
+        QVERIFY(changeReq.contains("path"));
+        QVERIFY(changeReq.contains("operations"));
+
+        // operations within each change
+        QJsonObject operations =
+            changeItems["properties"].toObject()["operations"].toObject();
+        QCOMPARE(operations["type"].toString(), QString("array"));
+        QJsonObject opItems = operations["items"].toObject();
+        QCOMPARE(opItems["type"].toString(), QString("object"));
+        QJsonArray opReq = opItems["required"].toArray();
+        QVERIFY(opReq.contains("kind"));
+        QJsonObject opProps = opItems["properties"].toObject();
+        QJsonArray kindEnum = opProps["kind"].toObject()["enum"].toArray();
+        QVERIFY(kindEnum.contains("replace"));
+        QVERIFY(kindEnum.contains("insert_after"));
+        QVERIFY(kindEnum.contains("delete"));
+        QCOMPARE(opProps["old"].toObject()["type"].toString(), QString("string"));
+        QCOMPARE(opProps["new"].toObject()["type"].toString(), QString("string"));
+        QCOMPARE(opProps["anchor"].toObject()["type"].toString(), QString("string"));
+        QCOMPARE(opProps["text"].toObject()["type"].toString(), QString("string"));
+        QCOMPARE(opProps["expected_matches"].toObject()["type"].toString(), QString("integer"));
+
+        // dry_run
+        QJsonObject dryRun = props["dry_run"].toObject();
+        QCOMPARE(dryRun["type"].toString(), QString("boolean"));
+        QVERIFY(!dryRun["description"].toString().isEmpty());
+
+        // postconditions
+        QJsonObject post = props["postconditions"].toObject();
+        QCOMPARE(post["type"].toString(), QString("array"));
+        QJsonObject postItems = post["items"].toObject();
+        QCOMPARE(postItems["type"].toString(), QString("object"));
+        QJsonObject postProps = postItems["properties"].toObject();
+        QVERIFY(postProps.contains("contains"));
+        QVERIFY(postProps.contains("does_not_contain"));
+        QCOMPARE(postProps["contains"].toObject()["type"].toString(), QString("string"));
+        QCOMPARE(postProps["does_not_contain"].toObject()["type"].toString(), QString("string"));
+    }
+
     // ── Tools: per-run ToolContext isolation ────────────────────────
 
     void toolContextSudoProviderPerContext() {

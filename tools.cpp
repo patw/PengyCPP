@@ -173,10 +173,76 @@ const QJsonArray& toolDefinitions() {
                 {"new_str", prop("string", "The text to replace it with. Use empty string to delete.")}},
             QJsonArray{"path", "old_str", "new_str"}),
 
-        td("apply_changes", "Apply bounded transactional exact-text edits across files. Validate all operations in memory first; if any operation fails, no files are changed. Use dry_run to preview the diff.",
-            QJsonObject{{"changes", prop("array", "Files and exact-text operations to apply")},
-                        {"dry_run", prop("boolean", "Validate and preview without writing")},
-                        {"postconditions", prop("array", "Optional content checks before writing")}},
+        td("apply_changes",
+            "Apply bounded transactional exact-text edits across files. Validate all "
+            "operations in memory first; if any operation fails, no files are changed. "
+            "Use dry_run to preview the unified diff before writing.",
+            QJsonObject{
+                {"changes", QJsonObject{
+                    {"type", "array"},
+                    {"description", "Files and exact-text operations to apply"},
+                    {"items", QJsonObject{
+                        {"type", "object"},
+                        {"properties", QJsonObject{
+                            {"path", QJsonObject{
+                                {"type", "string"},
+                                {"description", "File path to edit"}
+                            }},
+                            {"operations", QJsonObject{
+                                {"type", "array"},
+                                {"items", QJsonObject{
+                                    {"type", "object"},
+                                    {"properties", QJsonObject{
+                                        {"kind", QJsonObject{
+                                            {"type", "string"},
+                                            {"enum", QJsonArray{"replace", "insert_after", "delete"}}
+                                        }},
+                                        {"old", QJsonObject{
+                                            {"type", "string"},
+                                            {"description", "Exact text to match for replace/delete"}
+                                        }},
+                                        {"anchor", QJsonObject{
+                                            {"type", "string"},
+                                            {"description", "Exact text after which to insert"}
+                                        }},
+                                        {"new", QJsonObject{
+                                            {"type", "string"},
+                                            {"description", "Replacement text"}
+                                        }},
+                                        {"text", QJsonObject{
+                                            {"type", "string"},
+                                            {"description", "Text to insert"}
+                                        }},
+                                        {"expected_matches", QJsonObject{
+                                            {"type", "integer"},
+                                            {"description", "Expected exact match count; defaults to 1"}
+                                        }}
+                                    }},
+                                    {"required", QJsonArray{"kind"}}
+                                }}
+                            }}
+                        }},
+                        {"required", QJsonArray{"path", "operations"}}
+                    }}
+                }},
+                {"dry_run", QJsonObject{
+                    {"type", "boolean"},
+                    {"description", "Validate and return a diff without writing files (default: false)"}
+                }},
+                {"postconditions", QJsonObject{
+                    {"type", "array"},
+                    {"description", "Optional content checks evaluated before writing"},
+                    {"items", QJsonObject{
+                        {"type", "object"},
+                        {"properties", QJsonObject{
+                            {"path", QJsonObject{{"type", "string"}}},
+                            {"contains", QJsonObject{{"type", "string"}}},
+                            {"does_not_contain", QJsonObject{{"type", "string"}}}
+                        }},
+                        {"required", QJsonArray{"path"}}
+                    }}
+                }}
+            },
             QJsonArray{"changes"}),
 
         td("run_bash", "Run a bash command in the terminal",
@@ -235,8 +301,33 @@ const QJsonArray& toolDefinitions() {
                 {"path",    prop("string", "The directory to search in (default: cwd)")}},
             QJsonArray{"pattern"}),
 
-        td("todowrite", "Create and update a structured task list. Send the COMPLETE list every time.",
-            QJsonObject{{"todos", prop("array", "The complete list of tasks with content and status (pending/in_progress/completed)")}},
+        td("todowrite",
+            "Create and update a structured task list for tracking progress during complex "
+            "multi-step operations. Send the COMPLETE list every time — do not send "
+            "incremental updates. Exactly one task must be in_progress at any time. Mark "
+            "tasks completed immediately after finishing them. Use imperative forms for "
+            "content (e.g. 'Run tests', 'Add JWT middleware').",
+            QJsonObject{
+                {"todos", QJsonObject{
+                    {"type", "array"},
+                    {"description", "The complete list of tasks with their current statuses"},
+                    {"items", QJsonObject{
+                        {"type", "object"},
+                        {"properties", QJsonObject{
+                            {"content", QJsonObject{
+                                {"type", "string"},
+                                {"description", "Imperative task description, e.g. 'Run the tests'"}
+                            }},
+                            {"status", QJsonObject{
+                                {"type", "string"},
+                                {"enum", QJsonArray{"pending", "in_progress", "completed"}},
+                                {"description", "Current task status — exactly one task must be in_progress"}
+                            }}
+                        }},
+                        {"required", QJsonArray{"content", "status"}}
+                    }}
+                }}
+            },
             QJsonArray{"todos"}),
 
         td("ask_user_question", "Ask the user one or more multiple-choice questions to clarify requirements.",
