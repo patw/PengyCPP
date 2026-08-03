@@ -6,6 +6,7 @@
 #include <QFontDatabase>
 #include <QIcon>
 #include <QTextStream>
+#include "themehelper.h"
 
 static void showHelp(const char* argv0) {
     QTextStream out(stdout);
@@ -38,20 +39,13 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Read ui_scale before creating QApplication so we can set the env var first
-    Config cfg = configLoad();
-    if (cfg.uiScale != 100) {
-        qputenv("QT_SCALE_FACTOR",
-                QByteArray::number(cfg.uiScale / 100.0, 'f', 2));
-    }
-
     QApplication app(argc, argv);
     app.setApplicationName("Pengy");
     app.setOrganizationName("Pengy");
     app.setWindowIcon(QIcon(":/pengy.png"));
 
     QFont font = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
-    font.setPointSize(10);
+    font = scaledSystemFont(configLoad().uiScale);
     app.setFont(font);
 
     MainWindow window;

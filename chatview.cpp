@@ -23,9 +23,9 @@ ChatView::ChatView(QWidget* parent) : QTextBrowser(parent) {
 void ChatView::applyTheme(const Theme& theme, int scale) {
     m_theme = theme;
     m_scale = scale;
-    auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    font.setPointSizeF(scaledFont(10, scale));
+    auto font = scaledChatFont(scale);
     setFont(font);
+    document()->setDefaultFont(font);
     setStyleSheet(QString("QTextBrowser { background-color:%1; color:%2; border:none; padding:0; }")
                   .arg(m_theme["bg"], m_theme["fg"]));
     document()->setDefaultStyleSheet(buildCss());
@@ -38,40 +38,37 @@ void ChatView::applyTheme(const Theme& theme, int scale) {
 
 QString ChatView::buildCss() const {
     QString fixed = QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
-    double bodyPt = scaledFont(10, m_scale);
-    double labelPt = scaledFont(9, m_scale);
-    double reasoningLabelPt = scaledFont(8.5, m_scale);
     return QString(R"CSS(
-body { font-family:"%1"; font-size:%2pt; background-color:%3; color:%4; margin:8px; }
+body { font-family:"%1"; font-size:1em; background-color:%3; color:%4; margin:8px; }
 a { color:%5; text-decoration:none; }
 pre { background-color:%15; color:%14; padding:10px; margin:6px 0; white-space:pre-wrap; word-wrap:break-word; }
-.code-lang { font-size:%9pt; color:%16; margin-bottom:2px; font-family:monospace; }
+.code-lang { font-size:0.9em; color:%16; margin-bottom:2px; font-family:monospace; }
 table { border:1px solid %6; margin:6px 0; }
 th, td { border:1px solid %6; padding:4px 10px; }
 th { background-color:%7; font-weight:bold; }
 img { max-width:600px; }
-.role-user { color:%8; font-weight:bold; font-size:%9pt; margin:8px 0 2px 0; }
-.role-assistant { color:%10; font-weight:bold; font-size:%9pt; margin:8px 0 2px 0; }
+.role-user { color:%8; font-weight:bold; font-size:0.9em; margin:8px 0 2px 0; }
+.role-assistant { color:%10; font-weight:bold; font-size:0.9em; margin:8px 0 2px 0; }
 .tool-card { border:1px solid %11; padding:4px 8px; margin:6px 0; background-color:%12; }
 .tool-link { color:%5; text-decoration:none; font-weight:bold; }
-.tool-pre { background-color:%13; color:%14; padding:4px; margin:2px 0; font-size:%9pt; }
+.tool-pre { background-color:%13; color:%14; padding:4px; margin:2px 0; font-size:0.9em; }
 .muted { color:%16; }
 .declined { color:%17; }
 .reasoning-card { border:1px solid %18; padding:6px 10px; margin:6px 0; background-color:%19; }
 .reasoning-link { color:%20; text-decoration:none; font-weight:bold; }
-.reasoning-body { color:%16; font-size:%21pt; white-space:pre-wrap; word-wrap:break-word; margin-top:4px; }
+.reasoning-body { color:%16; font-size:0.85em; white-space:pre-wrap; word-wrap:break-word; margin-top:4px; }
 code { background-color:%7; color:%14; padding:1px 3px; border-radius:2px; }
 blockquote { border-left:3px solid %6; margin:6px 0; padding:2px 0 2px 10px; color:%16; }
 hr { border:0; border-top:1px solid %6; margin:10px 0; }
 ul, ol { margin:4px 0 8px 20px; padding-left:16px; }
 li { margin:2px 0; }
 h1, h2, h3, h4, h5, h6 { margin:10px 0 4px 0; }
-h1 { font-size:14pt; } h2 { font-size:13pt; } h3 { font-size:11pt; } h4 { font-size:10pt; }
+h1 { font-size:1.4em; } h2 { font-size:1.3em; } h3 { font-size:1.1em; } h4, h5, h6 { font-size:1em; }
 )CSS")
-        .arg(fixed).arg(bodyPt).arg(m_theme["bg"], m_theme["fg"], m_theme["link"], m_theme["border"], m_theme["panel_2"],
-             m_theme["user_label"]).arg(labelPt).arg(m_theme["assistant_label"], m_theme["border_soft"], m_theme["tool_bg"],
+        .arg(fixed).arg(m_theme["bg"], m_theme["fg"], m_theme["link"], m_theme["border"], m_theme["panel_2"],
+             m_theme["user_label"]).arg(m_theme["assistant_label"], m_theme["border_soft"], m_theme["tool_bg"],
              m_theme["tool_arg_bg"], m_theme["code_fg"], m_theme["code_bg"], m_theme["muted"], m_theme["danger"],
-             m_theme["reasoning_border"], m_theme["reasoning_bg"], m_theme["reasoning_fg"]).arg(reasoningLabelPt);
+             m_theme["reasoning_border"], m_theme["reasoning_bg"], m_theme["reasoning_fg"]);
 }
 
 void ChatView::appendMessage(const QString& role, const QJsonValue& content, bool doRender) {

@@ -173,6 +173,12 @@ const QJsonArray& toolDefinitions() {
                 {"new_str", prop("string", "The text to replace it with. Use empty string to delete.")}},
             QJsonArray{"path", "old_str", "new_str"}),
 
+        td("apply_changes", "Apply bounded transactional exact-text edits across files. Validate all operations in memory first; if any operation fails, no files are changed. Use dry_run to preview the diff.",
+            QJsonObject{{"changes", prop("array", "Files and exact-text operations to apply")},
+                        {"dry_run", prop("boolean", "Validate and preview without writing")},
+                        {"postconditions", prop("array", "Optional content checks before writing")}},
+            QJsonArray{"changes"}),
+
         td("run_bash", "Run a bash command in the terminal",
             QJsonObject{{"command", prop("string", "The bash command to execute")}},
             QJsonArray{"command"}),
@@ -1767,6 +1773,41 @@ static QString toolSearchContent(const QJsonObject& args) {
     return summary + "\n" + QString(60, QChar(0x2500)) + "\n" + results.join("\n\n");
 }
 
+static QString toolApplyChanges(const QJsonObject& args) {
+    constexpr int maxFiles=20, maxOps=100, maxBlock=256000, maxResult=1000000;
+    QJsonArray changes=args["changes"].toArray();
+    if(changes.isEmpty()) return "Error: changes must be a non-empty list.";
+    if(changes.size()>maxFiles) return QString("Error: too many files (%1). Maximum is %2.").arg(changes.size()).arg(maxFiles);
+    struct Prepared { QString path, oldText, newText; };
+    QList<Prepared> prepared; QStringList errors; QSet<QString> paths; int ops=0, bytes=0;
+    for(int fi=0;fi<changes.size();++fi){
+        QJsonObject file=changes[fi].toObject(); QString path=expandHome(file["path"].toString());
+        if(path.isEmpty()){errors<<QString("file %1: path is required").arg(fi);continue;}
+        QFileInfo info(path); if(!info.exists()){errors<<path+": file not found";continue;} if(!info.isFile()){errors<<path+": not a file";continue;}
+        if(paths.contains(path)){errors<<path+": duplicate path";continue;} paths.insert(path);
+        QFile in(path); if(!in.open(QIODevice::ReadOnly)){errors<<path+": binary or non-UTF-8 file";continue;} QByteArray raw=in.readAll();in.close(); QString old=QString::fromUtf8(raw);if(QString::fromUtf8(old.toUtf8())!=old){errors<<path+": binary or non-UTF-8 file";continue;}
+        QString cur=old; QJsonArray operations=file["operations"].toArray(); if(operations.isEmpty()){errors<<path+": operations must be non-empty";continue;} ops+=operations.size();
+        for(int oi=0;oi<operations.size();++oi){QJsonObject op=operations[oi].toObject();QString kind=op["kind"].toString();int expected=op["expected_matches"].toInt(1);QString needle,repl;
+            if(kind=="replace"||kind=="delete"){needle=op["old"].toString();repl=kind=="delete"?QString():op["new"].toString();}
+            else if(kind=="insert_after"){needle=op["anchor"].toString();repl=needle+op["text"].toString();}
+            else {errors<<QString("%1 operation %2: unknown kind %3").arg(path).arg(oi).arg(kind);continue;}
+            if(needle.isEmpty()){errors<<QString("%1 operation %2: match text must be non-empty").arg(path).arg(oi);continue;}
+            if(needle.toUtf8().size()>maxBlock||repl.toUtf8().size()>maxBlock){errors<<QString("%1 operation %2: text block exceeds %3 bytes").arg(path).arg(oi).arg(maxBlock);continue;}
+            int count=cur.count(needle);if(count!=expected){errors<<QString("%1 operation %2: matches %3 locations; expected %4").arg(path).arg(oi).arg(count).arg(expected);continue;}
+            int pos=0;for(int n=0;n<expected;++n){pos=cur.indexOf(needle,pos);cur.replace(pos,needle.size(),repl);pos+=repl.size();}
+        }
+        bytes+=old.toUtf8().size()+cur.toUtf8().size();prepared.append({path,old,cur});
+    }
+    if(ops>maxOps)errors<<QString("too many operations; maximum is %1").arg(maxOps);if(bytes>maxResult)errors<<QString("result exceeds %1 bytes").arg(maxResult);
+    QJsonArray conditions=args["postconditions"].toArray();for(int i=0;i<conditions.size();++i){QJsonObject c=conditions[i].toObject();QString path=expandHome(c["path"].toString()),content;for(const auto& p:prepared)if(p.path==path)content=p.newText;if(content.isEmpty()){QFile f(path);if(f.open(QIODevice::ReadOnly))content=QString::fromUtf8(f.readAll());}if(c.contains("contains")&&!content.contains(c["contains"].toString()))errors<<QString("postcondition %1: %2 does not contain expected text").arg(i).arg(path);if(c.contains("does_not_contain")&&content.contains(c["does_not_contain"].toString()))errors<<QString("postcondition %1: %2 still contains forbidden text").arg(i).arg(path);}
+    if(!errors.isEmpty())return "Error: no changes applied.\n- "+errors.join("\n- ");
+    QString diff;for(const auto& p:prepared)if(p.oldText!=p.newText)diff+=QString("--- %1\n+++ %1\n@@ changed content: %2 -> %3 bytes @@\n").arg(p.path).arg(p.oldText.toUtf8().size()).arg(p.newText.toUtf8().size());
+    if(args["dry_run"].toBool(false))return QString("Dry run: no changes applied.\nFiles: %1\n\n%2").arg(prepared.size()).arg(diff).trimmed();
+    QStringList temps;for(const auto& p:prepared){QString tmp=p.path+QString(".pengy-tmp-%1").arg(QCoreApplication::applicationPid());QFile f(tmp);if(!f.open(QIODevice::WriteOnly|QIODevice::Truncate)){for(const auto&t:temps)QFile::remove(t);return "Error: write failed; no changes applied.";}f.write(p.newText.toUtf8());f.close();temps<<tmp;}
+    for(int i=0;i<prepared.size();++i){QFile::remove(prepared[i].path);if(!QFile::rename(temps[i],prepared[i].path))return "Error: rename failed after validation; changes may be partially applied.";}
+    return QString("Applied changes to %1 file(s).\n\n%2").arg(prepared.size()).arg(diff).trimmed();
+}
+
 static QString toolGlob(const QJsonObject& args);
 static QString toolTodowrite(const QJsonObject& args);
 
@@ -1778,6 +1819,7 @@ QString execute(const QString& name, const QJsonObject& args,
     if (name == "read_file")          return toolReadFile(args);
     if (name == "write_file")         return toolWriteFile(args);
     if (name == "replace_in_file")    return toolReplaceInFile(args);
+    if (name == "apply_changes")      return toolApplyChanges(args);
     if (name == "run_bash")           return toolRunBash(args, cancel, ctx);
     if (name == "web_search")         return toolWebSearch(args);
     if (name == "download_file")      return toolDownloadFile(args);

@@ -15,6 +15,8 @@
 #include <QPointer>
 #include <QAbstractItemView>
 #include <QTabWidget>
+#include "themehelper.h"
+#include "iconhelper.h"
 
 /* ComboBox whose dropdown popup is ~50% wider than the combo itself,
    so short-content combos (scale %, theme, accent) feel proportional
@@ -57,9 +59,12 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
         if (scales[i] == cfg.uiScale) idx = i;
     }
     m_uiScale->setCurrentIndex(idx);
-    m_uiScale->setToolTip("Scales the entire UI. A restart is needed for the change to take full effect.");
-    uiForm->addRow(labelWithTip("UI Scale:", "Scales the entire UI. A restart is needed for the change to take full effect."), m_uiScale);
-
+    m_uiScale->setToolTip("Scales the entire UI. Restart Pengy to apply a change.");
+    uiForm->addRow(labelWithTip("UI Scale:", "Scales the entire UI. Restart Pengy to apply a change."), m_uiScale);
+    auto* scaleNote = new QLabel("UI scale changes take effect after restarting Pengy.");
+    scaleNote->setWordWrap(true);
+    scaleNote->setStyleSheet(QString("color:%1;").arg(makeTheme(cfg.themeMode, cfg.themeAccent)["muted"]));
+    uiForm->addRow("", scaleNote);
     m_themeMode = new WidePopupComboBox;
     m_themeMode->addItem("System", "system");
     m_themeMode->addItem("Light", "light");
@@ -104,16 +109,17 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     m_model->setToolTip("Model name sent in chat completion requests. Use Fetch to list available models from the endpoint.");
     modelRow->addWidget(m_model, 1);
 
-    m_fetchBtn = new QPushButton("↻ Fetch");
+    m_fetchBtn = new QPushButton("Fetch");
     m_fetchBtn->setToolTip("Fetch available models from the /models endpoint");
     m_fetchBtn->setFixedWidth(80);
+    applyPengyIcon(m_fetchBtn, "refresh", makeTheme(cfg.themeMode, cfg.themeAccent), 15);
     connect(m_fetchBtn, &QPushButton::clicked, this, &SettingsDialog::fetchModels);
     modelRow->addWidget(m_fetchBtn);
 
     llmForm->addRow(labelWithTip("Model:", "Model name sent in chat completion requests. Use Fetch to list available models from the endpoint."), modelRow);
 
     m_systemMsg = new QTextEdit(cfg.systemMessage);
-    m_systemMsg->setMaximumHeight(100);
+    m_systemMsg->setMaximumHeight(scaledSize(100, cfg.uiScale));
     m_systemMsg->setToolTip("The system prompt that sets the assistant's behavior, tone, and constraints.");
     llmForm->addRow(labelWithTip("System Message:", "The system prompt that sets the assistant's behavior, tone, and constraints."), m_systemMsg);
 
@@ -260,7 +266,7 @@ void SettingsDialog::fetchModels() {
 
             QMetaObject::invokeMethod(model, [model, btn, ids, self]() {
                 btn->setEnabled(true);
-                btn->setText("↻ Fetch");
+                btn->setText("Fetch");
                 if (ids.isEmpty()) {
                     if (self) QMessageBox::information(self, "No Models",
                                   "The endpoint returned an empty model list.");
@@ -277,7 +283,7 @@ void SettingsDialog::fetchModels() {
                           .arg(code).arg(baseUrl);
             QMetaObject::invokeMethod(model, [btn, err, self]() {
                 btn->setEnabled(true);
-                btn->setText("↻ Fetch");
+                btn->setText("Fetch");
                 if (self) QMessageBox::warning(self, "Fetch Failed", err);
             }, Qt::QueuedConnection);
         }

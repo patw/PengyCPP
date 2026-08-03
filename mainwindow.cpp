@@ -6,6 +6,9 @@
 #include "settingsdialog.h"
 #include "tasksdialog.h"
 #include "themehelper.h"
+#include "iconhelper.h"
+#include <QTabBar>
+#include <QToolButton>
 #include "config.h"
 #include "chatmanager.h"
 #include "tools.h"
@@ -36,6 +39,7 @@
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_config = configLoad();
+    m_runtimeUiScale = m_config.uiScale;
     setupUi();
     applyTheme();
 
@@ -95,7 +99,8 @@ void MainWindow::setupUi() {
     auto* rightSplitter = new QSplitter(Qt::Vertical);
 
     m_tabWidget = new QTabWidget;
-    m_tabWidget->setTabsClosable(true);
+    m_tabWidget->setTabsClosable(false);
+    m_tabWidget->tabBar()->setExpanding(false);
     m_tabWidget->setMovable(true);
     m_tabWidget->setUsesScrollButtons(true);
     connect(m_tabWidget, &QTabWidget::tabCloseRequested, this, &MainWindow::closeTab);
@@ -110,8 +115,9 @@ void MainWindow::setupUi() {
     connect(m_chatInput, &ChatInputWidget::messageSent, this, &MainWindow::sendMessage);
     inputLayout->addWidget(m_chatInput);
 
-    m_stopBtn = new QPushButton("⏹ Stop");
-    m_stopBtn->setFixedHeight(scaledSize(32, m_config.uiScale));
+    m_stopBtn = new QPushButton("Stop");
+    m_stopBtn->setFixedHeight(scaledSize(32, m_runtimeUiScale));
+    applyPengyIcon(m_stopBtn, "stop", makeTheme(m_config.themeMode, m_config.themeAccent), 16, "primary_fg", "primary_fg");
     m_stopBtn->setStyleSheet(
         "QPushButton { background-color: #d20f39; color: white; border: none; "
         "border-radius: 8px; padding: 4px 14px; font-weight: bold; font-size: 11pt; }"
@@ -137,11 +143,13 @@ void MainWindow::setupUi() {
 
 void MainWindow::applyTheme() {
     Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
-    qApp->setStyleSheet(appStyleSheet(theme, m_config.uiScale));
-    if (m_chatInput) m_chatInput->applyTheme(theme, m_config.uiScale);
-    if (m_chatHistory) m_chatHistory->applyTheme(theme, m_config.uiScale);
+    qApp->setFont(scaledSystemFont(m_runtimeUiScale));
+    qApp->setStyleSheet(appStyleSheet(theme, m_runtimeUiScale));
+    if (m_chatInput) m_chatInput->applyTheme(theme, m_runtimeUiScale);
+    if (m_chatHistory) m_chatHistory->applyTheme(theme, m_runtimeUiScale);
     if (m_stopBtn) {
-        m_stopBtn->setFixedHeight(scaledSize(32, m_config.uiScale));
+        m_stopBtn->setFixedHeight(scaledSize(32, m_runtimeUiScale));
+        applyPengyIcon(m_stopBtn, "stop", theme, 16, "primary_fg", "primary_fg");
         m_stopBtn->setStyleSheet(QString(
             "QPushButton { background-color:%1; color:white; border:none; border-radius:8px; padding:4px 14px; font-weight:bold; font-size:11pt; }"
             "QPushButton:hover { background-color:%2; }").arg(theme["danger"], theme["danger_hover"]));
@@ -149,7 +157,13 @@ void MainWindow::applyTheme() {
     // Re-theme all open tab chat views
     for (auto& session : m_openTabs) {
         if (session.chatView)
-            session.chatView->applyTheme(theme, m_config.uiScale);
+            session.chatView->applyTheme(theme, m_runtimeUiScale);
+    }
+    for (int i = 0; i < m_tabWidget->count(); ++i) {
+        if (auto* button = qobject_cast<QToolButton*>(m_tabWidget->tabBar()->tabButton(i, QTabBar::RightSide))) {
+            button->setFixedSize(scaledSize(22, m_runtimeUiScale), scaledSize(22, m_runtimeUiScale));
+            applyPengyIcon(button, "close", theme, scaledSize(13, m_runtimeUiScale), "muted", "danger");
+        }
     }
 }
 
@@ -169,7 +183,7 @@ TabSession* MainWindow::addTab(const QJsonObject& chat, bool switchTo) {
 
     // Apply theme FIRST so renderNow() uses the correct colours
     Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
-    chatView->applyTheme(theme, m_config.uiScale);
+    chatView->applyTheme(theme, m_runtimeUiScale);
 
     // Render existing messages
     QJsonArray messages = chat["messages"].toArray();
@@ -182,6 +196,7 @@ TabSession* MainWindow::addTab(const QJsonObject& chat, bool switchTo) {
 
     QString title = chat["title"].toString("New Chat").left(30);
     int idx = m_tabWidget->addTab(chatView, title);
+    installTabCloseButton(idx);
 
     if (switchTo)
         m_tabWidget->setCurrentIndex(idx);
@@ -190,7 +205,26 @@ TabSession* MainWindow::addTab(const QJsonObject& chat, bool switchTo) {
     return &m_openTabs[chatId];
 }
 
+void MainWindow::installTabCloseButton(int index) {
+    auto* button = new QToolButton(m_tabWidget->tabBar());
+    button->setAutoRaise(true);
+    button->setCursor(Qt::ArrowCursor);
+    button->setToolTip("Close tab");
+    button->setAccessibleName("Close tab");
+    button->setFixedSize(scaledSize(22, m_runtimeUiScale), scaledSize(22, m_runtimeUiScale));
+    Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
+    applyPengyIcon(button, "close", theme, scaledSize(13, m_runtimeUiScale), "muted", "danger");
+    button->setStyleSheet(QString("QToolButton { background:transparent; border:none; border-radius:5px; padding:3px; } QToolButton:hover { background:%1; }").arg(theme["hover"]));
+    connect(button, &QToolButton::clicked, this, [this, button]() {
+        QTabBar* bar = m_tabWidget->tabBar();
+        for (int i = 0; i < m_tabWidget->count(); ++i)
+            if (bar->tabButton(i, QTabBar::RightSide) == button) { closeTab(i); return; }
+    });
+    m_tabWidget->tabBar()->setTabButton(index, QTabBar::RightSide, button);
+}
+
 void MainWindow::closeTab(int index) {
+    if (index < 0) return;
     QWidget* w = m_tabWidget->widget(index);
     QString chatId;
     for (auto it = m_openTabs.begin(); it != m_openTabs.end(); ++it) {

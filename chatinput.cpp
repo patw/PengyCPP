@@ -1,5 +1,6 @@
 #include "chatinput.h"
 #include "themehelper.h"
+#include "iconhelper.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFileDialog>
@@ -25,9 +26,9 @@ InputEdit::InputEdit(QWidget* parent) : QTextEdit(parent) {
 }
 
 void InputEdit::applyTheme(const Theme& theme, int scale) {
-    auto font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    font.setPointSizeF(scaledFont(10, scale));
+    auto font = scaledChatFont(scale);
     setFont(font);
+    document()->setDefaultFont(font);
     m_theme = theme;
     m_scale = scale;
     m_minH = scaledSize(40, scale);
@@ -112,9 +113,10 @@ ChatInputWidget::ChatInputWidget(QWidget* parent) : QWidget(parent) {
     rowLayout->setContentsMargins(0, 0, 0, 0);
     rowLayout->setSpacing(4);
 
-    m_attachBtn = new QPushButton("📎");
+    m_attachBtn = new QPushButton;
     m_attachBtn->setFixedSize(36, 36);
     m_attachBtn->setToolTip("Attach a file (text or image)");
+    m_attachBtn->setAccessibleName("Attach a file");
     // Styled by applyTheme().
     connect(m_attachBtn, &QPushButton::clicked, this, &ChatInputWidget::pickFile);
     rowLayout->addWidget(m_attachBtn);
@@ -134,8 +136,9 @@ void ChatInputWidget::applyTheme(const Theme& theme, int scale) {
     if (m_attachBtn) {
         int sz = scaledSize(36, scale);
         m_attachBtn->setFixedSize(sz, sz);
+        applyPengyIcon(m_attachBtn, "attach", theme, scaledSize(18, scale));
         m_attachBtn->setStyleSheet(QString(R"(
-QPushButton { background:transparent; color:%1; border:1px solid %2; border-radius:6px; font-size:16px; }
+QPushButton { background:transparent; color:%1; border:1px solid %2; border-radius:6px; }
 QPushButton:hover { background:%3; }
 )" ).arg(theme["fg"], theme["border"], theme["hover"]));
     }
@@ -216,17 +219,21 @@ void ChatInputWidget::addChip(const QString& path) {
     chipLayout->setContentsMargins(5, 2, 3, 2);
     chipLayout->setSpacing(3);
 
-    QString icon = isImageFile(path) ? "🖼" : "📄";
     QString fname = path.section('/', -1);
-    auto* label = new QLabel(QString("%1 %2").arg(icon, fname));
+    auto* iconLabel = new QLabel;
+    iconLabel->setPixmap(renderPengyIcon(isImageFile(path) ? "image" : "file", m_theme["fg"], 14));
+    chipLayout->addWidget(iconLabel);
+    auto* label = new QLabel(fname);
     label->setStyleSheet(QString("font-size:11px; color:%1; border:none; background:transparent;").arg(m_theme["fg"]));
     chipLayout->addWidget(label);
 
-    auto* removeBtn = new QPushButton("✕");
-    removeBtn->setFixedSize(14, 14);
+    auto* removeBtn = new QPushButton;
+    removeBtn->setFixedSize(16, 16);
+    removeBtn->setAccessibleName("Remove " + fname);
+    applyPengyIcon(removeBtn, "close", m_theme, 10, "muted", "danger");
     removeBtn->setStyleSheet(QString(
-        "QPushButton { background:transparent; border:none; color:%1; font-size:9px; }"
-        "QPushButton:hover { color:%2; }").arg(m_theme["muted"], m_theme["danger"]));
+        "QPushButton { background:transparent; border:none; border-radius:3px; }"
+        "QPushButton:hover { background:%2; }").arg(m_theme["muted"], m_theme["danger"]));
     QString pathCopy = path;
     connect(removeBtn, &QPushButton::clicked, this, [this, pathCopy, chip]() {
         removeChip(pathCopy, chip);

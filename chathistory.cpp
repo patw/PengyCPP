@@ -1,5 +1,6 @@
 #include "chathistory.h"
 #include "themehelper.h"
+#include "iconhelper.h"
 #include "chatmanager.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -23,17 +24,17 @@ void ChatHistoryWidget::setupUi() {
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(4);
 
-    m_newChatBtn = new QPushButton("+ New Chat");
+    m_newChatBtn = new QPushButton("New Chat");
     m_newChatBtn->setFixedHeight(36);
     connect(m_newChatBtn, &QPushButton::clicked, this, &ChatHistoryWidget::newChatRequested);
     layout->addWidget(m_newChatBtn);
 
-    m_settingsBtn = new QPushButton("⚙ Settings");
+    m_settingsBtn = new QPushButton("Settings");
     m_settingsBtn->setFixedHeight(36);
     connect(m_settingsBtn, &QPushButton::clicked, this, &ChatHistoryWidget::settingsRequested);
     layout->addWidget(m_settingsBtn);
 
-    m_tasksBtn = new QPushButton("📋 Tasks");
+    m_tasksBtn = new QPushButton("Tasks");
     m_tasksBtn->setFixedHeight(36);
     connect(m_tasksBtn, &QPushButton::clicked, this, &ChatHistoryWidget::tasksRequested);
     layout->addWidget(m_tasksBtn);
@@ -112,6 +113,11 @@ QListWidget::item:selected { background-color:%4; color:%2; }
 QListWidget::item:hover { background-color:%5; }
 )" ).arg(theme["panel"], theme["fg"], theme["border_soft"], theme["selection"], theme["hover"]));
     }
+    int controlH = scaledSize(36, scale);
+    for (QPushButton* button : {m_newChatBtn, m_settingsBtn, m_tasksBtn}) button->setFixedHeight(controlH);
+    applyPengyIcon(m_newChatBtn, "new-chat", theme, scaledSize(16, scale));
+    applyPengyIcon(m_settingsBtn, "settings", theme, scaledSize(16, scale));
+    applyPengyIcon(m_tasksBtn, "tasks", theme, scaledSize(16, scale));
     if (m_statusLabel) m_statusLabel->setStyleSheet(QString("font-weight:bold; color:%1;").arg(theme["fg"]));
     for (QLabel* label : {m_statusText, m_modelLabel, m_confirmLabel, m_tokensLabel}) {
         if (label) label->setStyleSheet(QString("color:%1;").arg(theme["fg"]));
@@ -133,16 +139,20 @@ QWidget* ChatHistoryWidget::makeItemWidget(const QString& id, const QString& tit
         "QPushButton { background-color:transparent; color:%1; border:none; border-radius:4px; font-size:13px; padding:0px; }"
         "QPushButton:hover { background-color:%2; }").arg(m_theme["fg"], m_theme["hover"]);
 
-    auto* saveBtn = new QPushButton("💾");
-    saveBtn->setFixedSize(24, 24);
+    auto* saveBtn = new QPushButton;
+    saveBtn->setFixedSize(scaledSize(24, m_scale), scaledSize(24, m_scale));
     saveBtn->setToolTip("Save chat as Markdown");
+    saveBtn->setAccessibleName("Save chat as Markdown");
+    applyPengyIcon(saveBtn, "save", m_theme, scaledSize(14, m_scale));
     saveBtn->setStyleSheet(btnStyle);
     connect(saveBtn, &QPushButton::clicked, this, [this, id]() { saveChatMarkdown(id); });
     layout->addWidget(saveBtn);
 
-    auto* delBtn = new QPushButton("🗑");
-    delBtn->setFixedSize(24, 24);
+    auto* delBtn = new QPushButton;
+    delBtn->setFixedSize(scaledSize(24, m_scale), scaledSize(24, m_scale));
     delBtn->setToolTip("Delete chat");
+    delBtn->setAccessibleName("Delete chat");
+    applyPengyIcon(delBtn, "delete", m_theme, scaledSize(14, m_scale), "fg", "danger");
     delBtn->setStyleSheet(btnStyle);
     connect(delBtn, &QPushButton::clicked, this, [this, id]() { emit deleteRequested(id); });
     layout->addWidget(delBtn);

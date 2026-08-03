@@ -4,6 +4,8 @@
 #include <QApplication>
 #include <QPalette>
 #include <QColor>
+#include <QFont>
+#include <QFontDatabase>
 #include <QtGlobal>
 
 struct Theme {
@@ -77,29 +79,26 @@ inline Theme makeTheme(const QString& mode, const QString& accent) {
     return t;
 }
 
-// main.cpp bakes ui_scale into QT_SCALE_FACTOR at launch, which makes Qt natively
-// scale every logical pixel (fonts and widget geometry alike) for the whole app.
-// scaledSize()/scaledFont() must divide that back out, or a value already covered
-// by QT_SCALE_FACTOR gets multiplied again here. Before a restart QT_SCALE_FACTOR
-// still reflects the old setting, so this correctly yields a live-preview delta;
-// after a restart it collapses to a no-op once the two agree.
-inline double dpiScaleAlreadyApplied() {
-    bool ok = false;
-    double v = qEnvironmentVariable("QT_SCALE_FACTOR").toDouble(&ok);
-    return (ok && v > 0) ? v : 1.0;
+// Qt owns OS display and per-monitor DPI scaling. Pengy's preference is a
+// separate, direct multiplier applied to fonts and explicit widget metrics.
+inline double uiScaleFactor(int scale) { return qBound(50, scale, 300) / 100.0; }
+inline int scaledSize(int px, int scale) { return qMax(1, qRound(px * uiScaleFactor(scale))); }
+inline double scaledFont(double pt, int scale) { return qMax(1.0, pt * uiScaleFactor(scale)); }
+inline QFont scaledSystemFont(int scale) {
+    QFont font = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
+    font.setPointSizeF(qMax(1.0, (font.pointSizeF() > 0 ? font.pointSizeF() : 10.0) * uiScaleFactor(scale)));
+    return font;
 }
-
-inline int scaledSize(int px, int scale) {
-    return qMax(1, qRound(px * (qBound(50, scale, 300) / 100.0) / dpiScaleAlreadyApplied()));
-}
-inline double scaledFont(int pt, int scale) {
-    return qMax(1.0, pt * (qBound(50, scale, 300) / 100.0) / dpiScaleAlreadyApplied());
+inline QFont scaledChatFont(int scale) {
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    font.setPointSizeF(qMax(1.0, (font.pointSizeF() > 0 ? font.pointSizeF() : 10.0) * uiScaleFactor(scale)));
+    return font;
 }
 
 inline QString appStyleSheet(const Theme& t, int scale) {
     int padV = scaledSize(5, scale), padH = scaledSize(10, scale);
     return QString(R"(
-QMainWindow, QWidget { background-color:%1; color:%2; }
+QMainWindow, QWidget { background-color:%1; color:%2; font-family:"%17"; font-size:%18pt; }
 QSplitter::handle { background-color:%3; }
 QFrame { color:%2; border-color:%4; }
 QLabel { color:%2; }
@@ -117,10 +116,11 @@ QDialog { background-color:%1; color:%2; }
 QMenu { background-color:%5; color:%2; border:1px solid %4; }
 QMenu::item:selected { background-color:%6; }
 QTabWidget::pane { background-color:%1; border:none; }
+QTabWidget::tab-bar { alignment:left; }
 QTabBar::tab { background-color:%5; color:%2; border:1px solid %3; border-bottom:none; border-top-left-radius:6px; border-top-right-radius:6px; padding:%9px %10px; margin-right:2px; }
 QTabBar::tab:selected { background-color:%1; color:%11; border-bottom:2px solid %11; }
 QTabBar::tab:hover { background-color:%7; }
 QTabBar::tab:!selected { color:%12; }
 )" ).arg(t["bg"], t["fg"], t["border_soft"], t["border"], t["panel"], t["selection"], t["hover"], t["panel_2"])
-    .arg(padV).arg(padH).arg(t["primary"], t["muted"], t["input_bg"], t["input_fg"], t["primary_fg"], t["focus"]);
+    .arg(padV).arg(padH).arg(t["primary"], t["muted"], t["input_bg"], t["input_fg"], t["primary_fg"], t["focus"]).arg(scaledSystemFont(scale).family()).arg(scaledSystemFont(scale).pointSizeF());
 }

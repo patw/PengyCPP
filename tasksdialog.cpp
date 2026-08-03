@@ -1,5 +1,6 @@
 #include "tasksdialog.h"
 #include "taskmanager.h"
+#include "iconhelper.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -14,7 +15,7 @@ void TasksDialog::setupUi() {
     auto* layout = new QVBoxLayout(this);
     auto* header = new QHBoxLayout;
     auto* title = new QLabel("Tasks"); title->setStyleSheet("font-size:16pt;font-weight:bold;"); header->addWidget(title); header->addStretch();
-    m_newBtn = new QPushButton("+ New Template"); connect(m_newBtn,&QPushButton::clicked,this,&TasksDialog::newTask); header->addWidget(m_newBtn); layout->addLayout(header);
+    m_newBtn = new QPushButton("New Template"); connect(m_newBtn,&QPushButton::clicked,this,&TasksDialog::newTask); header->addWidget(m_newBtn); layout->addLayout(header);
     auto* hint = new QLabel("Use %placeholder% in templates to prompt for dynamic values."); hint->setWordWrap(true); layout->addWidget(hint);
     m_list = new QListWidget; m_list->setSelectionMode(QAbstractItemView::NoSelection); layout->addWidget(m_list,1);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close); connect(buttons,&QDialogButtonBox::rejected,this,&QDialog::reject); layout->addWidget(buttons);
@@ -23,6 +24,7 @@ void TasksDialog::setupUi() {
         .arg(m_theme["bg"], m_theme["fg"], m_theme["panel"], m_theme["border_soft"]));
     m_newBtn->setStyleSheet(QString("QPushButton{background-color:%1;color:%2;border:none;border-radius:8px;padding:7px 14px;font-weight:bold;}QPushButton:hover{background-color:%3;}")
         .arg(m_theme["primary"], m_theme["primary_fg"], m_theme["primary_hover"]));
+    applyPengyIcon(m_newBtn, "new-chat", m_theme, 16, "primary_fg", "primary_fg");
 }
 void TasksDialog::loadTasks() {
     m_tasks = tasksLoad(); m_list->clear();
@@ -37,8 +39,8 @@ QWidget* TasksDialog::makeTaskRow(const QJsonObject& task) {
     auto* title = new QLabel(task["title"].toString("Untitled Task")); title->setStyleSheet(QString("font-weight:bold;color:%1;").arg(m_theme["fg"])); title->setMinimumWidth(0); vl->addWidget(title);
     QString preview = task["template"].toString().replace('\n',' '); if (preview.size()>70) preview = preview.left(70) + "…"; auto* prev = new QLabel(preview); prev->setStyleSheet(QString("font-size:11px;color:%1;").arg(m_theme["muted"])); vl->addWidget(prev); layout->addWidget(col,1);
     QString btnStyle = QString("QPushButton{background-color:transparent;color:%1;border:none;border-radius:4px;font-size:13px;}QPushButton:hover{background-color:%2;}").arg(m_theme["fg"], m_theme["hover"]);
-    auto addBtn=[&](const QString& txt,const QString& tip, auto fn){ auto* b=new QPushButton(txt); b->setFixedSize(28,28); b->setToolTip(tip); b->setStyleSheet(btnStyle); connect(b,&QPushButton::clicked,this,[=](){ fn(task); }); layout->addWidget(b); };
-    addBtn("▶","Play task",[this](const QJsonObject&t){playTask(t);}); addBtn("✏","Edit task",[this](const QJsonObject&t){editTask(t);}); addBtn("🗑","Delete task",[this](const QJsonObject&t){deleteTask(t);}); return row;
+    auto addBtn=[&](const QString& icon, const QString& tip, const QString& activeRole, auto fn){ auto* b=new QPushButton; b->setFixedSize(28,28); b->setToolTip(tip); b->setAccessibleName(tip); applyPengyIcon(b, icon, m_theme, 16, "fg", activeRole); b->setStyleSheet(btnStyle); connect(b,&QPushButton::clicked,this,[=](){ fn(task); }); layout->addWidget(b); };
+    addBtn("play","Play task","primary",[this](const QJsonObject&t){playTask(t);}); addBtn("edit","Edit task","primary",[this](const QJsonObject&t){editTask(t);}); addBtn("delete","Delete task","danger",[this](const QJsonObject&t){deleteTask(t);}); return row;
 }
 void TasksDialog::newTask() { TaskEditDialog d({}, m_theme, this); if (d.exec()==QDialog::Accepted) { taskCreate(d.title(), d.templ()); loadTasks(); } }
 void TasksDialog::editTask(const QJsonObject& task) { TaskEditDialog d(task, m_theme, this); if (d.exec()==QDialog::Accepted) { taskUpdate(task["id"].toString(), d.title(), d.templ()); loadTasks(); } }

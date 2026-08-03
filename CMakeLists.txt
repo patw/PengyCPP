@@ -13,7 +13,7 @@ configure_file(
     @ONLY
 )
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Svg)
 
 # ── CLI ─────────────────────────────────────────────────────────────
 add_executable(pengy_cli
@@ -67,6 +67,7 @@ target_link_libraries(pengy PRIVATE
     Qt6::Core
     Qt6::Widgets
     Qt6::Network
+    Qt6::Svg
 )
 
 target_include_directories(pengy PRIVATE ${CMAKE_BINARY_DIR})
@@ -94,7 +95,7 @@ if(Qt6Test_FOUND)
         web/web_resources.qrc
     )
     target_link_libraries(pengy_tests PRIVATE
-        Qt6::Core Qt6::Widgets Qt6::Network Qt6::Test
+        Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Test
     )
     # Ensure CLI and web binaries exist before tests run (subprocess tests)
     add_dependencies(pengy_tests pengy_cli pengy_web)

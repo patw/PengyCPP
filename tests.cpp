@@ -508,6 +508,15 @@ private slots:
         QVERIFY(Tools::isReadOnly("fetch_url"));
     }
 
+    void applyChangesIsRegisteredAndWriteOnly() {
+        bool found = false;
+        for (const auto& v : Tools::toolDefinitions()) {
+            if (v.toObject()["function"].toObject()["name"].toString() == "apply_changes") found = true;
+        }
+        QVERIFY(found);
+        QVERIFY(!Tools::isReadOnly("apply_changes"));
+    }
+
     void writeToolsNotReadonly() {
         QVERIFY(!Tools::isReadOnly("write_file"));
         QVERIFY(!Tools::isReadOnly("replace_in_file"));
@@ -523,8 +532,8 @@ private slots:
 
     // ── Tools: definitions ──────────────────────────────────────────
 
-    void toolDefinitionsHasFourteen() {
-        QCOMPARE(Tools::toolDefinitions().size(), 14);
+    void toolDefinitionsHasFifteen() {
+        QCOMPARE(Tools::toolDefinitions().size(), 15);
     }
 
     void toolDefinitionsAllFunctionType() {
@@ -538,7 +547,7 @@ private slots:
         for (const QJsonValue& v : Tools::toolDefinitions()) {
             names.insert(v.toObject()["function"].toObject()["name"].toString());
         }
-        QCOMPARE(names.size(), 14);
+        QCOMPARE(names.size(), 15);
     }
 
     void toolDefinitionsAllHaveRequired() {
@@ -557,7 +566,7 @@ private slots:
         QByteArray json = QJsonDocument(defs).toJson();
         QJsonDocument parsed = QJsonDocument::fromJson(json);
         QVERIFY(parsed.isArray());
-        QCOMPARE(parsed.array().size(), 14);
+        QCOMPARE(parsed.array().size(), 15);
     }
 
     // ── Tools: read_file ────────────────────────────────────────────
@@ -662,6 +671,39 @@ private slots:
             QJsonObject{{"path", "/tmp/pengy_nonexistent_12345.txt"},
                         {"old_str", "x"}, {"new_str", "y"}});
         QVERIFY(result.contains("not found") || result.contains("Not found"));
+    }
+
+    // ── Tools: apply_changes ────────────────────────────────────────
+
+    void applyChangesReplacesMultipleFiles() {
+        QTemporaryDir dir;
+        QString a = dir.path() + "/a.txt", b = dir.path() + "/b.txt";
+        { QFile f(a); f.open(QIODevice::WriteOnly); f.write("alpha\\nbeta\\n"); }
+        { QFile f(b); f.open(QIODevice::WriteOnly); f.write("one\\ntwo\\n"); }
+        QString result = Tools::execute("apply_changes", QJsonObject{
+            {"changes", QJsonArray{
+                QJsonObject{{"path",a},{"operations",QJsonArray{QJsonObject{{"kind","replace"},{"old","beta"},{"new","BETA"}}}}},
+                QJsonObject{{"path",b},{"operations",QJsonArray{QJsonObject{{"kind","delete"},{"old","two"}}}}}
+            }},
+            {"postconditions", QJsonArray{QJsonObject{{"path",a},{"contains","BETA"}}}}
+        });
+        QVERIFY(result.contains("Applied changes"));
+        QFile fa(a); QVERIFY(fa.open(QIODevice::ReadOnly)); QVERIFY(QString::fromUtf8(fa.readAll()).contains("BETA"));
+        QFile fb(b); QVERIFY(fb.open(QIODevice::ReadOnly)); QVERIFY(!QString::fromUtf8(fb.readAll()).contains("two"));
+    }
+
+    void applyChangesDryRunAndAtomicFailure() {
+        QTemporaryDir dir; QString a=dir.path()+"/a.txt", b=dir.path()+"/b.txt";
+        { QFile f(a); f.open(QIODevice::WriteOnly); f.write("duplicate\\nduplicate\\n"); }
+        { QFile f(b); f.open(QIODevice::WriteOnly); f.write("unchanged"); }
+        QString result=Tools::execute("apply_changes", QJsonObject{{"changes",QJsonArray{
+            QJsonObject{{"path",a},{"operations",QJsonArray{QJsonObject{{"kind","replace"},{"old","duplicate"},{"new","x"}}}}},
+            QJsonObject{{"path",b},{"operations",QJsonArray{QJsonObject{{"kind","replace"},{"old","unchanged"},{"new","changed"}}}}}
+        }}});
+        QVERIFY(result.contains("no changes applied"));
+        QFile fb(b); QVERIFY(fb.open(QIODevice::ReadOnly)); QCOMPARE(fb.readAll(), QByteArray("unchanged"));
+        result=Tools::execute("apply_changes", QJsonObject{{"changes",QJsonArray{QJsonObject{{"path",b},{"operations",QJsonArray{QJsonObject{{"kind","replace"},{"old","unchanged"},{"new","changed"}}}}}}},{"dry_run",true}});
+        QVERIFY(result.contains("Dry run")); QFile fb2(b); QVERIFY(fb2.open(QIODevice::ReadOnly)); QCOMPARE(fb2.readAll(), QByteArray("unchanged"));
     }
 
     // ── Tools: directory_tree ───────────────────────────────────────
@@ -1362,7 +1404,7 @@ private slots:
 
         QCOMPARE(stub.requests.size(), 1);
         QCOMPARE(stub.requests[0]["model"].toString(), QString("stub-model"));
-        QCOMPARE(stub.requests[0]["tools"].toArray().size(), 14);
+        QCOMPARE(stub.requests[0]["tools"].toArray().size(), 15);
         QVERIFY(!stub.requests[0].contains("reasoning_effort"));
     }
 
