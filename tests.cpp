@@ -879,6 +879,38 @@ private slots:
         QVERIFY(result.contains("mydir/"));
     }
 
+    void globDirPrefixInPattern() {
+        QTemporaryDir dir;
+        { QFile f(dir.path() + "/a.py"); f.open(QIODevice::WriteOnly); f.write("x"); }
+        { QFile f(dir.path() + "/b.rs"); f.open(QIODevice::WriteOnly); f.write("y"); }
+
+        QString pattern = dir.path() + QString("/*.py");
+        QString result = Tools::execute("glob", QJsonObject{{"pattern", pattern}});
+        QVERIFY(result.contains("a.py"));
+        QVERIFY(!result.contains("b.rs"));
+    }
+
+    void globExactFileInPattern() {
+        QTemporaryDir dir;
+        { QFile f(dir.path() + "/target.rs"); f.open(QIODevice::WriteOnly); f.write("content"); }
+
+        QString pattern = dir.path() + QString("/target.rs");
+        QString result = Tools::execute("glob", QJsonObject{{"pattern", pattern}});
+        QVERIFY(result.contains("target.rs"));
+    }
+
+    void globDirPrefixWithRecursive() {
+        QTemporaryDir dir;
+        { QFile f(dir.path() + "/a.py"); f.open(QIODevice::WriteOnly); f.write("x"); }
+        QDir(dir.path()).mkdir("sub");
+        { QFile f(dir.path() + "/sub/b.py"); f.open(QIODevice::WriteOnly); f.write("y"); }
+
+        QString pattern = dir.path() + QString("/**/*.py");
+        QString result = Tools::execute("glob", QJsonObject{{"pattern", pattern}});
+        QVERIFY(result.contains("a.py"));
+        QVERIFY(result.contains("sub/b.py"));
+    }
+
     // ── Tools: todowrite ────────────────────────────────────────────
 
     void todowriteEchoesBackValidTodos() {

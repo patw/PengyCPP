@@ -934,6 +934,8 @@ void MainWindow::handleQuestionRequest(TabSession* session, const QJsonObject& e
     dlg.setWindowTitle("Pengy — Questions");
     dlg.setModal(true);
     dlg.setMinimumWidth(450);
+    dlg.setMaximumWidth(750);
+    dlg.setStyleSheet(appStyleSheet(theme, m_config.uiScale));
 
     QVBoxLayout* layout = new QVBoxLayout(&dlg);
     QLabel* header = new QLabel("The assistant needs your input:");
@@ -942,15 +944,19 @@ void MainWindow::handleQuestionRequest(TabSession* session, const QJsonObject& e
 
     QVector<QButtonGroup*> groups;
     QScrollArea* scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
     QWidget* scrollW = new QWidget;
     QVBoxLayout* scrollL = new QVBoxLayout(scrollW);
+    scrollL->setSizeConstraint(QLayout::SetMinAndMaxSize);
 
     for (int qi = 0; qi < questions.size(); ++qi) {
         QJsonObject q = questions[qi].toObject();
         QGroupBox* gb = new QGroupBox(q["header"].toString());
         gb->setStyleSheet(QString("QGroupBox { color:%1; font-weight:bold; border:1px solid %2; border-radius:6px; margin-top:8px; padding:12px 8px 8px 8px; } QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 4px; }").arg(theme["primary"], theme["border_soft"]));
         QVBoxLayout* gl = new QVBoxLayout(gb);
-        gl->addWidget(new QLabel(q["question"].toString()));
+        QLabel* qLabel = new QLabel(q["question"].toString());
+        qLabel->setWordWrap(true);
+        gl->addWidget(qLabel);
         QButtonGroup* bg = new QButtonGroup(&dlg);
         groups.append(bg);
         QJsonArray opts = q["options"].toArray();
@@ -975,6 +981,12 @@ void MainWindow::handleQuestionRequest(TabSession* session, const QJsonObject& e
     btnL->addWidget(submit);
     btnL->addWidget(cancel);
     layout->addLayout(btnL);
+
+    // Size dialog to fit content, with reasonable limits
+    scrollW->adjustSize();
+    int idealW = qMin(scrollW->sizeHint().width() + 40, 750);
+    int idealH = qMin(scrollW->sizeHint().height() + 140, 650);
+    dlg.resize(qMax(idealW, 480), qMax(idealH, 280));
 
     connect(submit, &QPushButton::clicked, &dlg, &QDialog::accept);
     connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);

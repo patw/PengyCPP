@@ -330,8 +330,43 @@ const QJsonArray& toolDefinitions() {
             },
             QJsonArray{"todos"}),
 
-        td("ask_user_question", "Ask the user one or more multiple-choice questions to clarify requirements.",
-            QJsonObject{{"questions", prop("array", "One or more questions with header, question text, and options")}},
+        td("ask_user_question", "Ask the user one or more multiple-choice questions to clarify requirements or resolve ambiguity.",
+            QJsonObject{{"questions", QJsonObject{
+                {"type", "array"},
+                {"description", "One or more questions, each with a header, question text, and list of options"},
+                {"items", QJsonObject{
+                    {"type", "object"},
+                    {"properties", QJsonObject{
+                        {"header", QJsonObject{
+                            {"type", "string"},
+                            {"description", "Short label for the question group (e.g. 'Theme', 'Output Format')"}
+                        }},
+                        {"question", QJsonObject{
+                            {"type", "string"},
+                            {"description", "The question text to display to the user"}
+                        }},
+                        {"options", QJsonObject{
+                            {"type", "array"},
+                            {"description", "List of answer choices for this question"},
+                            {"items", QJsonObject{
+                                {"type", "object"},
+                                {"properties", QJsonObject{
+                                    {"label", QJsonObject{
+                                        {"type", "string"},
+                                        {"description", "Short answer label (e.g. 'Dark', 'JSON')"}
+                                    }},
+                                    {"description", QJsonObject{
+                                        {"type", "string"},
+                                        {"description", "Brief explanation of what this option means"}
+                                    }}
+                                }},
+                                {"required", QJsonArray{"label", "description"}}
+                            }}
+                        }}
+                    }},
+                    {"required", QJsonArray{"header", "question", "options"}}
+                }}
+            }}},
             QJsonArray{"questions"}),
     };
     return defs;
@@ -1931,6 +1966,28 @@ QString execute(const QString& name, const QJsonObject& args,
 static QString toolGlob(const QJsonObject& args) {
     QString pattern = args["pattern"].toString();
     QString pathStr = expandHome(args["path"].toString());
+
+    // When no explicit path is given and the pattern contains '/',
+    // extract the longest existing directory prefix from the pattern
+    // so that e.g. "~/src/*.py" works without a separate path argument.
+    if (pathStr.isEmpty() && pattern.contains('/')) {
+        QString expanded = expandHome(pattern);
+        QFileInfo efi(expanded);
+        QDir current = efi.isDir() ? QDir(expanded) : efi.dir();
+        // Walk up until we find an existing directory
+        while (!current.exists() && !current.isRoot()) {
+            current.cdUp();
+        }
+        if (current.exists()) {
+            pathStr = current.path();
+            QStringList parts = pattern.split('/');
+            QString nameFilter = parts.last();
+            if (pattern.contains("**/"))
+                nameFilter = "**/" + nameFilter;
+            pattern = nameFilter;
+        }
+    }
+
     QDir searchDir(pathStr.isEmpty() ? QDir::currentPath() : pathStr);
     if (!searchDir.exists())
         return QString("Error: Directory not found: %1").arg(searchDir.path());
