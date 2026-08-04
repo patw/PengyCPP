@@ -1896,7 +1896,7 @@ static QString toolSearchContent(const QJsonObject& args) {
     QString summary = QString("Found %1 match(es) for '%2' across %3 file(s)")
                       .arg(results.size()).arg(pattern).arg(filesSearched);
     if (truncated) summary += " (results truncated)";
-    return summary + "\n" + QString(60, QChar(0x2500)) + "\n" + results.join("\n\n");
+    return snipMiddle(summary + "\n" + QString(60, QChar(0x2500)) + "\n" + results.join("\n\n"));
 }
 
 static QString toolApplyChanges(const QJsonObject& args) {
