@@ -4,7 +4,9 @@
 #include <QDirIterator>
 #include <QRegularExpression>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QStandardPaths>
+#include <memory>
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
@@ -684,6 +686,65 @@ static QString toolReplaceInFile(const QJsonObject& args) {
            .arg(oldLines).arg(newLines);
 }
 
+// ── sudo askpass helper ──────────────────────────────────────────────
+
+// Temporary SUDO_ASKPASS helper script. The password itself never touches the
+// disk — the script just echoes the PENGY_SUDO_PASSWORD environment variable
+// handed to the child process. Directory and script are both mode 0700.
+//
+// Askpass replaces the older "pipe the password to the shell's stdin and
+// rewrite the first sudo to `sudo -S`" approach, which broke whenever anything
+// else in the command touched stdin: a pipeline (`echo x | sudo tee f`), a
+// redirect (`sudo cmd < /dev/null`), an earlier command that reads stdin, or a
+// second sudo after the single piped password had been consumed.
+class AskpassHelper {
+public:
+    AskpassHelper() {
+        qint64 nanos = QDateTime::currentMSecsSinceEpoch();
+        qint64 pid   = QCoreApplication::applicationPid();
+        m_dir = QDir::tempPath() + QString("/pengy-askpass-%1-%2").arg(pid).arg(nanos);
+        if (!QDir().mkpath(m_dir)) return;
+        m_path = m_dir + "/askpass.sh";
+        QFile f(m_path);
+        if (!f.open(QIODevice::WriteOnly)) return;
+        f.write("#!/bin/sh\nprintf '%s\\n' \"$PENGY_SUDO_PASSWORD\"\n");
+        f.close();
+        QFile::setPermissions(m_dir,
+            QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        QFile::setPermissions(m_path,
+            QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        m_valid = true;
+    }
+
+    ~AskpassHelper() {
+        if (!m_path.isEmpty()) QFile::remove(m_path);
+        if (!m_dir.isEmpty())  QDir().rmdir(m_dir);
+    }
+
+    AskpassHelper(const AskpassHelper&) = delete;
+    AskpassHelper& operator=(const AskpassHelper&) = delete;
+
+    bool valid() const { return m_valid; }
+    QString path() const { return m_path; }
+
+private:
+    QString m_dir;
+    QString m_path;
+    bool    m_valid = false;
+};
+
+// Rewrite *every* word-boundary `sudo` to `sudo -A` so it authenticates via
+// SUDO_ASKPASS rather than stdin. Any existing `-S` is dropped, since stdin no
+// longer carries the password. Word-boundary matching leaves `sudoku` and
+// `pseudo-tty` untouched.
+QString rewriteSudoForAskpass(QString command) {
+    static QRegularExpression stdinRx("\\bsudo\\s+-S\\b");
+    static QRegularExpression rewriteRx("\\bsudo\\b(?!\\s+-A\\b)");
+    command.replace(stdinRx, "sudo");
+    command.replace(rewriteRx, "sudo -A");
+    return command;
+}
+
 // ── Bash (with temp file output & process groups) ────────────────────
 
 static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
@@ -695,9 +756,9 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
 
     // ── sudo detection ──────────────────────────────────────────────
     static QRegularExpression sudoRx("\\bsudo\\b");
-    static QRegularExpression sudoRewriteRx("\\bsudo\\b(?!\\s+-S)");
     bool needsSudo = sudoRx.match(command).hasMatch();
 
+    std::unique_ptr<AskpassHelper> askpass;
     if (needsSudo) {
         if (ctx->cachedSudoPassword().isEmpty()) {
             auto provider = ctx->sudoProvider();
@@ -710,13 +771,11 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
             }
             ctx->setCachedSudoPassword(pw);
         }
-        // Only rewrite the first eligible "sudo" (not already followed by -S);
-        // the piped password is consumed once, so rewriting every occurrence
-        // would leave later `sudo` invocations blocking on an interactive prompt.
-        QRegularExpressionMatch m = sudoRewriteRx.match(command);
-        if (m.hasMatch()) {
-            command.replace(m.capturedStart(), m.capturedLength(), "sudo -S");
+        askpass = std::make_unique<AskpassHelper>();
+        if (!askpass->valid()) {
+            return "Error: Could not create sudo askpass helper.";
         }
+        command = rewriteSudoForAskpass(command);
     }
 
     // Create temp files for stdout/stderr to avoid pipe buffer deadlock
@@ -730,6 +789,16 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
     proc.setArguments({"-c", command});
     proc.setStandardOutputFile(tmpFiles.stdoutPath);
     proc.setStandardErrorFile(tmpFiles.stderrPath);
+    // The command never inherits our stdin: the password goes via askpass, and
+    // a child reading the terminal would hang the GUI/CLI.
+    proc.setStandardInputFile(QProcess::nullDevice());
+
+    if (askpass) {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert("SUDO_ASKPASS", askpass->path());
+        env.insert("PENGY_SUDO_PASSWORD", ctx->cachedSudoPassword());
+        proc.setProcessEnvironment(env);
+    }
 
 #ifdef Q_OS_UNIX
     proc.setChildProcessModifier([]() {
@@ -746,13 +815,6 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
     qint64 pid = proc.processId();
     ctx->registerProcess(pid);
 
-    if (needsSudo) {
-        QString cachedPw = ctx->cachedSudoPassword();
-        if (!cachedPw.isEmpty()) {
-            proc.write((cachedPw + "\n").toUtf8());
-        }
-    }
-    proc.closeWriteChannel();
 
     int waitMs = timeoutSecs > 0 ? timeoutSecs * 1000 : -1;
 

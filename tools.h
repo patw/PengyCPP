@@ -52,4 +52,7 @@ void       killActiveProcesses();
 void setSudoPasswordProvider(SudoPasswordFn fn);
 void clearSudoPasswordProvider();
 
+/// Rewrite every `sudo` in *command* to `sudo -A` (askpass). Exposed for tests.
+QString rewriteSudoForAskpass(QString command);
+
 } // namespace Tools

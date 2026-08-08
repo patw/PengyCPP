@@ -1,7 +1,8 @@
 # Changelog
 
-## v1.5.5 (current)
+## v1.5.7 (current)
 
+- `run_bash` now authenticates sudo via `SUDO_ASKPASS` instead of piping the password to stdin — fixes sudo in pipelines (`echo x | sudo tee f`), with redirected stdin, after a command that reads stdin, and for the second and later `sudo` in one command
 - Fixed `search_content` tool output limits — wasn't respecting the global snip setting
 - Added missing `qt6-svg-dev` to CI workflows (Linux build fix)
 - `glob` tool now auto-extracts directory prefix from patterns like `~/src/*.cpp`

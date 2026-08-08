@@ -1104,6 +1104,73 @@ private slots:
         QVERIFY(r.contains("no password provider"));
     }
 
+    // ── Tools: sudo askpass ─────────────────────────────────────────
+
+    void sudoRewriteForAskpass() {
+        QCOMPARE(Tools::rewriteSudoForAskpass("sudo apt update"),
+                 QString("sudo -A apt update"));
+        // stdin no longer carries the password, so -S must be replaced.
+        QCOMPARE(Tools::rewriteSudoForAskpass("sudo -S apt update"),
+                 QString("sudo -A apt update"));
+        QCOMPARE(Tools::rewriteSudoForAskpass("sudo -A apt update"),
+                 QString("sudo -A apt update"));
+        // Every occurrence, not just the first — askpass works per invocation.
+        QCOMPARE(Tools::rewriteSudoForAskpass("sudo apt update && sudo apt upgrade"),
+                 QString("sudo -A apt update && sudo -A apt upgrade"));
+        QCOMPARE(Tools::rewriteSudoForAskpass("echo hi | sudo tee /etc/f"),
+                 QString("echo hi | sudo -A tee /etc/f"));
+        // Word boundaries: these are not sudo.
+        QCOMPARE(Tools::rewriteSudoForAskpass("echo sudoku"), QString("echo sudoku"));
+        QCOMPARE(Tools::rewriteSudoForAskpass("ls /dev/pseudo-tty"),
+                 QString("ls /dev/pseudo-tty"));
+    }
+
+    void sudoAuthenticatesViaAskpass() {
+#ifdef Q_OS_UNIX
+        // Stub sudo that only succeeds when given -A plus a working askpass.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QString sudoPath = dir.path() + "/sudo";
+        QFile f(sudoPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("#!/bin/bash\n"
+                "if [ \"$1\" != \"-A\" ]; then echo \"sudo: no tty present\" >&2; exit 1; fi\n"
+                "shift\n"
+                "pw=\"$(\"$SUDO_ASKPASS\")\"\n"
+                "echo \"pw=$pw\"\n"
+                "exec \"$@\"\n");
+        f.close();
+        QFile::setPermissions(sudoPath, QFile::ReadOwner | QFile::WriteOwner |
+                                        QFile::ExeOwner | QFile::ReadOther | QFile::ExeOther);
+
+        QByteArray oldPath = qgetenv("PATH");
+        qputenv("PATH", dir.path().toUtf8() + ":" + oldPath);
+
+        Tools::ToolContext ctx;
+        ctx.setSudoProvider([] { return QString("s3cret"); });
+
+        // Shapes the old stdin-piped `sudo -S` broke on.
+        const QStringList commands = {
+            "sudo echo hi",
+            "echo a; cat > /dev/null; sudo echo hi",
+            "sudo echo one; sudo echo two",
+            "sudo echo hi < /dev/null",
+            "sudo -S echo hi",
+            "echo hi | sudo tee /dev/null",
+        };
+        for (const QString& c : commands) {
+            QString r = Tools::execute("run_bash", QJsonObject{{"command", c}},
+                                       nullptr, &ctx);
+            QVERIFY2(r.contains("pw=s3cret"),
+                     qPrintable(QString("%1 -> %2").arg(c, r)));
+            QVERIFY2(!r.contains("no tty present"),
+                     qPrintable(QString("%1 -> %2").arg(c, r)));
+        }
+
+        qputenv("PATH", oldPath);
+#endif
+    }
+
     void toolContextKillAllOnlyAffectsOwn() {
 #ifdef Q_OS_UNIX
         Tools::ToolContext a, b;

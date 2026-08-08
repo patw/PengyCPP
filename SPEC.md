@@ -6,6 +6,12 @@ PengyCPP is a pure C++17/Qt6 port of [Pengy](https://github.com/patw/pengy) — 
 
 > PengyCPP shares `~/.config/pengy/` with the Python Pengy and PengyR. Settings and chat history are fully interoperable between all three applications.
 
+> **Canonical contracts live in the Python Pengy spec.** This document describes how *this*
+> edition is built. The cross-edition rules every Pengy must satisfy — on-disk formats, tool
+> contracts, and especially the **LLM Loop Contract** (message-ordering invariants, dangling
+> tool-call repair, context elision, retry/backoff) — are specified once in `Pengy/spec.md` and
+> are not repeated here. Read that first if you are porting Pengy to a new language.
+
 ---
 
 ## Technology Stack
@@ -64,7 +70,7 @@ PengyCPP/
 ├── main.cpp                # Desktop GUI entry point — QApplication setup
 ├── config.cpp/h            # Settings load/save + system message rendering
 ├── chatmanager.cpp/h       # Chat session CRUD + message cleaning + context elision
-├── tools.cpp/h             # 14 OpenAI function-calling tools (Qt APIs)
+├── tools.cpp/h             # 15 OpenAI function-calling tools (Qt APIs)
 ├── llmclient.cpp/h         # Blocking LLM chat loop (QNetworkAccessManager + QEventLoop)
 ├── chatworker.cpp/h        # QThread worker — runs LlmClient + confirmation QWaitCondition
 ├── mainwindow.cpp/h        # Three-pane main window, tool confirmation dialog
@@ -105,7 +111,7 @@ All three binaries share these modules — no code duplication, no FFI:
 |--------|-------|---------------|
 | `Config` | `config.cpp/h` | Load/save `~/.config/pengy/settings.json` with default merging; `configRenderSystemMessage()` fills `{date}`, `{username}`, `{hostname}`, `{osinfo}` at send time |
 | `ChatManager` | `chatmanager.cpp/h` | CRUD for `~/.config/pengy/chats.json`; `cleanDanglingToolCalls()` removes orphaned tool_calls; `elideOldToolResults()` replaces old tool content with `[elided]` |
-| `Tools` | `tools.cpp/h` | 14 OpenAI function-calling tool schemas and execution via Qt APIs; `isReadOnly()` classification; sudo password provider callback |
+| `Tools` | `tools.cpp/h` | 15 OpenAI function-calling tool schemas and execution via Qt APIs; `isReadOnly()` classification; sudo password provider callback |
 | `LlmClient` | `llmclient.cpp/h` | Blocking chat loop via `QNetworkAccessManager` + local `QEventLoop`; emits events via `std::function` callbacks |
 
 ---
@@ -457,8 +463,20 @@ Tool execution reaches run_bash
 
 The password is:
 1. Cached for the duration of the LLM run
-2. Injected via stdin after rewriting `sudo` → `sudo -S`
+2. Supplied via `SUDO_ASKPASS` after rewriting every `sudo` → `sudo -A`
 3. Cleared when the LLM run completes
+
+`run_bash` writes a mode-0700 helper script to a private temp dir that echoes
+the `PENGY_SUDO_PASSWORD` environment variable given to the child process, so
+the password itself never touches the disk. The script and its directory are
+removed when the command finishes.
+
+Askpass replaced an earlier approach that piped the password to the shell's
+stdin and rewrote only the *first* `sudo` to `sudo -S`. That broke whenever
+anything else in the command touched stdin — a pipeline (`echo x | sudo tee f`),
+a redirect (`sudo cmd < /dev/null`), an earlier command that reads stdin, or a
+second `sudo` after the single piped password had been consumed. The command's
+stdin is now `/dev/null` in all cases.
 
 ### Process-Group Kill
 
@@ -501,7 +519,12 @@ Shared with Python Pengy and PengyR at `~/.config/pengy/`.
   "theme_mode": "system",
   "theme_accent": "default",
   "user_agent": "PengyAgent/1.0",
-  "tool_timeout": 60
+  "llm_timeout": 300,
+  "tool_timeout": 300,
+  "tool_output_max_chars": 250000,
+  "image_max_dimension": 4096,
+  "image_max_mb": 4.5,
+  "image_quality": 85
 }
 ```
 
@@ -519,7 +542,12 @@ Shared with Python Pengy and PengyR at `~/.config/pengy/`.
 | `theme_mode` | string | `"system"` | Desktop theme: `"system"`, `"light"`, or `"dark"` |
 | `theme_accent` | string | `"default"` | Desktop accent color (`default`/`blue`/`teal`/`green`/`orange`/`red`/`pink`/`purple`) |
 | `user_agent` | string | `PengyAgent/1.0` | User-Agent header for HTTP requests |
-| `tool_timeout` | int | `60` | Timeout in seconds for tool execution (-1 = no timeout) |
+| `llm_timeout` | int | `300` | HTTP timeout in seconds for each LLM API request |
+| `tool_timeout` | int | `300` | Timeout in seconds for tool execution (-1 = no timeout) |
+| `tool_output_max_chars` | int | `250000` | Tool output longer than this is snipped head+tail. 0 = no limit |
+| `image_max_dimension` | int | `4096` | Attached images are downscaled so neither side exceeds this (px) |
+| `image_max_mb` | float | `4.5` | Attached images are re-encoded until under this size (MB) |
+| `image_quality` | int | `85` | JPEG quality (0–100) used when re-encoding attached images |
 
 ### System Message Templating
 
@@ -540,7 +568,7 @@ Array of chat session objects with `user`, `assistant` (including `tool_calls`),
 
 ## Tools
 
-All 14 tools implemented in `tools.cpp` using Qt APIs:
+All 15 tools implemented in `tools.cpp` using Qt APIs:
 
 | Tool | Read-only | Implementation |
 |------|:---:|---|
@@ -548,7 +576,8 @@ All 14 tools implemented in `tools.cpp` using Qt APIs:
 | `read_multiple_files` | ✅ | `QFile` × N (20 file max, 50K char per file cap) |
 | `write_file` | ❌ | `QFile` + `QDir::mkpath` |
 | `replace_in_file` | ❌ | Read→exact-match→replace→write (single-match enforcement) |
-| `run_bash` | ❌ | `QProcess` (sudo via `-S` + stdin, process-group kill on timeout) |
+| `apply_changes` | ❌ | Transactional multi-file exact-text edits; validated in memory, all-or-nothing |
+| `run_bash` | ❌ | `QProcess` (sudo via `SUDO_ASKPASS`, process-group kill on timeout) |
 | `run_python` | ❌ | Write to temp + `QProcess python3` |
 | `web_search` | ✅ | DuckDuckGo HTML scrape via `QNetworkAccessManager` + `QRegularExpression` |
 | `download_file` | ❌ | `QNetworkAccessManager` → `~/Downloads/` |
@@ -637,7 +666,7 @@ REM → Pengy-Windows.zip
 
 **Non-streaming API calls:** The LLM client uses non-streaming completions (no `stream: true`). Full responses render at once. This simplifies the architecture and is acceptable because tool call round-trips dominate latency for agentic workflows.
 
-**Sudo via `-S` with QWaitCondition:** Same approach as Python Pengy — detect `sudo` in bash commands, prompt for password via `QInputDialog`, pass to `sudo -S`. Password cached per LLM run. The main thread polls with a 100ms `QTimer` and shows the password dialog.
+**Sudo via `SUDO_ASKPASS` with QWaitCondition:** Same approach as Python Pengy — detect `sudo` in bash commands, prompt for password via `QInputDialog`, then rewrite every `sudo` to `sudo -A` and supply the password through a temp `SUDO_ASKPASS` script that echoes an environment variable (see Sudo Password Flow above for why this replaced `sudo -S` on stdin). Password cached per LLM run. The main thread polls with a 100ms `QTimer` and shows the password dialog.
 
 **Process-group kill:** On timeout or cancel, `run_bash` issues `kill -9 -PID` before `QProcess::kill()`, preventing orphaned child processes.
 
@@ -656,7 +685,7 @@ REM → Pengy-Windows.zip
 | Feature | Pengy (Python) | PengyR (Rust) | PengyCPP |
 |---------|:---:|:---:|:---:|
 | OpenAI-compatible LLM API | ✅ | ✅ | ✅ |
-| 14 tools (bash, python, files, web, etc.) | ✅ | ✅ | ✅ |
+| 15 tools (bash, python, files, web, etc.) | ✅ | ✅ | ✅ |
 | Three-pane Qt6 desktop GUI | ✅ | ✅ | ✅ |
 | Markdown rendering + syntax highlighting | ✅ | ✅ | ✅ |
 | Collapsible tool call blocks | ✅ | ✅ | ✅ |
