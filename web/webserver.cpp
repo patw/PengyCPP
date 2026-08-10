@@ -77,6 +77,7 @@ void WebServer::onSocketDisconnected() {
     if (!socket) return;
     m_buffers.remove(socket);
     m_sseSockets.remove(socket);
+    m_sseRetrySent.remove(socket);
     for (auto it = m_sse.begin(); it != m_sse.end(); ++it)
         it->removeAll(socket);
     socket->deleteLater();
@@ -187,7 +188,7 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
             const QString& id  = parts[1];
             const QString& act = parts[2];
             if      (act == "send"    && req.method == "POST") routeChatSend(id, req, socket);
-            else if (act == "stream"  && req.method == "GET")  routeChatStream(id, socket);
+            else if (act == "stream"  && req.method == "GET")  routeChatStream(id, req, socket);
             else if (act == "confirm" && req.method == "POST") routeChatConfirm(id, req, socket);
             else if (act == "sudo"    && req.method == "POST") routeChatSudo(id, req, socket);
             else if (act == "stop"    && req.method == "POST") routeChatStop(id, socket);
@@ -334,6 +335,11 @@ void WebServer::routeChatSend(const QString& chatId,
         w->cancel();
         m_workers.remove(chatId);
     }
+    // Start with a fresh event log for the new task
+    m_eventQueue.remove(chatId);
+    m_workerDone.remove(chatId);
+    m_completedAt.remove(chatId);
+    m_eventBase.remove(chatId);
 
     Tools::setUserAgent(cfg.userAgent);
     Tools::setTimeout(cfg.toolTimeout);
@@ -407,6 +413,10 @@ void WebServer::routeChatSend(const QString& chatId,
             chat["title"] = userInput.left(60).replace('\n', ' ');
         chat["messages"] = msgs;
         chatSave(chat);
+        m_workerDone[chatId] = true;
+        const qint64 completedAt = QDateTime::currentMSecsSinceEpoch();
+        m_completedAt[chatId] = completedAt;
+        scheduleCompletedLogCleanup(chatId, completedAt);
         m_workers.remove(chatId);
         worker->deleteLater();
     });
@@ -415,7 +425,8 @@ void WebServer::routeChatSend(const QString& chatId,
     sendJson(socket, 200, {{"status","started"}});
 }
 
-void WebServer::routeChatStream(const QString& chatId, QTcpSocket* socket) {
+void WebServer::routeChatStream(const QString& chatId,
+                                 const HttpRequest& req, QTcpSocket* socket) {
     QByteArray headers =
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/event-stream\r\n"
@@ -429,11 +440,41 @@ void WebServer::routeChatStream(const QString& chatId, QTcpSocket* socket) {
     m_sseSockets.insert(socket);
     m_sse[chatId].append(socket);
 
-    // Flush any queued events (in case worker started before browser connected)
-    for (const QJsonObject& ev : m_eventQueue.take(chatId)) {
-        QByteArray data = "data: " +
-            QJsonDocument(ev).toJson(QJsonDocument::Compact) + "\n\n";
-        socket->write(data);
+    // Browsers auto-reconnect after ~1s; tell them to retry faster.
+    if (!m_sseRetrySent.contains(socket)) {
+        m_sseRetrySent.insert(socket);
+        socket->write("retry: 1000\n\n");
+    }
+
+    // Replay missed events on reconnect. Native reconnects send
+    // Last-Event-ID; manually rebuilt EventSources provide ?after=.
+    bool lastIdOk = false;
+    int lastId = -1;
+    const int queryStart = req.path.indexOf('?');
+    if (queryStart >= 0) {
+        for (const QString& pair : req.path.mid(queryStart + 1).split('&')) {
+            const int equals = pair.indexOf('=');
+            if (equals > 0 && pair.left(equals) == "after") {
+                lastId = urlDecode(pair.mid(equals + 1).toUtf8()).toInt(&lastIdOk);
+                break;
+            }
+        }
+    }
+    if (!lastIdOk)
+        lastId = req.headers.value("last-event-id").toInt(&lastIdOk);
+    const auto& log = m_eventQueue[chatId];
+    const int eventBase = m_eventBase.value(chatId, 0);
+    int startId = eventBase;
+    if (lastIdOk && lastId >= 0) {
+        startId = qMax(eventBase, lastId + 1);
+    } else if (m_workerDone.value(chatId, false)) {
+        // Fresh connection to a finished worker: the chat page already
+        // rendered history server-side, so only replay the terminal event.
+        startId = qMax(eventBase, eventBase + log.size() - 1);
+    }
+
+    for (int i = startId - eventBase; i < log.size(); ++i) {
+        socket->write(formatSseEvent(eventBase + i, log[i]));
     }
     socket->flush();
 }
@@ -474,6 +515,10 @@ void WebServer::routeChatDelete(const QString& chatId, QTcpSocket* socket) {
         w->cancel();
         m_workers.remove(chatId);
     }
+    m_eventQueue.remove(chatId);
+    m_eventBase.remove(chatId);
+    m_workerDone.remove(chatId);
+    m_completedAt.remove(chatId);
     chatDelete(chatId);
     sendRedirect(socket, "/");
 }
@@ -824,27 +869,52 @@ void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {
 
 // ── SSE push ─────────────────────────────────────────────────────────
 
-void WebServer::pushSse(const QString& chatId, const QJsonObject& event) {
-    QByteArray data = "data: " +
-        QJsonDocument(event).toJson(QJsonDocument::Compact) + "\n\n";
+QByteArray WebServer::formatSseEvent(int id, const QJsonObject& event) {
+    return QString("id: %1\ndata: %2\n\n")
+        .arg(id)
+        .arg(QString::fromUtf8(QJsonDocument(event).toJson(QJsonDocument::Compact)))
+        .toUtf8();
+}
 
-    const auto& clients = m_sse.value(chatId);
-    if (clients.isEmpty()) {
-        m_eventQueue[chatId].append(event);
-        return;
+void WebServer::pushSse(const QString& chatId, const QJsonObject& event) {
+    // Active logs are bounded defensively. A normal task produces only a
+    // small number of events; retaining the newest events prevents an
+    // unresponsive producer from consuming unbounded memory.
+    constexpr int kMaxActiveLogEvents = 1000;
+    auto& log = m_eventQueue[chatId];
+    int& eventBase = m_eventBase[chatId];
+    int eventId = eventBase + log.size();
+    log.append(event);
+    if (log.size() > kMaxActiveLogEvents) {
+        log.removeFirst();
+        ++eventBase;
     }
+
+    QByteArray data = formatSseEvent(eventId, event);
+    const auto& clients = m_sse.value(chatId);
     for (auto* sock : clients) {
         if (sock->isOpen()) {
-            // Send retry:1000 on first write so browsers reconnect faster
-            static QSet<QTcpSocket*> seen;
-            if (!seen.contains(sock)) {
-                seen.insert(sock);
+            if (!m_sseRetrySent.contains(sock)) {
+                m_sseRetrySent.insert(sock);
                 sock->write("retry: 1000\n\n");
             }
             sock->write(data);
             sock->flush();
         }
     }
+}
+
+void WebServer::scheduleCompletedLogCleanup(const QString& chatId, qint64 completedAt) {
+    constexpr int kReplayGraceMs = 10 * 60 * 1000;
+    QTimer::singleShot(kReplayGraceMs, this, [this, chatId, completedAt]() {
+        // A newer task may have reused this chat ID in the meantime.
+        if (m_completedAt.value(chatId) != completedAt)
+            return;
+        m_eventQueue.remove(chatId);
+        m_eventBase.remove(chatId);
+        m_workerDone.remove(chatId);
+        m_completedAt.remove(chatId);
+    });
 }
 
 // ── Template rendering ────────────────────────────────────────────────

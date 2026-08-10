@@ -43,8 +43,12 @@ private:
 
     QHash<QTcpSocket*, QByteArray>        m_buffers;
     QSet<QTcpSocket*>                     m_sseSockets;
+    QSet<QTcpSocket*>                     m_sseRetrySent;   // tracks sockets that got retry:1000
     QHash<QString, QList<QTcpSocket*>>    m_sse;
-    QHash<QString, QList<QJsonObject>>    m_eventQueue;
+    QHash<QString, QList<QJsonObject>>    m_eventQueue;     // append-only event log per chat
+    QHash<QString, int>                   m_eventBase;      // ID represented by log index zero
+    QHash<QString, bool>                  m_workerDone;     // true once a worker has finished
+    QHash<QString, qint64>                m_completedAt;    // completion time for bounded replay retention
     QHash<QString, WebChatWorker*>        m_workers;
     QHash<QString, QString>               m_pending;
 
@@ -58,7 +62,7 @@ private:
     void routeChatNew(QTcpSocket* socket);
     void routeChatView(const QString& chatId, QTcpSocket* socket);
     void routeChatSend(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
-    void routeChatStream(const QString& chatId, QTcpSocket* socket);
+    void routeChatStream(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatConfirm(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatSudo(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatStop(const QString& chatId, QTcpSocket* socket);
@@ -75,6 +79,8 @@ private:
     void sendJson(QTcpSocket* socket, int status, const QJsonObject& obj);
     void sendRedirect(QTcpSocket* socket, const QString& location);
     void pushSse(const QString& chatId, const QJsonObject& event);
+    static QByteArray formatSseEvent(int id, const QJsonObject& event);
+    void scheduleCompletedLogCleanup(const QString& chatId, qint64 completedAt);
 
     QByteArray renderChatPage(const QString& chatId);
     QByteArray renderSettingsPage();

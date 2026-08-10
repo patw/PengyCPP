@@ -349,7 +349,7 @@ Browser shows Bootstrap modal (tool name + args JSON)
 
 ### WebChatWorker
 
-`WebChatWorker` mirrors `ChatWorker`'s pattern. It runs `LlmClient::run()` on a `QThread` and emits events via Qt signals (`eventReady`, `sudoRequired`). It enriches `tool_request` events with `auto_approved` by replicating LlmClient's skip-confirm logic. Events are queued in `WebServer::m_eventQueue` if the SSE client hasn't connected yet, then flushed when the SSE connection opens.
+`WebChatWorker` mirrors `ChatWorker`'s pattern. It runs `LlmClient::run()` on a `QThread` and emits events via Qt signals (`eventReady`, `sudoRequired`). It enriches `tool_request` events with `auto_approved` by replicating LlmClient's skip-confirm logic. Events are appended to `WebServer::m_eventQueue` (an append-only log per chat) and broadcast to any currently connected SSE sockets. Each SSE data event carries a monotonic `id:` so a reconnecting browser can resume from `Last-Event-ID` without losing or duplicating messages.
 
 HTML templates (`chat.html`, `settings.html`) are embedded in the binary via `web/web_resources.qrc` — no external files needed at runtime.
 
