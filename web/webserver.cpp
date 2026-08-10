@@ -462,20 +462,7 @@ void WebServer::routeChatStream(const QString& chatId,
     }
     if (!lastIdOk)
         lastId = req.headers.value("last-event-id").toInt(&lastIdOk);
-    const auto& log = m_eventQueue[chatId];
-    const int eventBase = m_eventBase.value(chatId, 0);
-    int startId = eventBase;
-    if (lastIdOk && lastId >= 0) {
-        startId = qMax(eventBase, lastId + 1);
-    } else if (m_workerDone.value(chatId, false)) {
-        // Fresh connection to a finished worker: the chat page already
-        // rendered history server-side, so only replay the terminal event.
-        startId = qMax(eventBase, eventBase + log.size() - 1);
-    }
-
-    for (int i = startId - eventBase; i < log.size(); ++i) {
-        socket->write(formatSseEvent(eventBase + i, log[i]));
-    }
+    socket->write(replayEvents(chatId, lastId, lastIdOk && lastId >= 0));
     socket->flush();
 }
 
@@ -875,6 +862,37 @@ QByteArray WebServer::formatSseEvent(int id, const QJsonObject& event) {
         .arg(QString::fromUtf8(QJsonDocument(event).toJson(QJsonDocument::Compact)))
         .toUtf8();
 }
+
+QByteArray WebServer::replayEvents(const QString& chatId, int after, bool hasCursor) const {
+    const auto log = m_eventQueue.value(chatId);
+    const int eventBase = m_eventBase.value(chatId, 0);
+    int startId = eventBase;
+    if (hasCursor) {
+        startId = qMax(eventBase, after + 1);
+    } else if (m_workerDone.value(chatId, false)) {
+        // Persisted chat history already renders prior progress on a fresh
+        // page load, so a completed log need only provide its terminal event.
+        startId = qMax(eventBase, eventBase + log.size() - 1);
+    }
+
+    QByteArray replay;
+    for (int i = startId - eventBase; i < log.size(); ++i)
+        replay += formatSseEvent(eventBase + i, log[i]);
+    return replay;
+}
+
+#ifdef PENGY_UNIT_TEST
+QByteArray WebServer::testReplay(const QString& chatId, int after) const {
+    return replayEvents(chatId, after, after >= 0);
+}
+
+void WebServer::testCleanupCompleted(const QString& chatId) {
+    m_eventQueue.remove(chatId);
+    m_eventBase.remove(chatId);
+    m_workerDone.remove(chatId);
+    m_completedAt.remove(chatId);
+}
+#endif
 
 void WebServer::pushSse(const QString& chatId, const QJsonObject& event) {
     // Active logs are bounded defensively. A normal task produces only a

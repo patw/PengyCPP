@@ -109,6 +109,7 @@ if(Qt6Test_FOUND)
     target_link_libraries(pengy_tests PRIVATE
         Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Test
     )
+    target_compile_definitions(pengy_tests PRIVATE PENGY_UNIT_TEST)
     # Ensure CLI and web binaries exist before tests run (subprocess tests)
     add_dependencies(pengy_tests pengy_cli pengy_web)
     add_test(NAME PengyTests COMMAND pengy_tests)

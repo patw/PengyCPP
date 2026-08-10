@@ -1326,6 +1326,64 @@ private slots:
         QVERIFY2(ct.startsWith("text/event-stream"), qPrintable(ct));
     }
 
+    void webSseReplayResumesAfterCursorWithoutDuplicateToolRequest() {
+        WebServer server("127.0.0.1", 0);
+        const QString chatId = "sse-replay";
+        server.testPushSse(chatId, QJsonObject{{"type", "tool_request"}, {"tool_call_id", "tool-1"}});
+        server.testPushSse(chatId, QJsonObject{{"type", "tool_result"}, {"tool_call_id", "tool-1"}});
+        server.testPushSse(chatId, QJsonObject{{"type", "final_response"}, {"content", "done"}});
+
+        const QByteArray replay = server.testReplay(chatId, 0);
+        QVERIFY(!replay.contains("tool_request"));
+        QVERIFY(replay.contains("id: 1\n"));
+        QVERIFY(replay.contains("tool_result"));
+        QVERIFY(replay.contains("id: 2\n"));
+        QVERIFY(replay.contains("final_response"));
+    }
+
+    void webSseDisconnectReconnectDeliversMissedFinalExactlyOnce() {
+        WebServer server("127.0.0.1", 0);
+        const QString chatId = "sse-disconnect";
+        server.testPushSse(chatId, QJsonObject{{"type", "tool_request"}, {"tool_call_id", "tool-1"}});
+        // The first stream disconnects after event 0. The producer keeps
+        // logging events while no socket is attached.
+        server.testPushSse(chatId, QJsonObject{{"type", "tool_result"}, {"tool_call_id", "tool-1"}});
+        server.testPushSse(chatId, QJsonObject{{"type", "final_response"}, {"content", "done"}});
+
+        const QByteArray replay = server.testReplay(chatId, 0);
+        QCOMPARE(replay.count("tool_result"), 1);
+        QCOMPARE(replay.count("final_response"), 1);
+        QVERIFY(!replay.contains("tool_request"));
+    }
+
+    void webSseCompletedLogReplaysTerminalThenCleansUp() {
+        WebServer server("127.0.0.1", 0);
+        const QString chatId = "sse-cleanup";
+        server.testPushSse(chatId, QJsonObject{{"type", "tool_request"}});
+        server.testPushSse(chatId, QJsonObject{{"type", "final_response"}, {"content", "done"}});
+        server.testMarkCompleted(chatId);
+        const QByteArray freshReplay = server.testReplay(chatId, -1);
+        QVERIFY(!freshReplay.contains("tool_request"));
+        QVERIFY(freshReplay.contains("final_response"));
+
+        server.testCleanupCompleted(chatId);
+        QVERIFY(server.testReplay(chatId, -1).isEmpty());
+    }
+
+    void webChatTemplateUsesCursorSafeReconnectAndStandardScrollBehavior() {
+        QJsonObject chat = chatCreate("Template SSE test");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(), "/chat/" + chat["id"].toString());
+        QCOMPARE(r.status, 200);
+        QVERIFY(r.body.contains("sessionStorage.getItem('pengy_sse_cursor_'"));
+        QVERIFY(r.body.contains("?after=' + encodeURIComponent(sseCursor)"));
+        QVERIFY(r.body.contains("readyState === EventSource.CLOSED"));
+        QVERIFY(r.body.contains("behavior: 'auto'"));
+        QVERIFY(!r.body.contains("readyState !== EventSource.OPEN"));
+        QVERIFY(!r.body.contains("behavior: 'instant'"));
+    }
+
     // ── Web server: export / rename / command / models / attachments ─
     // Parity tests for the routes shared with the Python and Rust webs.
 

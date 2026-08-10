@@ -30,6 +30,15 @@ public:
     void setTrustedHosts(const QStringList& hosts);
     quint16 port() const { return m_server->serverPort(); }
 
+#ifdef PENGY_UNIT_TEST
+    // Test-only hooks keep replay policy independently verifiable without a
+    // live LLM worker or timing-sensitive socket choreography.
+    void testPushSse(const QString& chatId, const QJsonObject& event) { pushSse(chatId, event); }
+    QByteArray testReplay(const QString& chatId, int after) const;
+    void testMarkCompleted(const QString& chatId) { m_workerDone[chatId] = true; }
+    void testCleanupCompleted(const QString& chatId);
+#endif
+
 private slots:
     void onNewConnection();
     void onReadyRead();
@@ -81,6 +90,7 @@ private:
     void pushSse(const QString& chatId, const QJsonObject& event);
     static QByteArray formatSseEvent(int id, const QJsonObject& event);
     void scheduleCompletedLogCleanup(const QString& chatId, qint64 completedAt);
+    QByteArray replayEvents(const QString& chatId, int after, bool hasCursor) const;
 
     QByteArray renderChatPage(const QString& chatId);
     QByteArray renderSettingsPage();
