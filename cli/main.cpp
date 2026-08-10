@@ -22,6 +22,7 @@
 #  include <readline/history.h>
 #  include <termios.h>
 #  include <unistd.h>
+#  include <sys/ioctl.h>
 #endif
 
 #include "../config.h"
@@ -247,6 +248,36 @@ static QString truncate(const QString& text, int maxLen = 72) {
     return preview.left(maxLen - 1) + QStringLiteral("…");
 }
 
+static int terminalWidth() {
+#ifdef Q_OS_UNIX
+    winsize ws{};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) return ws.ws_col;
+#endif
+    bool ok = false;
+    const int columns = qEnvironmentVariable("COLUMNS").toInt(&ok);
+    return ok && columns > 0 ? columns : 120;
+}
+
+static QStringList lastMessageLines(const QString& content, int maxLines = 10) {
+    QString text = content.trimmed();
+    if (text.isEmpty()) return {};
+    const int width = qMax(20, terminalWidth() - 2);
+    QStringList result;
+    for (const QString& source : text.split('\n')) {
+        QString line = source;
+        while (line.size() > width) {
+            result << line.left(width);
+            line = line.mid(width);
+        }
+        result << line;
+        if (result.size() >= maxLines) break;
+    }
+    if (result.size() > maxLines) result = result.mid(0, maxLines);
+    if (text.split('\n').size() > maxLines || result.last().size() == width)
+        result.last() = truncate(result.last(), width - 1) + QStringLiteral("…");
+    return result;
+}
+
 // ── Readline history ─────────────────────────────────────────────────
 
 static QString g_histPath;
@@ -353,8 +384,10 @@ public:
             for (int i = msgs.size() - 1; i >= 0; --i) {
                 if (msgs[i].toObject()["role"].toString() == "user") {
                     QString last = msgs[i].toObject()["content"].toString();
-                    if (!last.isEmpty()) {
-                        outln(dim("Last: ") + truncate(last, 80));
+                    const QStringList preview = lastMessageLines(last);
+                    if (!preview.isEmpty()) {
+                        outln(dim("Last:"));
+                        for (const QString& line : preview) outln("  " + line);
                     }
                     break;
                 }

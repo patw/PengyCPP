@@ -1384,6 +1384,16 @@ private slots:
         QVERIFY(!r.body.contains("behavior: 'instant'"));
     }
 
+    void webChatTemplateToolSummaryPresent() {
+        QJsonObject chat = chatCreate("Template tool summary");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(), "/chat/" + chat["id"].toString());
+        QCOMPARE(r.status, 200);
+        QVERIFY(r.body.contains("function toolSummary(name, args)"));
+        QVERIFY(r.body.contains("tool-summary"));
+    }
+
     // ── Web server: export / rename / command / models / attachments ─
     // Parity tests for the routes shared with the Python and Rust webs.
 

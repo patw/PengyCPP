@@ -49,6 +49,7 @@
   .tool-card.declined { border-left-color: var(--bs-danger); }
   .tool-card.done { border-left-color: var(--bs-success); }
   .tool-header { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 0.4rem; }
+  .tool-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 0.78rem; }
   .tool-args, .tool-output { background: #f6f8fa; border-radius: 4px; padding: 0.5rem 0.6rem; margin-top: 0.4rem; max-height: 250px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; color: #24292e; }
   .msg-thinking { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.85rem; color: var(--bs-secondary-color); font-size: 0.85rem; }
   /* ── Jump to bottom ──────────────────────────────────────── */
@@ -462,6 +463,21 @@ function esc(s) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+const SUMMARY_SECRET_KEYS = new Set(['password','passwd','api_key','apikey','token','access_token','refresh_token','authorization','secret','private_key']);
+function toolSummary(name, args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return '';
+  const val = key => SUMMARY_SECRET_KEYS.has(key.toLowerCase()) ? '[redacted]' : (typeof args[key] === 'string' ? args[key].replace(/\n/g, ' ').trim() : args[key] == null ? '' : String(args[key]));
+  let s = '';
+  if (['read_file','write_file','replace_in_file','directory_tree'].includes(name)) s = val('path');
+  else if (name === 'read_multiple_files') s = Array.isArray(args.paths) ? `${args.paths.length} files` : '';
+  else if (name === 'web_search') s = val('query'); else if (name === 'fetch_url') s = val('url');
+  else if (name === 'download_file') s = val('filename') || val('url'); else if (name === 'run_bash') s = val('command'); else if (name === 'run_python') s = val('code');
+  else if (['search_content','glob'].includes(name)) s = val('pattern') + (val('path') ? ` in ${val('path')}` : '');
+  else if (name === 'apply_changes') s = Array.isArray(args.changes) ? `${args.changes.length} files` : '';
+  else if (name === 'ask_user_question') s = Array.isArray(args.questions) ? `${args.questions.length} questions` : '';
+  return s.length <= 100 ? s : s.slice(0, 97).trimEnd() + '…';
+}
+
 function fixFileUrls(html) {
   // Replace file:// image URLs with /files?path= URLs so browsers can load them
   return html.replace(/src="file:\/\/([^"]+)"/g, function(match, path) {
@@ -563,6 +579,7 @@ function addToolCard(container, name, args, tcId, autoApproved) {
     '<div class="tool-header" data-bs-toggle="collapse" data-bs-target="#body-' + sid + '">' +
       '<i class="bi bi-gear-fill text-warning" style="font-size:0.8rem"></i>' +
       '<code class="fw-semibold text-warning">' + esc(name) + '</code>' +
+      (toolSummary(name, args) ? '<span class="tool-summary text-muted" title="' + esc(toolSummary(name, args)) + '">' + esc(toolSummary(name, args)) + '</span>' : '') +
       '<span class="badge ' + (autoApproved ? 'bg-secondary' : 'text-bg-warning') + ' ms-1" id="badge-' + sid + '">' +
         (autoApproved ? 'running…' : 'pending') +
       '</span>' +
