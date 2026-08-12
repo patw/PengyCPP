@@ -6,6 +6,10 @@
 #include <QString>
 #include <QJsonObject>
 #include <QScrollBar>
+#include <QDir>
+#include <QFile>
+#include <QUrl>
+#include <QImage>
 #include <iostream>
 #include "chatview.h"
 
@@ -85,6 +89,47 @@ int main(int argc, char** argv) {
     }
 
     // ── auto-scroll pin (regression: "snaps back up to old history") ────
+    // ── Local image URLs ───────────────────────────────────────────────
+    // Skills emit file:/// URLs, but an LLM can turn a returned absolute path
+    // into raw <img src="/Users/...">. Both must reach the chat document as
+    // usable image resources rather than leaving a broken-image placeholder.
+    {
+        const QString imagePath = QDir::homePath()
+            + "/Pictures/even-weirder-elephants-zoom-background.png";
+        if (QFile::exists(imagePath)) {
+            ChatView v;
+            const QString rawPathHtml = v.testMarkdownToHtml(
+                QString("<img src=\"%1\" alt=\"local image\">").arg(imagePath));
+            const QString fileUrlHtml = v.testMarkdownToHtml(
+                QString("<img src=\"%1\" alt=\"local image\">")
+                    .arg(QUrl::fromLocalFile(imagePath).toString()));
+            requireContains(rawPathHtml, imagePath, "raw absolute image path survives markdown");
+            requireContains(fileUrlHtml, "file:///", "file URL survives markdown");
+            const QUrl fileUrl = QUrl::fromLocalFile(imagePath);
+            requireContains(fileUrlHtml, QString("src=\"%1\"").arg(fileUrl.toString()),
+                            "raw HTML image source has literal quotes");
+            const QVariant rawImage = v.testLoadImage(QUrl(imagePath));
+            const QVariant fileImage = v.testLoadImage(fileUrl);
+            if (!rawImage.canConvert<QImage>() || rawImage.value<QImage>().isNull()) {
+                std::cerr << "FAIL: raw absolute image path loads" << std::endl;
+                return 1;
+            }
+            if (!fileImage.canConvert<QImage>() || fileImage.value<QImage>().isNull()) {
+                std::cerr << "FAIL: file URL image loads" << std::endl;
+                return 1;
+            }
+            v.appendMessageText("assistant",
+                QString("<img src=\"%1\" alt=\"local image\">").arg(fileUrl.toString()));
+            app.processEvents();
+            const QVariant documentImage = v.document()->resource(
+                QTextDocument::ImageResource, fileUrl);
+            if (!documentImage.canConvert<QImage>() || documentImage.value<QImage>().isNull()) {
+                std::cerr << "FAIL: rendered document resolves file:/// image" << std::endl;
+                return 1;
+            }
+        }
+    }
+
     // setHtml() replaces the whole document and resets the scrollbar to 0.
     // The old render() decided "am I at the bottom?" by reading sb->value()
     // *after* that reset — so any render landing while a previous render's

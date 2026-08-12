@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QUrl>
+#include <QDir>
 #include <QImage>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -464,6 +465,19 @@ QString ChatView::markdownToHtml(const QString& md) const {
         "([^<]*?/?)&gt;");
     result.replace(unescapeRx, "<\\1\\2\\3>");
 
+    // The escaped raw tag's attribute delimiters are still `&quot;` after
+    // restoring its angle brackets. QTextDocument does not reliably treat
+    // those entities as delimiters in an image source, yielding a broken-image
+    // icon for otherwise-valid raw `<img src="file:///…">` responses. Decode
+    // quotes only inside our already-whitelisted restored tags; normal prose
+    // remains HTML-escaped.
+    static QRegularExpression escapedQuoteInSafeTagRx(
+        "(<(?:img|br|video|source|audio|svg|path|circle|rect|line|polyline|polygon|"
+        "ellipse|text|g|defs|clipPath|a|b|i|u|em|strong|code|span|sub|sup|mark|hr)"
+        "[^>]*?)&quot;");
+    while (escapedQuoteInSafeTagRx.match(result).hasMatch())
+        result.replace(escapedQuoteInSafeTagRx, "\\1\"");
+
     // ── Phase 4: paragraph wrapping ──────────────────────────────────
     result = paragraphize(result);
 
@@ -884,8 +898,11 @@ QVariant ChatView::loadResource(int type, const QUrl& url) {
     }
 
     // ── Local file images: load directly from disk ───────────────────
-    if (urlStr.startsWith("file://")) {
-        QString localPath = url.toLocalFile();
+    // Skills normally emit file:/// URLs, but an LLM may wrap the returned
+    // absolute macOS path directly as <img src="/Users/...">. QTextDocument
+    // passes that through as a scheme-less QUrl, so accept it explicitly.
+    if (url.isLocalFile() || QDir::isAbsolutePath(urlStr)) {
+        QString localPath = url.isLocalFile() ? url.toLocalFile() : urlStr;
         QImage image;
         if (image.load(localPath)) {
             if (image.width() > 600) {

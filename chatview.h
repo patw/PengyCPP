@@ -43,6 +43,7 @@ public:
     }
     int testCacheSize() const { return m_htmlCache.size(); }
     bool testAutoScroll() const { return m_autoScroll; }
+    QVariant testLoadImage(const QUrl& url) { return loadResource(QTextDocument::ImageResource, url); }
 #endif
 
 protected:
