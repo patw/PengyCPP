@@ -625,6 +625,53 @@ static QString urldecode(const QString& s) {
 
 // ── Tool implementations ─────────────────────────────────────────────
 
+/// First *chars* of *text*, backed up to the last line break.
+///
+/// Cutting on a raw index leaves a broken half-line at the seam, which on
+/// source code is a fragment the model may try to reason about or "fix".
+/// Falls back to a hard cut when one line is longer than the budget.
+static QString cutAtLineEnd(const QString& text, int chars) {
+    if (chars >= text.size()) return text;
+    QString head = text.left(chars);
+    int cut = head.lastIndexOf('\n');
+    return cut > 0 ? head.left(cut) : head;
+}
+
+/// Last *chars* of *text*, advanced to the start of the next whole line.
+static QString cutAtLineStart(const QString& text, int chars) {
+    if (chars >= text.size()) return text;
+    QString tail = text.right(chars);
+    int nl = tail.indexOf('\n');
+    return nl != -1 ? tail.mid(nl + 1) : tail;
+}
+
+/// Head truncation for *file* content, cut on a line boundary.
+///
+/// Files truncate from the head rather than being snipped in the middle: the
+/// head is where imports and declarations live, and the caller can report which
+/// lines survived so the model can page through the rest with offset/limit.
+/// *linesKept* and *truncated* are out-parameters.
+static QString truncateHeadLines(const QString& text, int limit,
+                                 int* linesKept, bool* truncated) {
+    const int budget = limit > 0 ? limit : g_toolOutputMaxChars;
+    if (budget <= 0 || text.size() <= budget) {
+        if (linesKept)  *linesKept = text.count('\n') + 1;
+        if (truncated)  *truncated = false;
+        return text;
+    }
+    QString kept = cutAtLineEnd(text, budget);
+    if (linesKept) *linesKept = kept.count('\n') + 1;
+    if (truncated) *truncated = true;
+    return kept;
+}
+
+/// Tail-biased truncation for *command* output (run_bash, run_python).
+///
+/// Keeps the head (~20%) and tail (~80%) and snips the middle: a command echo
+/// sits at the start and the error that matters usually sits at the end, so the
+/// middle of a build log is the disposable part.  File reads use
+/// truncateHeadLines instead — a gap in the middle of a source file is not
+/// disposable, and unlike a log it can be paged around.
 static QString snipMiddle(const QString& text) {
     int limit = g_toolOutputMaxChars;
     if (limit <= 0 || text.size() <= limit) return text;
@@ -632,8 +679,9 @@ static QString snipMiddle(const QString& text) {
     int headChars = qMax(limit / 5, 500);
     int tailChars = limit - headChars;
 
-    QString head = text.left(headChars);
-    QString tail = text.right(tailChars);
+    // Cut on line boundaries so neither seam leaves a broken half-line.
+    QString head = cutAtLineEnd(text, headChars);
+    QString tail = cutAtLineStart(text, tailChars);
 
     int snipped = text.size() - head.size() - tail.size();
     return head
@@ -665,17 +713,6 @@ static QString toolReadFile(const QJsonObject& args) {
     const int offset = aInt(args, "offset", 0);
     const int limit  = aInt(args, "limit", 0);
 
-    if (offset <= 0 && limit <= 0) {
-        QString snipped = snipMiddle(text);
-        if (snipped != text) {
-            const int total = text.count('\n') + 1;
-            snipped += QString("\n\n[%1 has %2 lines — pass offset and limit "
-                               "to read a specific range instead.]")
-                           .arg(path).arg(total);
-        }
-        return snipped;
-    }
-
     const QStringList lines = text.split('\n');
     const int total = lines.size();
     const int start = offset > 0 ? offset : 1;
@@ -685,10 +722,21 @@ static QString toolReadFile(const QJsonObject& args) {
     const int count = limit > 0 ? limit : (total - start + 1);
     const int end   = qMin(total, start + count - 1);
 
-    const QString body = lines.mid(start - 1, end - start + 1).join('\n');
-    return QString("[Lines %1-%2 of %3 in %4]\n")
-               .arg(start).arg(end).arg(total).arg(path)
-           + snipMiddle(body);
+    QString body = lines.mid(start - 1, end - start + 1).join('\n');
+    int kept = 0;
+    bool truncated = false;
+    body = truncateHeadLines(body, 0, &kept, &truncated);
+    const int shownEnd = start + kept - 1;
+
+    // A plain whole-file read that fit stays bare — no header to parse.
+    if (!truncated && offset <= 0 && limit <= 0) return body;
+
+    QString header = QString("[Lines %1-%2 of %3 in %4")
+                         .arg(start).arg(shownEnd).arg(total).arg(path);
+    if (truncated)
+        header += QString(" — output limit reached, pass offset=%1 to continue")
+                      .arg(shownEnd + 1);
+    return header + "]\n" + body;
 }
 
 static QString formatSize(qint64 sz);
@@ -1626,6 +1674,7 @@ static QString safeDownloadName(const QString& raw) {
 }
 
 QString safeDownloadNameForTest(const QString& raw) { return safeDownloadName(raw); }
+QString snipMiddleForTest(const QString& text) { return snipMiddle(text); }
 
 static QString toolDownloadFile(const QJsonObject& args) {
     QString urlStr   = aStr(args, "url");
@@ -1917,9 +1966,17 @@ static QString toolReadMultipleFiles(const QJsonObject& args) {
         QString content = QString::fromUtf8(f.readAll());
         f.close();
 
-        if (content.size() > MAX_PER_FILE) {
-            content = content.left(MAX_PER_FILE) +
-                      QString("\n\n[... truncated at %1 characters ...]").arg(MAX_PER_FILE);
+        // Same head-truncation and line-range reporting as read_file, so the
+        // model can follow up with read_file(offset=...) on whichever file was cut.
+        {
+            const int totalLines = content.count('\n') + 1;
+            int kept = 0;
+            bool truncated = false;
+            content = truncateHeadLines(content, MAX_PER_FILE, &kept, &truncated);
+            if (truncated)
+                content += QString("\n\n[... showed lines 1-%1 of %2 — "
+                                   "read_file with offset=%3 to continue ...]")
+                               .arg(kept).arg(totalLines).arg(kept + 1);
         }
 
         QString block = header + "\n" + content;

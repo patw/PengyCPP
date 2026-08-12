@@ -59,6 +59,8 @@ void       setImageLimits(int maxDimension, double maxMb, int quality);
 QJsonArray takePendingImages(ToolContext* ctx = nullptr);
 /// Test hook for the download-filename sanitiser (the tool itself needs network).
 QString    safeDownloadNameForTest(const QString& raw);
+/// Test hook for the tail-biased command-output snipper.
+QString    snipMiddleForTest(const QString& text);
 QString    execute(const QString& name, const QJsonObject& args,
                    std::atomic<bool>* cancel = nullptr,
                    ToolContext* ctx = nullptr);

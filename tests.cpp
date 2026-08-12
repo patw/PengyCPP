@@ -626,6 +626,69 @@ private slots:
         QVERIFY(call({}).startsWith("line 1"));
     }
 
+    // Files truncate from the head, not the middle: the head holds imports and
+    // declarations, and unlike a log the rest can be paged to.  Mirrors Python's
+    // test_read_file_truncates_from_head_with_continuation.
+    void readFileTruncatesFromHeadWithContinuation() {
+        QTemporaryDir dir;
+        QString path = dir.path() + "/big.txt";
+        QStringList body;
+        for (int i = 1; i <= 5000; ++i) body << QString("line %1").arg(i);
+        { QFile f(path); f.open(QIODevice::WriteOnly); f.write(body.join("\n").toUtf8()); }
+
+        Tools::setToolOutputMaxChars(2000);
+        QString result = Tools::execute("read_file", QJsonObject{{"path", path}});
+        Tools::setToolOutputMaxChars(250000);
+
+        QStringList lines = result.split('\n');
+        QString header = lines.takeFirst();
+
+        // No middle gap — content runs contiguously from line 1.
+        QVERIFY2(!result.contains("snipped"), qPrintable(header));
+        QCOMPARE(lines.first(), QString("line 1"));
+        QVERIFY2(header.contains("of 5000 in"), qPrintable(header));
+        QVERIFY2(header.contains("output limit reached"), qPrintable(header));
+
+        // The stated continuation offset is the next unseen line.
+        int lastShown = lines.last().split(' ').at(1).toInt();
+        int offset = header.section("offset=", 1).section(' ', 0, 0).toInt();
+        QCOMPARE(offset, lastShown + 1);
+    }
+
+    // run_bash output keeps head+tail: the command echo is at the start and the
+    // error that matters is usually at the end.
+    void commandOutputStaysTailBiased() {
+        QStringList body;
+        for (int i = 1; i <= 5000; ++i) body << QString("line %1").arg(i);
+        QString text = body.join("\n");
+
+        Tools::setToolOutputMaxChars(2000);
+        QString out = Tools::snipMiddleForTest(text);
+        Tools::setToolOutputMaxChars(250000);
+
+        QVERIFY(out.startsWith("line 1"));
+        QVERIFY(out.trimmed().endsWith("line 5000"));
+        QVERIFY(out.contains("snipped"));
+    }
+
+    // Character-index cuts left a broken half-line at each seam, which on source
+    // code is a fragment the model may try to "fix".
+    void truncationNeverSplitsALine() {
+        QStringList body;
+        for (int i = 1; i <= 5000; ++i) body << QString("line %1").arg(i);
+        QString text = body.join("\n");
+
+        Tools::setToolOutputMaxChars(2000);
+        QString out = Tools::snipMiddleForTest(text);
+        Tools::setToolOutputMaxChars(250000);
+
+        QString head = out.section("[... snipped", 0, 0);
+        QString tail = out.section("]", 1);
+        QRegularExpression whole("^line \\d+$");
+        for (const QString& frag : (head.trimmed().split('\n') + tail.trimmed().split('\n')))
+            QVERIFY2(whole.match(frag).hasMatch(), qPrintable("broken seam: " + frag));
+    }
+
     void readFileOffsetPastEndErrors() {
         QTemporaryDir dir;
         QString path = dir.path() + "/short.txt";
