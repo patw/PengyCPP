@@ -23,6 +23,8 @@
 #include <QCoreApplication>
 #include <QThread>
 #include <QUrlQuery>
+#include <QImage>
+#include "image_utils.h"
 
 #ifdef Q_OS_UNIX
 #include <unistd.h>
@@ -33,6 +35,9 @@ namespace Tools {
 
 static QString   g_userAgent = "PengyAgent/1.0";
 static int       g_timeout   = 300;
+static int       g_imageMaxDimension = 4096;
+static double    g_imageMaxMb        = 4.5;
+static int       g_imageQuality      = 85;
 static int       g_toolOutputMaxChars = 250000;
 static QMutex    g_mutex;
 
@@ -104,6 +109,13 @@ void setTimeout(int secs) {
     QMutexLocker lock(&g_mutex);
     g_timeout = secs;
 }
+void setImageLimits(int maxDimension, double maxMb, int quality) {
+    QMutexLocker lock(&g_mutex);
+    g_imageMaxDimension = maxDimension;
+    g_imageMaxMb        = maxMb;
+    g_imageQuality      = quality;
+}
+
 void setToolOutputMaxChars(int chars) {
     QMutexLocker lock(&g_mutex);
     g_toolOutputMaxChars = chars;
@@ -156,11 +168,18 @@ static QJsonObject td(const QString& name, const QString& desc,
 const QJsonArray& toolDefinitions() {
     // Built once; QJsonArray is implicitly shared so callers copy cheaply.
     static const QJsonArray defs = QJsonArray{
-        td("read_file", "Read the contents of a file",
-            QJsonObject{{"path", prop("string", "The file path to read")}},
+        td("read_file", "Read the contents of a text file. Returns the whole file by default; pass offset and limit to read one line range instead, which is how to page through a file too large to return at once. Use read_image for images — this tool cannot decode binary data.",
+            QJsonObject{
+                {"path",   prop("string", "The file path to read")},
+                {"offset", prop("integer", "1-based line number to start reading from. Omit to start at the beginning.")},
+                {"limit",  prop("integer", "Maximum number of lines to return, counting from offset. Omit to read to the end of the file.")}},
             QJsonArray{"path"}),
 
-        td("write_file", "Write content to a file",
+        td("read_image", "Look at an image file — a screenshot, photo, diagram, or a chart/render produced by an earlier command. The image is added to the conversation so you can see it directly and describe or judge what it shows; use this instead of read_file, which cannot decode image data. Supports PNG, JPEG, GIF, WebP, BMP and TIFF; large images are downscaled automatically.",
+            QJsonObject{{"path", prop("string", "The path of the image file to look at")}},
+            QJsonArray{"path"}),
+
+        td("write_file", "Write content to a file, replacing it entirely if it already exists. Parent directories are created automatically, so there is no need to mkdir first. To change part of an existing file use replace_in_file instead of rewriting the whole thing.",
             QJsonObject{
                 {"path",    prop("string", "The file path to write to")},
                 {"content", prop("string", "The content to write to the file")}},
@@ -247,7 +266,7 @@ const QJsonArray& toolDefinitions() {
             },
             QJsonArray{"changes"}),
 
-        td("run_bash", "Run a bash command in the terminal",
+        td("run_bash", "Run a command with bash. The command is non-interactive: stdin is closed, so anything that prompts or waits for input (a password prompt, an editor, `read`) will fail rather than wait — pass non-interactive flags instead. sudo is supported and prompts the user for their password separately. Commands are killed once the configured tool timeout elapses.",
             QJsonObject{{"command", prop("string", "The bash command to execute")}},
             QJsonArray{"command"}),
 
@@ -265,11 +284,11 @@ const QJsonArray& toolDefinitions() {
                 {"filename", prop("string", "Optional filename to save as")}},
             QJsonArray{"url"}),
 
-        td("fetch_url", "Fetch the text content of a URL into the context window",
+        td("fetch_url", "Fetch a URL and return its text content. Works for documentation and web pages (HTML is stripped to plain text) and for JSON or plain-text endpoints, including local ones such as http://127.0.0.1:8080/api/status. Returns the body only — use run_bash with curl if you need status codes or response headers.",
             QJsonObject{{"url", prop("string", "The URL to fetch")}},
             QJsonArray{"url"}),
 
-        td("run_python", "Execute Python code",
+        td("run_python", "Execute Python code in a fresh subprocess. Nothing persists between calls — variables, imports and state from an earlier call are gone, so each call must stand on its own. Only what you print() comes back; a bare expression returns nothing.",
             QJsonObject{{"code", prop("string", "The Python code to execute")}},
             QJsonArray{"code"}),
 
@@ -297,7 +316,7 @@ const QJsonArray& toolDefinitions() {
                 {"max_results",   prop("integer", "Maximum number of matches to return (default: 50)")}},
             QJsonArray{"pattern", "path"}),
 
-        td("glob", "Find files matching a glob pattern. Returns sorted file paths with sizes. Use ** for recursive.",
+        td("glob", "Find files matching a glob pattern. Returns sorted file paths with sizes. Use ** for recursive search. Noise directories are always skipped: .git, node_modules, __pycache__, .venv/venv, build, dist and target. Prefer this over run_bash('find ...') or run_bash('ls ...').",
             QJsonObject{
                 {"pattern", prop("string", "The glob pattern to match against file paths")},
                 {"path",    prop("string", "The directory to search in (default: cwd)")}},
@@ -374,11 +393,33 @@ const QJsonArray& toolDefinitions() {
     return defs;
 }
 
+void ToolContext::addPendingImage(const QString& path, const QString& mime,
+                                  const QByteArray& b64) {
+    QMutexLocker lock(&m_mutex);
+    m_pendingImages.append(QJsonObject{
+        {"path", path},
+        {"mime", mime},
+        {"b64",  QString::fromLatin1(b64)},
+    });
+}
+
+QJsonArray ToolContext::takePendingImages() {
+    QMutexLocker lock(&m_mutex);
+    QJsonArray images = m_pendingImages;
+    m_pendingImages = QJsonArray{};
+    return images;
+}
+
+QJsonArray takePendingImages(ToolContext* ctx) {
+    if (!ctx) ctx = &g_defaultContext;
+    return ctx->takePendingImages();
+}
+
 bool isReadOnly(const QString& name) {
     static const QSet<QString> ro{
         "read_file", "read_multiple_files", "directory_tree",
         "search_content", "web_search", "fetch_url",
-        "glob", "todowrite"
+        "glob", "todowrite", "read_image"
     };
     return ro.contains(name);
 }
@@ -602,6 +643,11 @@ static QString snipMiddle(const QString& text) {
         + tail;
 }
 
+/// Read file contents, optionally just the line range offset..offset+limit.
+///
+/// A ranged read is reported as "[Lines A-B of N]" so the model knows where it
+/// is in the file and can ask for the next page; a whole-file read that had to
+/// be snipped says how many lines exist so paging is discoverable.
 static QString toolReadFile(const QJsonObject& args) {
     QString path = expandHome(aStr(args, "path"));
     if (path.isEmpty()) return "Error: path is required.";
@@ -613,7 +659,99 @@ static QString toolReadFile(const QJsonObject& args) {
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
         return "Error reading file: " + f.errorString();
-    return snipMiddle(QString::fromUtf8(f.readAll()));
+    const QString text = QString::fromUtf8(f.readAll());
+
+    // 0 means "not supplied" — aInt's default; neither is a valid 1-based line.
+    const int offset = aInt(args, "offset", 0);
+    const int limit  = aInt(args, "limit", 0);
+
+    if (offset <= 0 && limit <= 0) {
+        QString snipped = snipMiddle(text);
+        if (snipped != text) {
+            const int total = text.count('\n') + 1;
+            snipped += QString("\n\n[%1 has %2 lines — pass offset and limit "
+                               "to read a specific range instead.]")
+                           .arg(path).arg(total);
+        }
+        return snipped;
+    }
+
+    const QStringList lines = text.split('\n');
+    const int total = lines.size();
+    const int start = offset > 0 ? offset : 1;
+    if (start > total)
+        return QString("Error: offset %1 is past the end of %2, which has %3 lines.")
+                   .arg(start).arg(path).arg(total);
+    const int count = limit > 0 ? limit : (total - start + 1);
+    const int end   = qMin(total, start + count - 1);
+
+    const QString body = lines.mid(start - 1, end - start + 1).join('\n');
+    return QString("[Lines %1-%2 of %3 in %4]\n")
+               .arg(start).arg(end).arg(total).arg(path)
+           + snipMiddle(body);
+}
+
+static QString formatSize(qint64 sz);
+
+/// Extensions read_image will attempt, so a text file gets a useful error
+/// rather than a decoder failure.
+static const QSet<QString>& imageSuffixes() {
+    static const QSet<QString> s{
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff"
+    };
+    return s;
+}
+
+/// Queue an image for attachment to the conversation.  Returns a text summary
+/// for the tool result; the picture reaches the caller via
+/// ToolContext::takePendingImages — see addPendingImage for why.
+static QString toolReadImage(const QJsonObject& args, ToolContext* ctx) {
+    QString path = expandHome(aStr(args, "path"));
+    if (path.isEmpty()) return "Error: path is required.";
+
+    QFileInfo fi(path);
+    if (!fi.exists()) return "Error: File not found: " + path;
+    if (!fi.isFile()) return "Error: Not a file: " + path;
+
+    const QString ext = fi.suffix().toLower();
+    if (!imageSuffixes().contains(ext)) {
+        QStringList known = imageSuffixes().values();
+        known.sort();
+        return "Error: " + path + " is not a recognized image file. "
+               "Supported extensions: " + known.join(", ") +
+               ". Use read_file for text.";
+    }
+
+    QImage probe(path);
+    if (probe.isNull())
+        return "Error: " + path + " could not be decoded as an image.";
+
+    int    maxDim  = 0;
+    double maxMb   = 0.0;
+    int    quality = 0;
+    {
+        QMutexLocker lock(&g_mutex);
+        maxDim  = g_imageMaxDimension;
+        maxMb   = g_imageMaxMb;
+        quality = g_imageQuality;
+    }
+
+    ImageResult result = imagePreprocess(path, maxDim, maxMb, quality);
+    if (!result.ok) return "Error reading image: preprocessing failed for " + path;
+
+    ctx->addPendingImage(path, result.mime, result.bytes_base64);
+
+    // base64 inflates by 4/3; report the encoded byte count, not the string.
+    const qint64 encoded = static_cast<qint64>(result.bytes_base64.size()) * 3 / 4;
+    QString summary = QString("Loaded %1 — %2×%3, %4")
+        .arg(fi.fileName())
+        .arg(probe.width())
+        .arg(probe.height())
+        .arg(formatSize(fi.size()));
+    if (encoded != fi.size())
+        summary += QString(" → %1, %2 after preprocessing")
+            .arg(result.mime, formatSize(encoded));
+    return summary + ". The image is attached below; look at it directly.";
 }
 
 static QString toolWriteFile(const QJsonObject& args) {
@@ -1475,6 +1613,20 @@ static QString toolWebSearch(const QJsonObject& args) {
 
 // ── Download file ────────────────────────────────────────────────────
 
+/// Reduce *raw* to a bare filename inside ~/Downloads.
+///
+/// The model chooses this name and may be acting on instructions from a fetched
+/// page, so a path component here must never escape the download directory —
+/// "../../.bashrc" has to land as ".bashrc".  Backslashes are folded too so a
+/// Windows-style path can't slip through on POSIX.
+static QString safeDownloadName(const QString& raw) {
+    QString name = QString(raw).replace('\\', '/').section('/', -1).trimmed();
+    if (name.isEmpty() || name == "." || name == "..") return "download";
+    return name;
+}
+
+QString safeDownloadNameForTest(const QString& raw) { return safeDownloadName(raw); }
+
 static QString toolDownloadFile(const QJsonObject& args) {
     QString urlStr   = aStr(args, "url");
     QString filename = aStr(args, "filename");
@@ -1489,12 +1641,10 @@ static QString toolDownloadFile(const QJsonObject& args) {
     QString downloads = QDir::homePath() + "/Downloads";
     QDir().mkpath(downloads);
 
-    if (filename.isEmpty()) {
+    if (filename.isEmpty())
         filename = urlStr.split('?').first().split('/').last();
-        if (filename.isEmpty()) filename = "download";
-    }
 
-    QString dest = downloads + "/" + filename;
+    QString dest = downloads + "/" + safeDownloadName(filename);
     QByteArray data = httpGetWithRedirect(url, userAgent(), 60000);
     if (data.isEmpty()) return "Error: Failed to download file or file is empty.";
 
@@ -2005,6 +2155,7 @@ QString execute(const QString& name, const QJsonObject& args,
                 std::atomic<bool>* cancel, ToolContext* ctx) {
     if (!ctx) ctx = &g_defaultContext;
     if (name == "read_file")          return toolReadFile(args);
+    if (name == "read_image")         return toolReadImage(args, ctx);
     if (name == "write_file")         return toolWriteFile(args);
     if (name == "replace_in_file")    return toolReplaceInFile(args);
     if (name == "apply_changes")      return toolApplyChanges(args);
@@ -2059,6 +2210,11 @@ static QString toolGlob(const QJsonObject& args) {
     // The filename pattern is the last component of the glob
     QString nameFilter = parts.last();
 
+    // A pattern whose final component starts with "." is asking for hidden
+    // entries.  Testing the whole pattern would miss "**/.config" or "src/.env",
+    // since those start with "*" and "s".
+    const bool wantsHidden = nameFilter.startsWith('.');
+
     QStringList matches;
     QDirIterator::IteratorFlags flags = QDirIterator::NoIteratorFlags;
     if (recursive)
@@ -2071,22 +2227,33 @@ static QString toolGlob(const QJsonObject& args) {
 
     QSet<QString> skipDirs = {".git", ".svn", ".hg", "__pycache__", "node_modules",
                                ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".eggs",
-                               ".venv", "venv", "build", "dist", "target"};
+                               ".venv", "venv", ".env", "build", "dist", "target"};
 
-    QDirIterator it(searchDir.path(), nameFilters, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, flags);
+    // Hidden entries are not enumerated at all unless QDir::Hidden is set, so
+    // the wantsHidden check below can only work if we ask for them here first.
+    QDir::Filters dirFilters = QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot;
+    if (wantsHidden) dirFilters |= QDir::Hidden;
+
+    QDirIterator it(searchDir.path(), nameFilters, dirFilters, flags);
     while (it.hasNext()) {
         it.next();
         QString fname = it.fileName();
-        if (skipDirs.contains(fname)) continue;
-        if (fname.startsWith('.') && !pattern.startsWith('.')) continue;
-
         QFileInfo fi = it.fileInfo();
+
+        // Only directories are pruned by the skip set: ".env" and "target" are
+        // in there as *directory* names, and matching them against files made a
+        // plain ".env" file unfindable.
+        if (fi.isDir() && skipDirs.contains(fname)) continue;
+        if (fname.startsWith('.') && !wantsHidden) continue;
+
         QString absPath = fi.absoluteFilePath();
-        // Also skip entries whose parent path goes through a skipped directory
+        // Also skip entries whose parent path goes through a skipped directory.
+        // Ancestors only — the final component is the entry itself, checked above.
         QString rel = searchDir.relativeFilePath(absPath);
+        QStringList relParts = rel.split('/');
         bool inSkipDir = false;
-        for (const QString& part : rel.split('/')) {
-            if (skipDirs.contains(part)) { inSkipDir = true; break; }
+        for (int i = 0; i < relParts.size() - 1; ++i) {
+            if (skipDirs.contains(relParts[i])) { inSkipDir = true; break; }
         }
         if (inSkipDir) continue;
 

@@ -18,6 +18,7 @@
 
 #include "config.h"
 #include "chatmanager.h"
+#include <QImage>
 #include "tools.h"
 #include "llmclient.h"
 #include "web/webserver.h"
@@ -501,6 +502,7 @@ private slots:
 
     void readonlyToolsCorrect() {
         QVERIFY(Tools::isReadOnly("read_file"));
+        QVERIFY(Tools::isReadOnly("read_image"));
         QVERIFY(Tools::isReadOnly("read_multiple_files"));
         QVERIFY(Tools::isReadOnly("directory_tree"));
         QVERIFY(Tools::isReadOnly("search_content"));
@@ -532,8 +534,8 @@ private slots:
 
     // ── Tools: definitions ──────────────────────────────────────────
 
-    void toolDefinitionsHasFifteen() {
-        QCOMPARE(Tools::toolDefinitions().size(), 15);
+    void toolDefinitionsHasSixteen() {
+        QCOMPARE(Tools::toolDefinitions().size(), 16);
     }
 
     void toolDefinitionsAllFunctionType() {
@@ -547,7 +549,7 @@ private slots:
         for (const QJsonValue& v : Tools::toolDefinitions()) {
             names.insert(v.toObject()["function"].toObject()["name"].toString());
         }
-        QCOMPARE(names.size(), 15);
+        QCOMPARE(names.size(), 16);
     }
 
     void toolDefinitionsAllHaveRequired() {
@@ -566,7 +568,7 @@ private slots:
         QByteArray json = QJsonDocument(defs).toJson();
         QJsonDocument parsed = QJsonDocument::fromJson(json);
         QVERIFY(parsed.isArray());
-        QCOMPARE(parsed.array().size(), 15);
+        QCOMPARE(parsed.array().size(), 16);
     }
 
     // ── Tools: read_file ────────────────────────────────────────────
@@ -587,6 +589,51 @@ private slots:
         QString result = Tools::execute("read_file",
             QJsonObject{{"path", "/tmp/pengy_nonexistent_file_12345.txt"}});
         QVERIFY(result.contains("not found") || result.contains("Not found"));
+    }
+
+    // offset/limit page through a file; the header states where you are so the
+    // model can request the next page.  Mirrors Python's
+    // test_read_file_offset_and_limit and Rust's read_file_offset_and_limit.
+    void readFileOffsetAndLimit() {
+        QTemporaryDir dir;
+        QString path = dir.path() + "/many.txt";
+        QStringList body;
+        for (int i = 1; i <= 20; ++i) body << QString("line %1").arg(i);
+        { QFile f(path); f.open(QIODevice::WriteOnly);
+          f.write(body.join("\n").toUtf8()); }
+
+        auto call = [&](const QJsonObject& extra) {
+            QJsonObject a{{"path", path}};
+            for (auto it = extra.begin(); it != extra.end(); ++it) a[it.key()] = it.value();
+            return Tools::execute("read_file", a);
+        };
+
+        QStringList ranged = call({{"offset", 5}, {"limit", 3}}).split('\n');
+        QCOMPARE(ranged[0], QString("[Lines 5-7 of 20 in %1]").arg(path));
+        QCOMPARE(ranged.mid(1), QStringList({"line 5", "line 6", "line 7"}));
+
+        // limit alone starts at line 1; offset alone runs to the end.
+        QCOMPARE(call({{"limit", 2}}).split('\n').mid(1),
+                 QStringList({"line 1", "line 2"}));
+        QCOMPARE(call({{"offset", 19}}).split('\n').mid(1),
+                 QStringList({"line 19", "line 20"}));
+
+        // A limit past the end clamps instead of erroring.
+        QCOMPARE(call({{"offset", 19}, {"limit", 100}}).split('\n')[0],
+                 QString("[Lines 19-20 of 20 in %1]").arg(path));
+
+        // No offset/limit keeps the plain whole-file behaviour (no header).
+        QVERIFY(call({}).startsWith("line 1"));
+    }
+
+    void readFileOffsetPastEndErrors() {
+        QTemporaryDir dir;
+        QString path = dir.path() + "/short.txt";
+        { QFile f(path); f.open(QIODevice::WriteOnly); f.write("a\nb\nc"); }
+        QString result = Tools::execute("read_file",
+            QJsonObject{{"path", path}, {"offset", 99}});
+        QVERIFY(result.contains("Error"));
+        QVERIFY(result.contains("3 lines"));
     }
 
     // ── Tools: write_file ───────────────────────────────────────────
@@ -856,6 +903,69 @@ private slots:
             QJsonObject{{"pattern", "*.py"}, {"path", dir.path()}});
         QVERIFY(result.contains("visible.py"));
         QVERIFY(!result.contains(".hidden.py"));
+    }
+
+    // ".env" is in the skip set as a virtualenv *directory* name; matching it
+    // against files made the common .env *file* unfindable.
+    void globFindsDotenvFile() {
+        QTemporaryDir dir;
+        { QFile f(dir.path() + "/.env"); f.open(QIODevice::WriteOnly); f.write("SECRET=1"); }
+
+        QString result = Tools::execute("glob",
+            QJsonObject{{"pattern", ".env"}, {"path", dir.path()}});
+        QVERIFY2(result.contains(".env"), qPrintable(result));
+        QVERIFY(!result.contains("No files matching"));
+    }
+
+    // The virtualenv case the skip entry exists for must keep working.
+    void globStillSkipsDotenvDirectoryContents() {
+        QTemporaryDir dir;
+        QDir(dir.path()).mkdir(".env");
+        { QFile f(dir.path() + "/.env/pyvenv.py"); f.open(QIODevice::WriteOnly); f.write("x"); }
+        { QFile f(dir.path() + "/real.py"); f.open(QIODevice::WriteOnly); f.write("y"); }
+
+        QString result = Tools::execute("glob",
+            QJsonObject{{"pattern", "**/*.py"}, {"path", dir.path()}});
+        QVERIFY2(result.contains("real.py"), qPrintable(result));
+        QVERIFY2(!result.contains("pyvenv.py"), qPrintable(result));
+    }
+
+    // A pattern whose final component starts with "." wants hidden entries,
+    // even when the pattern as a whole starts with "*".
+    void globFindsHiddenWhenPatternAsks() {
+        QTemporaryDir dir;
+        QDir(dir.path()).mkdir("sub");
+        { QFile f(dir.path() + "/sub/.config"); f.open(QIODevice::WriteOnly); f.write("x"); }
+
+        QString result = Tools::execute("glob",
+            QJsonObject{{"pattern", "**/.config"}, {"path", dir.path()}});
+        QVERIFY2(result.contains(".config"), qPrintable(result));
+    }
+
+    void globSkipsBuildDirContents() {
+        QTemporaryDir dir;
+        QDir(dir.path()).mkdir("build");
+        { QFile f(dir.path() + "/build/out.py"); f.open(QIODevice::WriteOnly); f.write("x"); }
+        { QFile f(dir.path() + "/app.py"); f.open(QIODevice::WriteOnly); f.write("y"); }
+
+        QVERIFY(!Tools::execute("glob",
+            QJsonObject{{"pattern", "**/*.py"}, {"path", dir.path()}}).contains("out.py"));
+        QVERIFY(!Tools::execute("glob",
+            QJsonObject{{"pattern", "*"}, {"path", dir.path()}}).contains("build"));
+    }
+
+    // The model picks the download name and may be acting on a fetched page's
+    // instructions, so a path component must never leave ~/Downloads.
+    void downloadFilenameCannotEscapeDownloads() {
+        QCOMPARE(Tools::safeDownloadNameForTest("../../.bashrc"), QString(".bashrc"));
+        QCOMPARE(Tools::safeDownloadNameForTest("/etc/passwd"), QString("passwd"));
+        QCOMPARE(Tools::safeDownloadNameForTest("a/b/c.txt"), QString("c.txt"));
+        QCOMPARE(Tools::safeDownloadNameForTest("..\\..\\evil.exe"), QString("evil.exe"));
+        QCOMPARE(Tools::safeDownloadNameForTest(".."), QString("download"));
+        QCOMPARE(Tools::safeDownloadNameForTest("."), QString("download"));
+        QCOMPARE(Tools::safeDownloadNameForTest(""), QString("download"));
+        QCOMPARE(Tools::safeDownloadNameForTest("subdir/"), QString("download"));
+        QCOMPARE(Tools::safeDownloadNameForTest("report.pdf"), QString("report.pdf"));
     }
 
     void globSkipsNodeModules() {
@@ -1653,7 +1763,7 @@ private slots:
 
         QCOMPARE(stub.requests.size(), 1);
         QCOMPARE(stub.requests[0]["model"].toString(), QString("stub-model"));
-        QCOMPARE(stub.requests[0]["tools"].toArray().size(), 15);
+        QCOMPARE(stub.requests[0]["tools"].toArray().size(), 16);
         QVERIFY(!stub.requests[0].contains("reasoning_effort"));
     }
 
@@ -1720,6 +1830,88 @@ private slots:
         QJsonObject secondLast = msgs[msgs.size() - 2].toObject();
         QCOMPARE(secondLast["role"].toString(), QString("assistant"));
         QVERIFY(!secondLast["tool_calls"].toArray().isEmpty());
+    }
+
+    // read_image can't return a picture through a role:"tool" message, so the
+    // loop attaches it as a follow-up user message.  Mirrors Python's
+    // TestReadImageAttachment and Rust's read_image_attaches_* — keep in sync.
+    void llmReadImageAttachesPictureAsUserMessage() {
+        QTemporaryDir dir;
+        QString file = dir.path() + "/shot.png";
+        QImage img(48, 32, QImage::Format_RGB32);
+        img.fill(QColor(10, 120, 200));
+        QVERIFY(img.save(file));
+
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_image",
+                                 QJsonObject{{"path", file}})}, 10, 5)
+            << llmCompletion("a blue rectangle", {}, 10, 5);
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("what is in it?")};
+        p.toolConfirmation = "all";
+
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            [&]() { return std::make_pair(true, false); },
+            []() { return false; });
+
+        QVERIFY(events[2]["content"].toString().contains("Loaded shot.png"));
+        QVERIFY(events[2]["content"].toString().contains(QString::fromUtf8("48×32")));
+
+        QJsonArray msgs = stub.requests[1]["messages"].toArray();
+
+        // The tool message stays a plain string, directly behind its assistant.
+        int toolIdx = -1;
+        for (int i = 0; i < msgs.size(); ++i)
+            if (msgs[i].toObject()["role"].toString() == "tool") { toolIdx = i; break; }
+        QVERIFY(toolIdx > 0);
+        QVERIFY(msgs[toolIdx].toObject()["content"].isString());
+        QCOMPARE(msgs[toolIdx - 1].toObject()["role"].toString(), QString("assistant"));
+
+        // The picture rides in a trailing user message instead.
+        QJsonObject last = msgs.last().toObject();
+        QCOMPARE(last["role"].toString(), QString("user"));
+        QJsonArray parts = last["content"].toArray();
+        int images = 0;
+        QString url;
+        for (const QJsonValue& v : parts) {
+            if (v.toObject()["type"].toString() == "image_url") {
+                images++;
+                url = v.toObject()["image_url"].toObject()["url"].toString();
+            }
+        }
+        QCOMPARE(images, 1);
+        QVERIFY(url.startsWith("data:image/"));
+        QVERIFY(url.contains(";base64,"));
+    }
+
+    void llmReadImageErrorAttachesNothing() {
+        QTemporaryDir dir;
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_image",
+                                 QJsonObject{{"path", dir.path() + "/nope.png"}})}, 10, 5)
+            << llmCompletion("ok", {}, 10, 5);
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("look")};
+        p.toolConfirmation = "all";
+
+        LlmClient().run(p, [](const QJsonObject&) {},
+            [&]() { return std::make_pair(true, false); },
+            []() { return false; });
+
+        for (const QJsonValue& v : stub.requests[1]["messages"].toArray()) {
+            if (v.toObject()["role"].toString() == "user")
+                QVERIFY(v.toObject()["content"].isString());
+        }
     }
 
     void llmSafeModePausesForWriteTool() {

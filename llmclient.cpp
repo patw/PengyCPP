@@ -360,6 +360,38 @@ void LlmClient::run(const LlmParams& params,
                     {"declined",     declined}
                 });
             }
+
+            // read_image parks its picture on the tool context because a
+            // role:"tool" message only accepts string content on
+            // OpenAI-compatible APIs.  Attach anything queued as a follow-up
+            // user message — after the loop, so every tool_call keeps its
+            // matching tool message immediately behind the assistant one.
+            {
+                QJsonArray pendingImages = Tools::takePendingImages(params.toolContext);
+                if (!pendingImages.isEmpty()) {
+                    QJsonArray parts;
+                    for (const QJsonValue& v : pendingImages) {
+                        const QJsonObject img = v.toObject();
+                        parts.append(QJsonObject{
+                            {"type", "text"},
+                            {"text", "Image loaded by read_image: " +
+                                     img["path"].toString()},
+                        });
+                        parts.append(QJsonObject{
+                            {"type", "image_url"},
+                            {"image_url", QJsonObject{
+                                {"url", "data:" + img["mime"].toString() +
+                                        ";base64," + img["b64"].toString()},
+                            }},
+                        });
+                    }
+                    current.append(QJsonObject{
+                        {"role",    "user"},
+                        {"content", parts},
+                    });
+                }
+            }
+
             // Loop: send tool results back to LLM
             continue;
         }

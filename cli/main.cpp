@@ -350,6 +350,7 @@ public:
         Tools::setUserAgent(cfg.userAgent);
         Tools::setTimeout(cfg.toolTimeout);
         Tools::setToolOutputMaxChars(cfg.toolOutputMaxChars);
+        Tools::setImageLimits(cfg.imageMaxDimension, cfg.imageMaxMb, cfg.imageQuality);
 
         if (singleShot && noSave) {
             chat = QJsonObject{

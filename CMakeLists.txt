@@ -13,7 +13,7 @@ configure_file(
     @ONLY
 )
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Svg)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg)
 
 # ── CLI ─────────────────────────────────────────────────────────────
 add_executable(pengy_cli
@@ -22,8 +22,10 @@ add_executable(pengy_cli
     chatmanager.cpp
     tools.cpp
     llmclient.cpp
+    image_utils.cpp
 )
-target_link_libraries(pengy_cli PRIVATE Qt6::Core Qt6::Network)
+# Qt6::Gui (not Widgets) for QImage — read_image decodes and rescales in tools.cpp.
+target_link_libraries(pengy_cli PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
 if(UNIX AND NOT WIN32)
     target_link_libraries(pengy_cli PRIVATE readline)
 endif()
