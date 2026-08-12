@@ -17,6 +17,57 @@ static const double MAX_DELAY_SECS    = 60.0;
 static const double JITTER            = 0.25;
 static const QList<int> RETRYABLE_STATUSES = {429, 529};
 
+// ── Graceful image-stripping helpers ────────────────────────────
+
+static bool hasImageUrlParts(const QJsonArray& messages) {
+    for (const QJsonValue& mv : messages) {
+        QJsonObject msg = mv.toObject();
+        QJsonValue cv = msg["content"];
+        if (cv.isArray()) {
+            for (const QJsonValue& pv : cv.toArray()) {
+                if (pv.toObject()["type"].toString() == "image_url")
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
+static void stripImageUrlParts(QJsonArray& messages) {
+    for (int i = 0; i < messages.size(); ++i) {
+        QJsonObject msg = messages[i].toObject();
+        QJsonValue cv = msg["content"];
+        if (!cv.isArray()) continue;
+        QJsonArray old = cv.toArray();
+        QJsonArray kept;
+        for (const QJsonValue& pv : old) {
+            if (pv.toObject()["type"].toString() != "image_url")
+                kept.append(pv);
+        }
+        if (kept.size() == 1 && kept[0].toObject()["type"].toString() == "text") {
+            msg["content"] = kept[0].toObject()["text"];
+        } else if (kept.isEmpty()) {
+            msg["content"] = QStringLiteral("[Empty \xe2\x80\x94 image content was removed]");
+        } else {
+            msg["content"] = kept;
+        }
+        messages[i] = msg;
+    }
+}
+
+static const QStringList IMAGE_ERROR_KEYWORDS = {
+    "image", "multimodal", "vision", "not support", "unsupported"
+};
+
+static bool isImageInputError(int statusCode, const QString& errorMsg) {
+    if (statusCode != 400) return false;
+    QString lower = errorMsg.toLower();
+    for (const QString& kw : IMAGE_ERROR_KEYWORDS) {
+        if (lower.contains(kw)) return true;
+    }
+    return false;
+}
+
 static QJsonObject usage0() {
     return QJsonObject{
         {"prompt_tokens",     0},
@@ -139,6 +190,7 @@ void LlmClient::run(const LlmParams& params,
         // ── API call with 429 / 529 exponential backoff ──────────
         LlmResponse lastResp;
         bool gotSuccess = false;
+        bool imagesStripped = false;
         for (int attempt = 0; attempt <= MAX_RETRIES; ++attempt) {
             if (isCancelled()) return;
 
@@ -152,6 +204,24 @@ void LlmClient::run(const LlmParams& params,
             if (code >= 200 && code < 300) {
                 gotSuccess = true;
                 break;
+            }
+
+            // ── Graceful handling: model doesn't support images ──
+            {
+                QString msg = body["error"].toObject()["message"].toString(
+                    QString::fromUtf8(lastResp.body));
+                if (isImageInputError(code, msg) && hasImageUrlParts(current)) {
+                    stripImageUrlParts(current);
+                    current.append(QJsonObject{
+                        {"role",    "user"},
+                        {"content", QStringLiteral(
+                            "[This AI model does not support image/vision inputs, "
+                            "so the image could not be attached. "
+                            "The file metadata was returned above.]")},
+                    });
+                    imagesStripped = true;
+                    break;  // exit retry loop, outer loop will restart
+                }
             }
 
             if (RETRYABLE_STATUSES.contains(code) && attempt < MAX_RETRIES) {
@@ -180,6 +250,10 @@ void LlmClient::run(const LlmParams& params,
 
             // Non-retryable or final attempt exhausted — fall through to error
             break;
+        }
+
+        if (imagesStripped) {
+            continue;  // restart outer loop with images removed
         }
 
         if (!gotSuccess) {

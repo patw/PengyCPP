@@ -79,7 +79,7 @@ The web UI is for single-user personal use. For remote access, put it behind ngi
 
 | Main chat UI | Settings / theme controls | Tasks templates |
 |---|---|---|
-| ![PengyCPP main chat UI](pengyui.png) | ![PengyCPP settings and theme controls](pengyconfig.png) | ![PengyCPP tasks template manager](pengytasks.png) |
+| ![PengyCPP main chat UI](pengyui.png) | ![PengyCPP settings and theme controls](pengysettings.png) | ![PengyCPP tasks template manager](pengytemplates.png) |
 
 ---
 
