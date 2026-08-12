@@ -1,6 +1,12 @@
 # Changelog
 
-## v1.6.0 (current)
+## v1.6.1 (current)
+
+- **Qt local-image rendering fix:** raw HTML `<img>` tags now render canonical
+  `file:///…` local URLs correctly in the desktop chat view. The loader also
+  accepts absolute local paths emitted by models.
+
+## v1.6.0
 
 - **New `read_image` tool** — the agent can inspect local images (screenshots,
   photos, diagrams, charts, rendered plots) and attach them to the conversation
