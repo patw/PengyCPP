@@ -168,7 +168,7 @@ static QJsonObject td(const QString& name, const QString& desc,
 const QJsonArray& toolDefinitions() {
     // Built once; QJsonArray is implicitly shared so callers copy cheaply.
     static const QJsonArray defs = QJsonArray{
-        td("read_file", "Read the contents of a text file. Returns the whole file by default; pass offset and limit to read one line range instead, which is how to page through a file too large to return at once. Use read_image for images — this tool cannot decode binary data.",
+        td("read_file", "Read the contents of a text file. Returns the whole file by default; very large files are truncated to the output limit, with a header telling you how to continue with offset/limit. Pass offset and limit to read one line range instead, which is how to page through a file too large to return at once. Use read_image for images — this tool cannot decode binary data.",
             QJsonObject{
                 {"path",   prop("string", "The file path to read")},
                 {"offset", prop("integer", "1-based line number to start reading from. Omit to start at the beginning.")},
@@ -187,17 +187,20 @@ const QJsonArray& toolDefinitions() {
 
         td("replace_in_file",
             "Perform an exact string replacement in an existing file. "
-            "The old_str must match exactly one occurrence.",
+            "The old_str must match exactly one occurrence in the file — if zero or multiple "
+            "matches are found, the edit is rejected with a clear error. This is the preferred "
+            "way to make targeted edits instead of rewriting an entire file.",
             QJsonObject{
                 {"path",    prop("string", "The file path to edit")},
-                {"old_str", prop("string", "The exact text to find and replace. Must match exactly one location.")},
+                {"old_str", prop("string", "The exact text to find and replace. Must match exactly one location in the file, including whitespace and indentation.")},
                 {"new_str", prop("string", "The text to replace it with. Use empty string to delete.")}},
             QJsonArray{"path", "old_str", "new_str"}),
 
         td("apply_changes",
-            "Apply bounded transactional exact-text edits across files. Validate all "
-            "operations in memory first; if any operation fails, no files are changed. "
-            "Use dry_run to preview the unified diff before writing.",
+            "Apply a bounded, transactional set of exact-text edits across files. Every "
+            "operation is validated in memory before anything is written — if validation "
+            "fails, nothing is changed. Use dry_run=true to preview the unified diff before "
+            "writing. Limits: at most 20 files, 100 operations total, and ~1 MB of content.",
             QJsonObject{
                 {"changes", QJsonObject{
                     {"type", "array"},
@@ -266,8 +269,10 @@ const QJsonArray& toolDefinitions() {
             },
             QJsonArray{"changes"}),
 
-        td("run_bash", "Run a command with bash. The command is non-interactive: stdin is closed, so anything that prompts or waits for input (a password prompt, an editor, `read`) will fail rather than wait — pass non-interactive flags instead. sudo is supported and prompts the user for their password separately. Commands are killed once the configured tool timeout elapses.",
-            QJsonObject{{"command", prop("string", "The bash command to execute")}},
+        td("run_bash", "Run a command with bash. The command is non-interactive: stdin is closed, so anything that prompts or waits for input (a password prompt, an editor, `read`) will fail rather than wait — pass non-interactive flags instead. Set cwd to run the command in a specific working directory (defaults to the current directory). sudo is supported and prompts the user for their password separately. Commands are killed once the configured tool timeout elapses.",
+            QJsonObject{
+                {"command", prop("string", "The bash command to execute")},
+                {"cwd",     prop("string", "Optional working directory to run the command in")}},
             QJsonArray{"command"}),
 
         td("web_search",
@@ -278,22 +283,24 @@ const QJsonArray& toolDefinitions() {
                 {"max_results", prop("integer", "Maximum number of results to return (default: 5)")}},
             QJsonArray{"query"}),
 
-        td("download_file", "Download a file from a URL to the user's Downloads directory",
+        td("download_file", "Download a file from a URL to the user's Downloads directory. Existing files of the same name are overwritten; downloads larger than 100 MB are rejected.",
             QJsonObject{
                 {"url",      prop("string", "The URL of the file to download")},
-                {"filename", prop("string", "Optional filename to save as")}},
+                {"filename", prop("string", "Optional filename to save as; defaults to the name from the URL")}},
             QJsonArray{"url"}),
 
-        td("fetch_url", "Fetch a URL and return its text content. Works for documentation and web pages (HTML is stripped to plain text) and for JSON or plain-text endpoints, including local ones such as http://127.0.0.1:8080/api/status. Returns the body only — use run_bash with curl if you need status codes or response headers.",
+        td("fetch_url", "Fetch a URL and return its text content. Works for documentation and web pages (HTML is stripped to plain text) and for JSON or plain-text endpoints, including local ones such as http://127.0.0.1:8080/api/status. Returns the body only — use run_bash with curl if you need status codes or response headers. Very large responses are truncated; a notice is appended when truncation occurs.",
             QJsonObject{{"url", prop("string", "The URL to fetch")}},
             QJsonArray{"url"}),
 
-        td("run_python", "Execute Python code in a fresh subprocess. Nothing persists between calls — variables, imports and state from an earlier call are gone, so each call must stand on its own. Only what you print() comes back; a bare expression returns nothing.",
-            QJsonObject{{"code", prop("string", "The Python code to execute")}},
+        td("run_python", "Execute Python code in a fresh subprocess. Nothing persists between calls — variables, imports and state from an earlier call are gone, so each call must stand on its own. Only what you print() comes back; a bare expression returns nothing. Set cwd to run in a specific working directory. The process is killed once the configured tool timeout elapses.",
+            QJsonObject{
+                {"code", prop("string", "The Python code to execute")},
+                {"cwd",  prop("string", "Optional working directory to run the code in")}},
             QJsonArray{"code"}),
 
         td("directory_tree",
-            "Show a visual tree of the directory structure. "
+            "Show a visual tree of the directory structure, useful for understanding project layout quickly. "
             "Skips common noise directories like .git, node_modules, __pycache__ by default.",
             QJsonObject{
                 {"path",        prop("string",  "The directory path to show the tree for")},
@@ -301,8 +308,11 @@ const QJsonArray& toolDefinitions() {
                 {"show_hidden", prop("boolean", "Whether to show hidden files/directories (default: false)")}},
             QJsonArray{"path"}),
 
-        td("read_multiple_files", "Read multiple files at once, returning each with a clear header.",
-            QJsonObject{{"paths", prop("array", "List of file paths to read")}},
+        td("read_multiple_files", "Read multiple files at once, returning each with a clear header. Use this when you know you need to inspect several files to reduce round-trips.",
+            QJsonObject{{"paths", QJsonObject{
+                {"type", "array"},
+                {"description", "List of file paths to read"},
+                {"items", QJsonObject{{"type", "string"}}}}}},
             QJsonArray{"paths"}),
 
         td("search_content",
@@ -313,23 +323,23 @@ const QJsonArray& toolDefinitions() {
                 {"pattern",       prop("string",  "The text to search for. Matched literally by default — metacharacters like '.', '*', '(', '[' are escaped automatically. Set regex=true to interpret it as a regular expression instead.")},
                 {"regex",         prop("boolean", "Treat pattern as a regular expression instead of a literal string (default: false)")},
                 {"path",          prop("string",  "The directory or file to search in")},
-                {"file_glob",     prop("string",  "Optional glob to filter files")},
+                {"file_glob",     prop("string",  "Optional glob to filter files, e.g. '*.py' or '*.{js,ts}'. Defaults to all text files.")},
                 {"context_lines", prop("integer", "Number of lines of context (default: 0)")},
                 {"max_results",   prop("integer", "Maximum number of matches to return (default: 50)")}},
             QJsonArray{"pattern", "path"}),
 
-        td("glob", "Find files matching a glob pattern. Returns sorted file paths with sizes. Use ** for recursive search. Noise directories are always skipped: .git, node_modules, __pycache__, .venv/venv, build, dist and target. Prefer this over run_bash('find ...') or run_bash('ls ...').",
+        td("glob", "Find files matching a glob pattern. Returns sorted file paths with sizes. Use ** for recursive search (e.g. 'src/**/*.py'). Noise directories are always skipped: .git, node_modules, __pycache__, .venv/venv, build, dist and target. Prefer this over run_bash('find ...') or run_bash('ls ...'). Results are capped at 200 paths.",
             QJsonObject{
-                {"pattern", prop("string", "The glob pattern to match against file paths")},
-                {"path",    prop("string", "The directory to search in (default: cwd)")}},
+                {"pattern", prop("string", "The glob pattern to match against file paths. Supports ** for recursive matching, * for any characters, ? for single character.")},
+                {"path",    prop("string", "The directory to search in (default: current working directory)")}},
             QJsonArray{"pattern"}),
 
         td("todowrite",
             "Create and update a structured task list for tracking progress during complex "
             "multi-step operations. Send the COMPLETE list every time — do not send "
-            "incremental updates. Exactly one task must be in_progress at any time. Mark "
-            "tasks completed immediately after finishing them. Use imperative forms for "
-            "content (e.g. 'Run tests', 'Add JWT middleware').",
+            "incremental updates. At most one task must be in_progress at any time — it is "
+            "fine to have none. Mark tasks completed immediately after finishing them. Use "
+            "imperative forms for content (e.g. 'Run tests', 'Add JWT middleware').",
             QJsonObject{
                 {"todos", QJsonObject{
                     {"type", "array"},
@@ -344,7 +354,7 @@ const QJsonArray& toolDefinitions() {
                             {"status", QJsonObject{
                                 {"type", "string"},
                                 {"enum", QJsonArray{"pending", "in_progress", "completed"}},
-                                {"description", "Current task status — exactly one task must be in_progress"}
+                                {"description", "Current task status — at most one task should be in_progress"}
                             }}
                         }},
                         {"required", QJsonArray{"content", "status"}}
@@ -353,7 +363,7 @@ const QJsonArray& toolDefinitions() {
             },
             QJsonArray{"todos"}),
 
-        td("ask_user_question", "Ask the user one or more multiple-choice questions to clarify requirements or resolve ambiguity.",
+        td("ask_user_question", "Ask the user one or more multiple-choice questions to clarify requirements, gather preferences, or resolve ambiguity. Use this when instructions are vague, multiple valid approaches exist, or you need a decision before proceeding. Each question includes a header, the question text, and a list of options with descriptions.",
             QJsonObject{{"questions", QJsonObject{
                 {"type", "array"},
                 {"description", "One or more questions, each with a header, question text, and list of options"},
@@ -940,6 +950,10 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
     QString command = aStr(args, "command");
     if (command.isEmpty()) return "Error: command is required.";
 
+    QString cwd = expandHome(aStr(args, "cwd"));
+    if (!cwd.isEmpty() && !QFileInfo(cwd).isDir())
+        return "Error: cwd not found or not a directory: " + cwd;
+
     int timeoutSecs = toolTimeout();
 
     // ── sudo detection ──────────────────────────────────────────────
@@ -980,6 +994,7 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
     // The command never inherits our stdin: the password goes via askpass, and
     // a child reading the terminal would hang the GUI/CLI.
     proc.setStandardInputFile(QProcess::nullDevice());
+    if (!cwd.isEmpty()) proc.setWorkingDirectory(cwd);
 
     if (askpass) {
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -1766,7 +1781,7 @@ static QString toolFetchUrl(const QJsonObject& args) {
 
     const int maxChars = 250000;
     if (text.size() > maxChars) {
-        text = text.left(maxChars) + "\n\n[... truncated at 50,000 characters ...]";
+        text = text.left(maxChars) + "\n\n[... truncated at 250,000 characters ...]";
     }
     return text;
 }
@@ -1793,6 +1808,10 @@ static QString toolRunPython(const QJsonObject& args, ToolContext* ctx) {
     QString code = aStr(args, "code");
     if (code.isEmpty()) return "Error: code is required.";
 
+    QString cwd = expandHome(aStr(args, "cwd"));
+    if (!cwd.isEmpty() && !QFileInfo(cwd).isDir())
+        return "Error: cwd not found or not a directory: " + cwd;
+
     QTemporaryFile tmp;
     tmp.setFileTemplate(QDir::tempPath() + "/pengy_py_XXXXXX.py");
     tmp.setAutoRemove(true);
@@ -1811,6 +1830,7 @@ static QString toolRunPython(const QJsonObject& args, ToolContext* ctx) {
     proc.setArguments({tmpPath});
     proc.setStandardOutputFile(tmpFiles.stdoutPath);
     proc.setStandardErrorFile(tmpFiles.stderrPath);
+    if (!cwd.isEmpty()) proc.setWorkingDirectory(cwd);
 
 #ifdef Q_OS_UNIX
     proc.setChildProcessModifier([]() {

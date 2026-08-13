@@ -1294,6 +1294,40 @@ private slots:
         QVERIFY(r.contains("no password provider"));
     }
 
+    void runBashCwd() {
+        QTemporaryDir dir;
+        QString result = Tools::execute("run_bash",
+            QJsonObject{{"command", "touch marker.txt && ls"}, {"cwd", dir.path()}});
+        QVERIFY(result.contains("marker.txt"));
+        QVERIFY(QFileInfo(dir.path() + "/marker.txt").exists());
+    }
+
+    void runBashInvalidCwd() {
+        QString result = Tools::execute("run_bash",
+            QJsonObject{{"command", "pwd"}, {"cwd", "/nonexistent_dir_xyz"}});
+        QVERIFY(result.contains("cwd not found"));
+    }
+
+    void runPythonCwd() {
+        QTemporaryDir dir;
+        Tools::execute("run_python",
+            QJsonObject{{"code", "open('marker.txt','w').write('x')"}, {"cwd", dir.path()}});
+        QVERIFY(QFileInfo(dir.path() + "/marker.txt").exists());
+    }
+
+    void readMultipleFilesSchemaHasStringItems() {
+        for (const QJsonValue& v : Tools::toolDefinitions()) {
+            QJsonObject fn = v.toObject()["function"].toObject();
+            if (fn["name"].toString() == "read_multiple_files") {
+                QJsonObject paths = fn["parameters"].toObject()["properties"].toObject()["paths"].toObject();
+                QCOMPARE(paths["type"].toString(), QString("array"));
+                QCOMPARE(paths["items"].toObject()["type"].toString(), QString("string"));
+                return;
+            }
+        }
+        QFAIL("read_multiple_files not found");
+    }
+
     // ── Tools: sudo askpass ─────────────────────────────────────────
 
     void sudoRewriteForAskpass() {
