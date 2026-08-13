@@ -289,8 +289,10 @@ const QJsonArray& toolDefinitions() {
                 {"filename", prop("string", "Optional filename to save as; defaults to the name from the URL")}},
             QJsonArray{"url"}),
 
-        td("fetch_url", "Fetch a URL and return its text content. Works for documentation and web pages (HTML is stripped to plain text) and for JSON or plain-text endpoints, including local ones such as http://127.0.0.1:8080/api/status. Returns the body only — use run_bash with curl if you need status codes or response headers. Very large responses are truncated; a notice is appended when truncation occurs.",
-            QJsonObject{{"url", prop("string", "The URL to fetch")}},
+        td("fetch_url", "Fetch a URL and return its text content. Works for documentation and web pages (HTML is stripped to plain text) and for JSON or plain-text endpoints, including local ones such as http://127.0.0.1:8080/api/status. Returns the body only — use run_bash with curl if you need status codes or response headers. Large responses are truncated to the configured tool output limit; pass max_chars to return more (0 = no limit).",
+            QJsonObject{
+                {"url",       prop("string",  "The URL to fetch")},
+                {"max_chars", prop("integer", "Maximum characters to return. Defaults to the configured tool output limit; 0 returns everything (up to the 2 MB response cap).")}},
             QJsonArray{"url"}),
 
         td("run_python", "Execute Python code in a fresh subprocess. Nothing persists between calls — variables, imports and state from an earlier call are gone, so each call must stand on its own. Only what you print() comes back; a bare expression returns nothing. Set cwd to run in a specific working directory. The process is killed once the configured tool timeout elapses.",
@@ -1731,6 +1733,15 @@ static QString toolFetchUrl(const QJsonObject& args) {
     QString urlStr = aStr(args, "url");
     if (urlStr.isEmpty()) return "Error: url is required.";
 
+    // Truncate to the configured output limit (or an explicit max_chars
+    // override); 0/negative means no limit.
+    int limit;
+    if (args.contains("max_chars")) {
+        limit = aInt(args, "max_chars", 0);
+    } else {
+        limit = g_toolOutputMaxChars;
+    }
+
     QUrl url(urlStr);
     if (!url.isValid()) return "Error: Invalid URL: " + urlStr;
     QString scheme = url.scheme();
@@ -1779,9 +1790,8 @@ static QString toolFetchUrl(const QJsonObject& args) {
         text = text.trimmed();
     }
 
-    const int maxChars = 250000;
-    if (text.size() > maxChars) {
-        text = text.left(maxChars) + "\n\n[... truncated at 250,000 characters ...]";
+    if (limit > 0 && text.size() > limit) {
+        text = text.left(limit) + QString("\n\n[... truncated at %1 characters — pass max_chars to adjust ...]").arg(limit);
     }
     return text;
 }
@@ -1955,12 +1965,17 @@ static QString toolReadMultipleFiles(const QJsonObject& args) {
     QJsonArray pathsArr = args["paths"].toArray();
     if (pathsArr.isEmpty()) return "Error: no paths provided.";
 
-    const int MAX_FILES    = 20;
-    const int MAX_PER_FILE = 250000;
-    const int MAX_TOTAL    = 1250000;  // 5× the global tool output limit
+    const int MAX_FILES = 20;
 
     if (pathsArr.size() > MAX_FILES)
         return QString("Error: too many files (%1). Maximum is %2.").arg(pathsArr.size()).arg(MAX_FILES);
+
+    // Derive per-file and total budgets from the tool output limit so the
+    // single "max tool output" setting governs how much context a batch can
+    // consume.  0 means "no limit".
+    const int budget      = g_toolOutputMaxChars;
+    const int perFile     = budget;
+    const int totalBudget = budget > 0 ? budget * 5 : 0;
 
     QStringList parts;
     int total = 0;
@@ -1994,7 +2009,7 @@ static QString toolReadMultipleFiles(const QJsonObject& args) {
             const int totalLines = content.count('\n') + 1;
             int kept = 0;
             bool truncated = false;
-            content = truncateHeadLines(content, MAX_PER_FILE, &kept, &truncated);
+            content = truncateHeadLines(content, perFile, &kept, &truncated);
             if (truncated)
                 content += QString("\n\n[... showed lines 1-%1 of %2 — "
                                    "read_file with offset=%3 to continue ...]")
@@ -2002,8 +2017,8 @@ static QString toolReadMultipleFiles(const QJsonObject& args) {
         }
 
         QString block = header + "\n" + content;
-        if (total + block.size() > MAX_TOTAL) {
-            int remaining = MAX_TOTAL - total;
+        if (totalBudget > 0 && total + block.size() > totalBudget) {
+            int remaining = totalBudget - total;
             if (remaining > 200) {
                 int take = qMax(0, remaining - header.size() - 4);
                 parts.append(header + "\n" + content.left(take) + "...");

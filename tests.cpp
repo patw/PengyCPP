@@ -1328,6 +1328,66 @@ private slots:
         QFAIL("read_multiple_files not found");
     }
 
+    void readMultipleFilesLimitsFollowOutputLimit() {
+        QTemporaryDir dir;
+        QString path = dir.path() + "/big.txt";
+        QStringList lines;
+        for (int i = 1; i <= 2000; ++i) lines << QString("line %1").arg(i);
+        { QFile f(path); f.open(QIODevice::WriteOnly); f.write(lines.join("\n").toUtf8()); }
+
+        Tools::setToolOutputMaxChars(1000);
+        QString result = Tools::execute("read_multiple_files",
+            QJsonObject{{"paths", QJsonArray{path}}});
+        Tools::setToolOutputMaxChars(250000);
+
+        QVERIFY(result.contains("showed lines 1-"));
+        QVERIFY(result.contains("read_file with offset="));
+    }
+
+    static void servePlain(QTcpServer& server, const QByteArray& body) {
+        QObject::connect(&server, &QTcpServer::newConnection, [&server, body]() {
+            QTcpSocket* sock = server.nextPendingConnection();
+            QObject::connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
+            QObject::connect(sock, &QTcpSocket::readyRead, [sock, body]() {
+                sock->readAll();
+                QByteArray head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: "
+                                  + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n";
+                sock->write(head);
+                sock->write(body);
+                sock->disconnectFromHost();
+            });
+        });
+    }
+
+    void fetchUrlTruncatesToOutputLimit() {
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+        servePlain(server, QByteArray(5000, 'x'));
+
+        QString url = QString("http://127.0.0.1:%1/").arg(server.serverPort());
+        Tools::setToolOutputMaxChars(1000);
+        QString result = Tools::execute("fetch_url", QJsonObject{{"url", url}});
+        Tools::setToolOutputMaxChars(250000);
+
+        QVERIFY(result.contains("truncated at 1000"));
+        QVERIFY(result.size() < 5000);
+    }
+
+    void fetchUrlMaxCharsOverride() {
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+        servePlain(server, QByteArray(5000, 'x'));
+
+        QString url = QString("http://127.0.0.1:%1/").arg(server.serverPort());
+        Tools::setToolOutputMaxChars(1000);
+        QString result = Tools::execute("fetch_url",
+            QJsonObject{{"url", url}, {"max_chars", 0}});
+        Tools::setToolOutputMaxChars(250000);
+
+        QVERIFY(!result.contains("truncated"));
+        QVERIFY(result.size() >= 5000);
+    }
+
     // ── Tools: sudo askpass ─────────────────────────────────────────
 
     void sudoRewriteForAskpass() {
