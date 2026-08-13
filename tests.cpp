@@ -1388,6 +1388,48 @@ private slots:
         QVERIFY(result.size() >= 5000);
     }
 
+    void downloadFileDirAndFilename() {
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+        servePlain(server, QByteArray("hello download"));
+
+        QTemporaryDir dir;
+        QString url = QString("http://127.0.0.1:%1/").arg(server.serverPort());
+        QString result = Tools::execute("download_file",
+            QJsonObject{{"url", url}, {"filename", "report.txt"}, {"dir", dir.path()}});
+        QVERIFY(result.contains("Downloaded to"));
+        QFile f(dir.path() + "/report.txt");
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(f.readAll()), QString("hello download"));
+    }
+
+    void downloadFileMaxSizeExceeded() {
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+        servePlain(server, QByteArray(1024 * 1024 + 100, 'x'));
+
+        QTemporaryDir dir;
+        QString url = QString("http://127.0.0.1:%1/").arg(server.serverPort());
+        QString result = Tools::execute("download_file",
+            QJsonObject{{"url", url}, {"filename", "big.bin"}, {"dir", dir.path()}, {"max_size_mb", 1}});
+        QVERIFY(result.contains("exceeds maximum size"));
+        QVERIFY(!QFileInfo(dir.path() + "/big.bin").exists());
+    }
+
+    void downloadFileMaxSizeUnlimited() {
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+        servePlain(server, QByteArray(1024 * 1024 + 100, 'x'));
+
+        QTemporaryDir dir;
+        QString url = QString("http://127.0.0.1:%1/").arg(server.serverPort());
+        QString result = Tools::execute("download_file",
+            QJsonObject{{"url", url}, {"filename", "big.bin"}, {"dir", dir.path()}, {"max_size_mb", 0}});
+        QVERIFY(result.contains("Downloaded to"));
+        QFileInfo fi(dir.path() + "/big.bin");
+        QVERIFY(fi.exists() && fi.size() > 1024 * 1024);
+    }
+
     // ── Tools: sudo askpass ─────────────────────────────────────────
 
     void sudoRewriteForAskpass() {

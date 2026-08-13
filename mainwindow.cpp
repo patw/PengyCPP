@@ -46,6 +46,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     Tools::setUserAgent(m_config.userAgent);
     Tools::setTimeout(m_config.toolTimeout);
     Tools::setToolOutputMaxChars(m_config.toolOutputMaxChars);
+    Tools::setDownloadMaxMb(m_config.downloadMaxMb);
     Tools::setImageLimits(m_config.imageMaxDimension, m_config.imageMaxMb, m_config.imageQuality);
 
     // Poll for sudo password requests from any tab's worker
@@ -468,6 +469,7 @@ void MainWindow::openSettings() {
         Tools::setUserAgent(m_config.userAgent);
         Tools::setTimeout(m_config.toolTimeout);
         Tools::setToolOutputMaxChars(m_config.toolOutputMaxChars);
+        Tools::setDownloadMaxMb(m_config.downloadMaxMb);
         Tools::setImageLimits(m_config.imageMaxDimension, m_config.imageMaxMb, m_config.imageQuality);
         loadChatList();
         if (!m_activeChatId.isEmpty())

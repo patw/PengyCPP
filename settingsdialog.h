@@ -35,4 +35,5 @@ private:
     QSpinBox*   m_llmTimeout;
     QSpinBox*   m_toolTimeout;
     QSpinBox*   m_toolOutputMax;
+    QSpinBox*   m_downloadMax;
 };

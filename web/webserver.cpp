@@ -344,6 +344,7 @@ void WebServer::routeChatSend(const QString& chatId,
     Tools::setUserAgent(cfg.userAgent);
     Tools::setTimeout(cfg.toolTimeout);
     Tools::setToolOutputMaxChars(cfg.toolOutputMaxChars);
+    Tools::setDownloadMaxMb(cfg.downloadMaxMb);
     Tools::setImageLimits(cfg.imageMaxDimension, cfg.imageMaxMb, cfg.imageQuality);
 
     QJsonArray hist = chat["messages"].toArray();
@@ -847,6 +848,7 @@ void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {
         if (f.contains("llm_timeout"))        cfg.llmTimeout       = f["llm_timeout"].toInt();
         if (f.contains("tool_timeout"))      cfg.toolTimeout      = f["tool_timeout"].toInt();
         if (f.contains("tool_output_max_chars")) cfg.toolOutputMaxChars = f["tool_output_max_chars"].toInt();
+        if (f.contains("download_max_mb"))       cfg.downloadMaxMb       = f["download_max_mb"].toInt();
         if (f.contains("context_keep_turns"))cfg.contextKeepTurns = f["context_keep_turns"].toInt();
         configSave(cfg);
         sendRedirect(socket, "/settings?saved=1");
@@ -981,6 +983,7 @@ QByteArray WebServer::renderSettingsPage() {
     html.replace("{{LLM_TIMEOUT}}",     QString::number(cfg.llmTimeout));
     html.replace("{{TOOL_TIMEOUT}}",     QString::number(cfg.toolTimeout));
     html.replace("{{TOOL_OUTPUT_MAX}}",  QString::number(cfg.toolOutputMaxChars));
+    html.replace("{{DOWNLOAD_MAX}}",      QString::number(cfg.downloadMaxMb));
     html.replace("{{CONTEXT_KEEP_TURNS}}",QString::number(cfg.contextKeepTurns));
     html.replace("{{USER_AGENT}}",       cfg.userAgent.toHtmlEscaped());
     html.replace("{{CHATS_JSON}}",

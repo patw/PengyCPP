@@ -350,6 +350,7 @@ public:
         Tools::setUserAgent(cfg.userAgent);
         Tools::setTimeout(cfg.toolTimeout);
         Tools::setToolOutputMaxChars(cfg.toolOutputMaxChars);
+        Tools::setDownloadMaxMb(cfg.downloadMaxMb);
         Tools::setImageLimits(cfg.imageMaxDimension, cfg.imageMaxMb, cfg.imageQuality);
 
         if (singleShot && noSave) {
@@ -591,6 +592,7 @@ private:
             outln("  context_keep:     " + QString::number(cfg.contextKeepTurns));
             outln("  llm_timeout:     " + QString::number(cfg.llmTimeout) + "s");
             outln("  tool_timeout:     " + QString::number(cfg.toolTimeout) + "s");
+            outln("  download_max_mb:  " + QString::number(cfg.downloadMaxMb) + " MB");
             outln("  api_key:          " + (cfg.apiKey.isEmpty() ? dim("(not set)") : dim("***")));
             outln("  system_message:   " + (cfg.systemMessage.isEmpty()
                                            ? dim("(not set)") : cfg.systemMessage.left(60)));
@@ -624,6 +626,12 @@ private:
             if (!ok || n <= 0) outln("Usage: /timeout <seconds>");
             else { cfg.toolTimeout = n; Tools::setTimeout(n); configSave(cfg);
                    outln(dim("Timeout → " + QString::number(n) + "s")); }
+
+        } else if (cmd == "/download-max") {
+            bool ok; int n = arg.toInt(&ok);
+            if (!ok || n < 0) outln("Usage: /download-max <mb> (0 = no limit)");
+            else { cfg.downloadMaxMb = n; Tools::setDownloadMaxMb(n); configSave(cfg);
+                   outln(dim("Download max → " + QString::number(n) + " MB")); }
 
         } else if (cmd == "/agent") {
             if (arg.isEmpty()) outln("user_agent: " + cfg.userAgent);
@@ -864,6 +872,7 @@ private:
             {"/context-keep <n>",    "Keep last N turns full (0 = keep all)"},
             {"/llm-timeout <n>",      "Set LLM API request timeout in seconds"},
             {"/timeout <n>",         "Set tool execution timeout in seconds"},
+            {"/download-max <mb>",    "Set default download size limit in MB (0 = no limit)"},
             {"/agent [str]",         "Show or set user agent string"},
             {"/compact",             "Elide old tool results in current chat"},
             {"/list",                "List all chats"},

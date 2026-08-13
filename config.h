@@ -20,6 +20,7 @@ struct Config {
     int  llmTimeout          = 300;
     int  toolTimeout         = 300;
     int  toolOutputMaxChars  = 50000;
+    int  downloadMaxMb       = 100;
     int  imageMaxDimension   = 4096;
     double imageMaxMb        = 4.5;
     int  imageQuality        = 85;

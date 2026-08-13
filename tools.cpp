@@ -18,6 +18,7 @@
 #include <QSet>
 #include <QDirIterator>
 #include <QFileInfo>
+#include <QStorageInfo>
 #include <QElapsedTimer>
 #include <QUuid>
 #include <QCoreApplication>
@@ -39,6 +40,7 @@ static int       g_imageMaxDimension = 4096;
 static double    g_imageMaxMb        = 4.5;
 static int       g_imageQuality      = 85;
 static int       g_toolOutputMaxChars = 250000;
+static int       g_downloadMaxMb      = 100;
 static QMutex    g_mutex;
 
 // ── Rate limiter for web searches ─────────────────────────────────────
@@ -120,6 +122,10 @@ void setToolOutputMaxChars(int chars) {
     QMutexLocker lock(&g_mutex);
     g_toolOutputMaxChars = chars;
 }
+void setDownloadMaxMb(int mb) {
+    QMutexLocker lock(&g_mutex);
+    g_downloadMaxMb = mb;
+}
 static QString userAgent() {
     QMutexLocker lock(&g_mutex);
     return g_userAgent;
@@ -127,6 +133,10 @@ static QString userAgent() {
 static int toolTimeout() {
     QMutexLocker lock(&g_mutex);
     return g_timeout;
+}
+static int downloadMaxMb() {
+    QMutexLocker lock(&g_mutex);
+    return g_downloadMaxMb;
 }
 
 // ── Process group management ──────────────────────────────────────────
@@ -283,10 +293,12 @@ const QJsonArray& toolDefinitions() {
                 {"max_results", prop("integer", "Maximum number of results to return (default: 5)")}},
             QJsonArray{"query"}),
 
-        td("download_file", "Download a file from a URL to the user's Downloads directory. Existing files of the same name are overwritten; downloads larger than 100 MB are rejected.",
+        td("download_file", "Download a file from a URL to disk, streaming to the target directory and returning the saved path and byte size. Existing files of the same name are overwritten. Set max_size_mb to opt into large downloads (0 = no limit). For auth headers, resume, mirrors, or non-HTTP sources, use run_bash with curl or wget.",
             QJsonObject{
-                {"url",      prop("string", "The URL of the file to download")},
-                {"filename", prop("string", "Optional filename to save as; defaults to the name from the URL")}},
+                {"url",         prop("string",  "The URL of the file to download")},
+                {"filename",    prop("string",  "Optional filename to save as; defaults to the name from the URL")},
+                {"dir",         prop("string",  "Directory to save into (default: ~/Downloads). Created if missing.")},
+                {"max_size_mb", prop("integer", "Maximum download size in MB. Defaults to the configured download limit; 0 = no limit.")}},
             QJsonArray{"url"}),
 
         td("fetch_url", "Fetch a URL and return its text content. Works for documentation and web pages (HTML is stripped to plain text) and for JSON or plain-text endpoints, including local ones such as http://127.0.0.1:8080/api/status. Returns the body only — use run_bash with curl if you need status codes or response headers. Large responses are truncated to the configured tool output limit; pass max_chars to return more (0 = no limit).",
@@ -1698,6 +1710,7 @@ QString snipMiddleForTest(const QString& text) { return snipMiddle(text); }
 static QString toolDownloadFile(const QJsonObject& args) {
     QString urlStr   = aStr(args, "url");
     QString filename = aStr(args, "filename");
+    QString dir      = aStr(args, "dir");
     if (urlStr.isEmpty()) return "Error: url is required.";
 
     QUrl url(urlStr);
@@ -1706,25 +1719,85 @@ static QString toolDownloadFile(const QJsonObject& args) {
     if (scheme != "http" && scheme != "https")
         return QString("Error: Only http/https URLs are supported (got '%1').").arg(scheme);
 
-    QString downloads = QDir::homePath() + "/Downloads";
-    QDir().mkpath(downloads);
+    QString targetDir = dir.isEmpty() ? QDir::homePath() + "/Downloads" : expandHome(dir);
+    QDir().mkpath(targetDir);
+    if (!QFileInfo(targetDir).isDir())
+        return "Error: dir is not a directory: " + targetDir;
 
     if (filename.isEmpty())
         filename = urlStr.split('?').first().split('/').last();
+    QString dest = targetDir + "/" + safeDownloadName(filename);
 
-    QString dest = downloads + "/" + safeDownloadName(filename);
-    QByteArray data = httpGetWithRedirect(url, userAgent(), 60000);
-    if (data.isEmpty()) return "Error: Failed to download file or file is empty.";
+    int limitMb = args.contains("max_size_mb") ? aInt(args, "max_size_mb", 0) : downloadMaxMb();
+    qint64 limitBytes = limitMb <= 0 ? 0 : (qint64)limitMb * 1024 * 1024;
 
-    const qsizetype maxSize = 100LL * 1024 * 1024;
-    if (data.size() > maxSize)
-        return QString("Error: Download exceeds maximum size of %1 bytes.").arg(maxSize);
+    if (limitBytes > 0) {
+        QStorageInfo si(targetDir);
+        qint64 avail = si.isValid() ? (qint64)si.bytesAvailable() : -1;
+        if (avail >= 0 && avail < limitBytes)
+            return QString("Error: not enough disk space — need %1 MB, have %2 MB free in %3")
+                .arg(limitMb).arg(avail / (1024.0 * 1024.0), 0, 'f', 0).arg(targetDir);
+    }
 
-    QFile f(dest);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        return "Error writing file: " + f.errorString();
-    f.write(data);
-    return QString("Downloaded to %1 (%2 bytes)").arg(dest).arg(data.size());
+    QNetworkAccessManager mgr;
+    mgr.setRedirectPolicy(QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::UserAgentHeader, userAgent());
+    req.setTransferTimeout(120000); // 120s stall, not a total cap
+
+    QNetworkReply* reply = mgr.get(req);
+
+    QFile out(dest);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        reply->deleteLater();
+        return "Error writing file: " + out.errorString();
+    }
+
+    QEventLoop loop;
+    QTimer stallTimer;
+    stallTimer.setSingleShot(true);
+    qint64 total = 0;
+    bool exceeded = false;
+    bool stalled = false;
+
+    QObject::connect(reply, &QNetworkReply::readyRead, [&]() {
+        QByteArray chunk = reply->readAll();
+        total += chunk.size();
+        if (limitBytes > 0 && total > limitBytes) {
+            exceeded = true;
+            loop.quit();
+            return;
+        }
+        out.write(chunk);
+        stallTimer.start(120000);
+    });
+    QObject::connect(&stallTimer, &QTimer::timeout, [&]() {
+        stalled = true;
+        reply->abort();
+        loop.quit();
+    });
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    stallTimer.start(120000);
+    loop.exec();
+
+    out.close();
+    QNetworkReply::NetworkError nerr = reply->error();
+    QString nerrStr = reply->errorString();
+    reply->deleteLater();
+
+    if (exceeded) {
+        QFile::remove(dest);
+        return QString("Error: Download exceeds maximum size of %1 MB.").arg(limitMb);
+    }
+    if (stalled) {
+        QFile::remove(dest);
+        return "Error downloading: no data for 120 seconds";
+    }
+    if (nerr != QNetworkReply::NoError) {
+        QFile::remove(dest);
+        return "Error downloading file: " + nerrStr;
+    }
+    return QString("Downloaded to %1 (%2 bytes)").arg(dest).arg(total);
 }
 
 // ── Fetch URL (with improved HTML body extraction) ───────────────────

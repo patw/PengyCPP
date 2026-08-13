@@ -54,6 +54,7 @@ bool       isReadOnly(const QString& name);
 void       setUserAgent(const QString& ua);
 void       setTimeout(int secs);
 void       setToolOutputMaxChars(int chars);
+void       setDownloadMaxMb(int mb);
 void       setImageLimits(int maxDimension, double maxMb, int quality);
 /// Drain images queued by read_image for *ctx* (default context when null).
 QJsonArray takePendingImages(ToolContext* ctx = nullptr);

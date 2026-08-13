@@ -197,6 +197,14 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     m_toolOutputMax->setValue(cfg.toolOutputMaxChars);
     toolsForm->addRow(labelWithTip("Max tool output:", "Tool output longer than this is snipped (head+tail) to avoid blowing up the context window. 0 = no limit."), m_toolOutputMax);
 
+    m_downloadMax = new QSpinBox;
+    m_downloadMax->setRange(0, 1000000);
+    m_downloadMax->setSpecialValueText("No limit");
+    m_downloadMax->setSuffix(" MB");
+    m_downloadMax->setToolTip("Default maximum download size for download_file. 0 = no limit.");
+    m_downloadMax->setValue(cfg.downloadMaxMb);
+    toolsForm->addRow(labelWithTip("Max download:", "Default maximum download size for download_file. 0 = no limit."), m_downloadMax);
+
     m_userAgent = new QLineEdit(cfg.userAgent);
     m_userAgent->setToolTip("HTTP User-Agent header sent with LLM API requests and any HTTP-based tool calls.");
     toolsForm->addRow(labelWithTip("User Agent:", "HTTP User-Agent header sent with LLM API requests and any HTTP-based tool calls."), m_userAgent);
@@ -224,6 +232,7 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
         m_config.llmTimeout        = m_llmTimeout->value();
         m_config.toolTimeout       = m_toolTimeout->value();
         m_config.toolOutputMaxChars = m_toolOutputMax->value();
+        m_config.downloadMaxMb       = m_downloadMax->value();
         accept();
     });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
