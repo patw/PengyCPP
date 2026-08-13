@@ -916,6 +916,23 @@ private slots:
         QVERIFY(result.contains("not found") || result.contains("Not found"));
     }
 
+    void searchContentLiteralByDefault() {
+        QTemporaryDir dir;
+        QString path = dir.path() + "/search.rs";
+        { QFile f(path); f.open(QIODevice::WriteOnly); f.write("value = 'a.b'\nvalue2 = 'axb'\n"); }
+
+        // Default: literal match — "a.b" must not match "axb".
+        QString literal = Tools::execute("search_content",
+            QJsonObject{{"pattern", "a.b"}, {"path", path}});
+        QVERIFY(literal.contains("a.b"));
+        QVERIFY(!literal.contains("axb"));
+
+        // regex=true: '.' is a wildcard, so it should match "axb" too.
+        QString regex = Tools::execute("search_content",
+            QJsonObject{{"pattern", "a.b"}, {"path", path}, {"regex", true}});
+        QVERIFY(regex.contains("axb"));
+    }
+
     // ── Tools: unknown tool ─────────────────────────────────────────
 
     void executeUnknownTool() {

@@ -306,10 +306,12 @@ const QJsonArray& toolDefinitions() {
             QJsonArray{"paths"}),
 
         td("search_content",
-            "Search for a regex pattern in files under a directory. "
-            "Returns matching lines with file path, line number, and optional surrounding context.",
+            "Search for text in files under a directory. "
+            "Returns matching lines with file path, line number, and optional surrounding context. "
+            "The pattern is matched literally by default — regex metacharacters are escaped automatically; set regex=true to interpret it as a regular expression. Skips binary files and common noise directories.",
             QJsonObject{
-                {"pattern",       prop("string",  "The regex pattern to search for")},
+                {"pattern",       prop("string",  "The text to search for. Matched literally by default — metacharacters like '.', '*', '(', '[' are escaped automatically. Set regex=true to interpret it as a regular expression instead.")},
+                {"regex",         prop("boolean", "Treat pattern as a regular expression instead of a literal string (default: false)")},
                 {"path",          prop("string",  "The directory or file to search in")},
                 {"file_glob",     prop("string",  "Optional glob to filter files")},
                 {"context_lines", prop("integer", "Number of lines of context (default: 0)")},
@@ -2097,17 +2099,22 @@ static QString toolSearchContent(const QJsonObject& args) {
     QString fileGlob     = aStr(args, "file_glob");
     int     contextLines = qMin(aInt(args, "context_lines", 0), 10);
     int     maxResults   = qBound(1, aInt(args, "max_results", 50), 200);
+    bool    regex        = aBool(args, "regex", false);
 
     if (pattern.isEmpty()) return "Error: pattern is required.";
 
     QFileInfo pathInfo(path);
     if (!pathInfo.exists()) return "Error: Path not found: " + path;
 
-    QRegularExpression rx(pattern);
-    if (!rx.isValid()) {
-        rx = QRegularExpression(QRegularExpression::escape(pattern));
+    // Literal by default so metacharacters in code symbols (".", "(", "[", "*",
+    // ...) don't silently become regex syntax; regex=true opts into regex.
+    QRegularExpression rx;
+    if (regex) {
+        rx = QRegularExpression(pattern);
         if (!rx.isValid())
             return "Error: Invalid regex pattern.";
+    } else {
+        rx = QRegularExpression(QRegularExpression::escape(pattern));
     }
 
     QStringList results;
