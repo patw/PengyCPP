@@ -6,6 +6,21 @@
   `file:///…` local URLs correctly in the desktop chat view. The loader also
   accepts absolute local paths emitted by models.
 
+- **Tooling updates:**
+  - `download_file` now streams directly to a configurable directory (default
+    `~/Downloads`), returns the saved path and byte size, overwrites same-name
+    files, supports per-call `max_size_mb` limits (`0` = unlimited), and uses a
+    120-second no-data stall timeout so large transfers can finish.
+  - `fetch_url` and `read_multiple_files` now follow the configured global tool
+    output limit; `fetch_url` also accepts a `max_chars` override.
+  - `run_bash` and `run_python` accept an optional `cwd` working directory.
+  - `search_content` matches literal text by default; pass `regex=true` for
+    regular-expression searches. Tool descriptions now document their limits,
+    safety behavior, and argument semantics more precisely.
+- **Tool defaults and controls:** tool execution now defaults to 300 seconds
+  (matching the documented setting), and the new `download_max_mb` setting
+  controls the default download cap (100 MB by default, `0` = unlimited).
+
 ## v1.6.0
 
 - **New `read_image` tool** — the agent can inspect local images (screenshots,

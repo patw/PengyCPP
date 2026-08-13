@@ -522,6 +522,7 @@ Shared with Python Pengy and PengyR at `~/.config/pengy/`.
   "llm_timeout": 300,
   "tool_timeout": 300,
   "tool_output_max_chars": 250000,
+  "download_max_mb": 100,
   "image_max_dimension": 4096,
   "image_max_mb": 4.5,
   "image_quality": 85
@@ -545,6 +546,7 @@ Shared with Python Pengy and PengyR at `~/.config/pengy/`.
 | `llm_timeout` | int | `300` | HTTP timeout in seconds for each LLM API request |
 | `tool_timeout` | int | `300` | Timeout in seconds for tool execution (-1 = no timeout) |
 | `tool_output_max_chars` | int | `250000` | Tool output longer than this is snipped head+tail. 0 = no limit |
+| `download_max_mb` | int | `100` | Default maximum download size for `download_file` in MB. Per-call `max_size_mb` overrides it; `0` = no limit |
 | `image_max_dimension` | int | `4096` | Attached images are downscaled so neither side exceeds this (px) |
 | `image_max_mb` | float | `4.5` | Attached images are re-encoded until under this size (MB) |
 | `image_quality` | int | `85` | JPEG quality (0–100) used when re-encoding attached images |
@@ -573,17 +575,17 @@ All 15 tools implemented in `tools.cpp` using Qt APIs:
 | Tool | Read-only | Implementation |
 |------|:---:|---|
 | `read_file` | ✅ | `QFile` |
-| `read_multiple_files` | ✅ | `QFile` × N (20 file max, 50K char per file cap) |
+| `read_multiple_files` | ✅ | `QFile` × N (20 file max; per-file budget follows `tool_output_max_chars`, with a 5× total batch budget) |
 | `write_file` | ❌ | `QFile` + `QDir::mkpath` |
 | `replace_in_file` | ❌ | Read→exact-match→replace→write (single-match enforcement) |
 | `apply_changes` | ❌ | Transactional multi-file exact-text edits; validated in memory, all-or-nothing |
-| `run_bash` | ❌ | `QProcess` (sudo via `SUDO_ASKPASS`, process-group kill on timeout) |
-| `run_python` | ❌ | Write to temp + `QProcess python3` |
+| `run_bash` | ❌ | `QProcess` with optional `cwd` (sudo via `SUDO_ASKPASS`, process-group kill on timeout) |
+| `run_python` | ❌ | Write to temp + `QProcess python3`, with optional `cwd` |
 | `web_search` | ✅ | DuckDuckGo HTML scrape via `QNetworkAccessManager` + `QRegularExpression` |
-| `download_file` | ❌ | `QNetworkAccessManager` → `~/Downloads/` |
-| `fetch_url` | ✅ | `QNetworkAccessManager` + HTML tag-strip (50K char limit) |
+| `download_file` | ❌ | Streaming `QNetworkAccessManager` download to configurable directory with size/stall limits |
+| `fetch_url` | ✅ | `QNetworkAccessManager` + HTML tag-strip; global output limit with optional `max_chars` |
 | `directory_tree` | ✅ | `QDirIterator` with Unicode box-drawing (500 entry cap) |
-| `search_content` | ✅ | `QDirIterator` + `QRegularExpression` with context lines and region grouping |
+| `search_content` | ✅ | `QDirIterator` + literal matching by default (regex opt-in), with context lines and region grouping |
 | `glob` | ✅ | `QDirIterator` with name-filter; pattern matching via `QRegularExpression`; skips `.git`, `node_modules`, `venv`, `build`, etc. |
 | `todowrite` | ✅ | Validates task list (pending/in_progress/completed), enforces single-active-task rule, echoes back formatted list |
 | `ask_user_question` | — | Harness-handled tool; returns fixed message if it ever reaches `execute_tool` directly |
