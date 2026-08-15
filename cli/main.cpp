@@ -883,7 +883,7 @@ private:
         };
         outln(bold("Commands:"));
         for (const auto& cmd : cmds)
-            outln(QString("  %-28s %2").arg(cmd.c).arg(cmd.d));
+            outln(QString("  %1%2").arg(QString(cmd.c).leftJustified(28), cmd.d));
         outln();
         outln(dim("  @/path/to/file  — attach file content to your message"));
         outln(dim("  {date} {username} {hostname} {osinfo}  — system message variables"));
