@@ -36,7 +36,9 @@ static QString configFilePath() {
 static void backupCorruptFile(const QString& path) {
     QString ts = QString::number(QDateTime::currentSecsSinceEpoch());
     QFileInfo fi(path);
-    QString backup = fi.dir().filePath(fi.baseName() + ".corrupt-" + ts);
+    // Full filename + suffix, matching the Python/Rust editions' quarantine
+    // naming (e.g. "settings.json.corrupt-1712345678").
+    QString backup = fi.dir().filePath(fi.fileName() + ".corrupt-" + ts);
     QFile::rename(path, backup);
 }
 
@@ -119,6 +121,79 @@ bool configSave(const Config& cfg) {
     QDir().mkpath(fi.dir().absolutePath());
 
     QByteArray json = QJsonDocument(cfg.toJson()).toJson(QJsonDocument::Indented);
+    QString tmp = path + ".tmp";
+    QFile f(tmp);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+    f.write(json);
+    f.close();
+    QFile::remove(path);
+    return QFile::rename(tmp, path);
+}
+
+// ── Persistent model-list cache ──────────────────────────────────
+
+static QString modelCachePath() {
+    return pengyConfigDirPath() + "/models_cache.json";
+}
+
+static QString normalizeBaseUrl(QString url) {
+    url = url.trimmed();
+    while (url.endsWith('/')) url.chop(1);
+    return url.toLower();
+}
+
+QStringList modelCacheForBaseUrl(const QString& baseUrl) {
+    static const int MAX_MODELS = 500;
+
+    QFile f(modelCachePath());
+    if (!f.open(QIODevice::ReadOnly)) return {};
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
+    f.close();
+
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+        backupCorruptFile(modelCachePath());
+        return {};
+    }
+
+    QJsonObject o = doc.object();
+    if (normalizeBaseUrl(o["url"].toString()) != normalizeBaseUrl(baseUrl))
+        return {};
+
+    QStringList models;
+    for (const QJsonValue& v : o["models"].toArray()) {
+        QString m = v.toString();
+        if (!m.isEmpty()) models << m;
+    }
+    models.sort();
+    models.removeDuplicates();
+    if (models.size() > MAX_MODELS) models = models.mid(0, MAX_MODELS);
+    return models;
+}
+
+bool modelCacheSave(const QString& baseUrl, const QStringList& models) {
+    static const int MAX_MODELS = 500;
+
+    QString path = modelCachePath();
+    QFileInfo fi(path);
+    QDir().mkpath(fi.dir().absolutePath());
+
+    QStringList sorted = models;
+    sorted.removeAll(QString());
+    sorted.sort();
+    sorted.removeDuplicates();
+    if (sorted.size() > MAX_MODELS) sorted = sorted.mid(0, MAX_MODELS);
+
+    QJsonObject o;
+    QString url = baseUrl.trimmed();
+    while (url.endsWith('/')) url.chop(1);
+    o["url"] = url;
+    o["fetched_at"] = (double)QDateTime::currentSecsSinceEpoch();
+    QJsonArray arr;
+    for (const QString& m : sorted) arr.append(m);
+    o["models"] = arr;
+
+    QByteArray json = QJsonDocument(o).toJson(QJsonDocument::Compact);
     QString tmp = path + ".tmp";
     QFile f(tmp);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;

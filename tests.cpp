@@ -248,6 +248,7 @@ private slots:
         QDir(m_xdgDir.path() + "/pengy/chats").removeRecursively();
         QFile(m_xdgDir.path() + "/pengy/chats.json").remove();
         QFile(m_xdgDir.path() + "/pengy/settings.json").remove();
+        QFile(m_xdgDir.path() + "/pengy/models_cache.json").remove();
     }
 
     // ── Config ──────────────────────────────────────────────────────
@@ -365,6 +366,36 @@ private slots:
         QCOMPARE(c2.baseUrl, "http://test:1234/v1");
         QCOMPARE(c2.apiKey, "sk-round-trip");
         QCOMPARE(c2.model, "test-model");
+    }
+
+    // ── Persistent model-list cache ───────────────────────────────
+
+    void modelCacheRoundTrip() {
+        QCOMPARE(modelCacheForBaseUrl("https://api.openai.com/v1"), QStringList());
+
+        QVERIFY(modelCacheSave("https://api.openai.com/v1",
+                               {"gpt-4o-mini", "gpt-4o"}));
+
+        QStringList got = modelCacheForBaseUrl("https://api.openai.com/v1");
+        QCOMPARE(got, (QStringList{"gpt-4o", "gpt-4o-mini"}));
+        // trailing slash / case are normalised away
+        QCOMPARE(modelCacheForBaseUrl("HTTPS://api.openai.com/v1/"), got);
+        // a different endpoint is never offered
+        QCOMPARE(modelCacheForBaseUrl("http://localhost:8080/v1"), QStringList());
+    }
+
+    void modelCacheCorruptFileQuarantined() {
+        QString cachePath = pengyConfigDirPath() + "/models_cache.json";
+        { QFile f(cachePath); f.open(QIODevice::WriteOnly); f.write("{not json"); }
+
+        QCOMPARE(modelCacheForBaseUrl("https://api.openai.com/v1"), QStringList());
+        QVERIFY(!QFile::exists(cachePath));
+        bool foundBackup = false;
+        QDir dir(pengyConfigDirPath());
+        for (const QString& name : dir.entryList(QDir::Files))
+            if (name.startsWith("models_cache.json.corrupt-"))
+                foundBackup = true;
+        QVERIFY(foundBackup);
     }
 
     // ── ChatManager: cleanDanglingToolCalls ─────────────────────────

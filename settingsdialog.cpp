@@ -106,6 +106,16 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     m_model->setInsertPolicy(QComboBox::NoInsert);
     m_model->addItem(cfg.model);
     m_model->setCurrentText(cfg.model);
+    // Pre-populate from the persistent model cache (possibly stale, but populated).
+    {
+        QStringList toAdd;
+        for (const QString& m : modelCacheForBaseUrl(cfg.baseUrl))
+            if (m != cfg.model) toAdd << m;
+        if (!toAdd.isEmpty()) {
+            m_model->addItems(toAdd);
+            m_model->setCurrentText(cfg.model);
+        }
+    }
     m_model->setToolTip("Model name sent in chat completion requests. Use Fetch to list available models from the endpoint.");
     modelRow->addWidget(m_model, 1);
 
@@ -272,6 +282,9 @@ void SettingsDialog::fetchModels() {
                 if (!id.isEmpty()) ids << id;
             }
             ids.sort();
+
+            // Persist so the dropdown stays populated across sessions.
+            modelCacheSave(baseUrl, ids);
 
             QMetaObject::invokeMethod(model, [model, btn, ids, self]() {
                 btn->setEnabled(true);

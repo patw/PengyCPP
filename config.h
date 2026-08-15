@@ -36,3 +36,9 @@ bool    configSave(const Config& cfg);
 QString configRenderSystemMessage(const QString& tmpl);
 void    setConfigDir(const QString& path);
 QString pengyConfigDirPath();
+
+// ── Persistent model-list cache (shared with the Python/Rust editions) ──────
+// Stored in <config>/models_cache.json, keyed by base URL. Returns an empty
+// list when there is no cache or the endpoint does not match.
+QStringList modelCacheForBaseUrl(const QString& baseUrl);
+bool        modelCacheSave(const QString& baseUrl, const QStringList& models);

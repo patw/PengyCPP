@@ -5,6 +5,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFrame>
+#include <QLineEdit>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -80,9 +81,29 @@ void ChatHistoryWidget::setupUi() {
     qsDivider->setFrameShape(QFrame::HLine);
     qsLayout->addWidget(qsDivider);
 
-    m_modelLabel = new QLabel("Model: gpt-4o");
+    auto* modelRow = new QHBoxLayout;
+    m_modelLabel = new QLabel("Model:");
     m_modelLabel->setStyleSheet(QString("color: %1;").arg(m_theme["fg"]));
-    qsLayout->addWidget(m_modelLabel);
+    modelRow->addWidget(m_modelLabel);
+
+    m_modelCombo = new QComboBox;
+    m_modelCombo->setEditable(true);
+    m_modelCombo->setInsertPolicy(QComboBox::NoInsert);
+    m_modelCombo->setMinimumWidth(scaledSize(120, m_scale));
+    m_modelCombo->setToolTip(
+        "Model used for this tab's messages. Populated from the saved "
+        "model list — use Settings → Fetch to refresh it.");
+    connect(m_modelCombo, qOverload<int>(&QComboBox::activated),
+            this, [this](int) { onModelCommit(); });
+    connect(m_modelCombo->lineEdit(), &QLineEdit::editingFinished,
+            this, &ChatHistoryWidget::onModelCommit);
+    modelRow->addWidget(m_modelCombo, 1);
+    qsLayout->addLayout(modelRow);
+
+    m_modelHint = new QLabel("");
+    m_modelHint->setWordWrap(true);
+    m_modelHint->setStyleSheet(QString("color: %1; font-size: 9pt;").arg(m_theme["muted"]));
+    qsLayout->addWidget(m_modelHint);
 
     m_confirmLabel = new QLabel("Tool Confirm: Confirm All");
     m_confirmLabel->setStyleSheet(QString("color: %1;").arg(m_theme["fg"]));
@@ -122,6 +143,7 @@ QListWidget::item:hover { background-color:%5; }
     for (QLabel* label : {m_statusText, m_modelLabel, m_confirmLabel, m_tokensLabel}) {
         if (label) label->setStyleSheet(QString("color:%1;").arg(theme["fg"]));
     }
+    if (m_modelHint) m_modelHint->setStyleSheet(QString("color:%1; font-size: 9pt;").arg(theme["muted"]));
 }
 
 QWidget* ChatHistoryWidget::makeItemWidget(const QString& id, const QString& title) {
@@ -273,8 +295,35 @@ void ChatHistoryWidget::blinkDot() {
     m_statusDot->setStyleSheet(QString("color: %1; font-size: 14px;").arg(color));
 }
 
+void ChatHistoryWidget::setModels(const QStringList& models, const QString& current) {
+    QStringList items = models;
+    if (!current.isEmpty() && !items.contains(current))
+        items.prepend(current);
+    m_modelCombo->clear();
+    m_modelCombo->addItems(items);
+    if (!current.isEmpty())
+        m_modelCombo->setCurrentText(current);
+    m_currentModel = current.isEmpty() ? m_modelCombo->currentText() : current;
+
+    if (models.isEmpty())
+        m_modelHint->setText("No cached model list — use Settings → Fetch to populate.");
+    else
+        m_modelHint->setText("");
+}
+
+void ChatHistoryWidget::onModelCommit() {
+    QString model = m_modelCombo->currentText().trimmed();
+    if (model.isEmpty() || model == m_currentModel)
+        return;
+    m_currentModel = model;
+    emit modelChanged(model);
+}
+
 void ChatHistoryWidget::updateQuickSettings(const QString& model, const QString& confirm) {
-    m_modelLabel->setText("Model: " + model);
+    if (!model.isEmpty()) {
+        m_modelCombo->setCurrentText(model);
+        m_currentModel = model;
+    }
     QString label;
     if (confirm == "all")       label = "Tool Confirm: YOLO";
     else if (confirm == "safe") label = "Tool Confirm: Safe";

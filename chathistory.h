@@ -4,6 +4,7 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QLabel>
+#include <QComboBox>
 #include <QJsonArray>
 #include <QTimer>
 
@@ -16,6 +17,7 @@ public:
     void loadChats(const QJsonArray& chats);
     void selectChatById(const QString& id);
     void updateChatTitle(const QString& id, const QString& title);
+    void setModels(const QStringList& models, const QString& current);
     void updateQuickSettings(const QString& model, const QString& confirm);
     void updateTokenUsage(int prompt, int completion);
     void setThinking(bool thinking);
@@ -27,10 +29,12 @@ signals:
     void settingsRequested();
     void tasksRequested();
     void deleteRequested(const QString& id);
+    void modelChanged(const QString& model);
 
 private slots:
     void onItemClicked(QListWidgetItem* item);
     void blinkDot();
+    void onModelCommit();
 
 private:
     void     setupUi();
@@ -48,8 +52,11 @@ private:
     QLabel*      m_statusDot;
     QLabel*      m_statusText;
     QLabel*      m_modelLabel;
+    QComboBox*   m_modelCombo;
+    QLabel*      m_modelHint;
     QLabel*      m_confirmLabel;
     QLabel*      m_tokensLabel;
     QTimer*      m_blinkTimer;
     bool         m_dotPhase = true;
+    QString      m_currentModel;
 };

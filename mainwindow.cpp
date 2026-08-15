@@ -55,6 +55,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_confirmTimer, &QTimer::timeout, this, &MainWindow::pollToolConfirmation);
 
     loadChatList();
+    refreshModelCombo();
 
     // Restore open tabs from config, or create initial chat
     QStringList openIds = m_config.openTabs;
@@ -95,6 +96,7 @@ void MainWindow::setupUi() {
     connect(m_chatHistory, &ChatHistoryWidget::settingsRequested,this, &MainWindow::openSettings);
     connect(m_chatHistory, &ChatHistoryWidget::tasksRequested,   this, &MainWindow::openTasks);
     connect(m_chatHistory, &ChatHistoryWidget::deleteRequested,  this, &MainWindow::deleteChat);
+    connect(m_chatHistory, &ChatHistoryWidget::modelChanged,     this, &MainWindow::onModelChanged);
     leftSplitter->addWidget(m_chatHistory);
 
     // Right pane: tab widget + input row
@@ -172,6 +174,35 @@ void MainWindow::applyTheme() {
 void MainWindow::loadChatList() {
     m_chats = chatsLoadIndex();
     m_chatHistory->loadChats(m_chats);
+}
+
+void MainWindow::refreshModelCombo() {
+    QStringList models = modelCacheForBaseUrl(m_config.baseUrl);
+
+    TabSession* session = tabForChat(m_activeChatId);
+    QString current = session ? modelForSession(session) : m_config.model;
+    m_chatHistory->setModels(models, current);
+}
+
+QString MainWindow::modelForSession(TabSession* session) const {
+    if (session) {
+        QString overrideModel = session->chat["model"].toString();
+        if (!overrideModel.isEmpty())
+            return overrideModel;
+    }
+    return m_config.model;
+}
+
+void MainWindow::onModelChanged(const QString& model) {
+    QString m = model.trimmed();
+    TabSession* session = tabForChat(m_activeChatId);
+    if (!session || m.isEmpty())
+        return;
+    if (session->chat["model"].toString() == m)
+        return;
+    session->chat["model"] = m;
+    chatSave(session->chat);
+    updateQuickSettingsFor(session);
 }
 
 // ── Tab management ────────────────────────────────────────────────
@@ -472,6 +503,7 @@ void MainWindow::openSettings() {
         Tools::setDownloadMaxMb(m_config.downloadMaxMb);
         Tools::setImageLimits(m_config.imageMaxDimension, m_config.imageMaxMb, m_config.imageQuality);
         loadChatList();
+        refreshModelCombo();
         if (!m_activeChatId.isEmpty())
             m_chatHistory->selectChatById(m_activeChatId);
         TabSession* session = tabForChat(m_activeChatId);
@@ -600,7 +632,7 @@ void MainWindow::processResponse(TabSession* session, const QJsonArray& apiMessa
     connect(worker, &ChatWorker::errorOccurred, this, &MainWindow::onWorkerError,
             Qt::QueuedConnection);
 
-    worker->start(m_config.baseUrl, m_config.apiKey, m_config.model,
+    worker->start(m_config.baseUrl, m_config.apiKey, modelForSession(session),
                   apiMessages, toolConfirmation, m_config.reasoningEffort,
                   m_config.preserveReasoning);
 
@@ -905,7 +937,7 @@ void MainWindow::pollToolConfirmation() {
 // ── Quick settings panel ──────────────────────────────────────────
 
 void MainWindow::updateQuickSettingsFor(TabSession* session) {
-    m_chatHistory->updateQuickSettings(m_config.model, m_config.toolConfirmation);
+    m_chatHistory->updateQuickSettings(modelForSession(session), m_config.toolConfirmation);
 
     if (session->promptTokens || session->completionTokens)
         m_chatHistory->updateTokenUsage(session->promptTokens, session->completionTokens);
