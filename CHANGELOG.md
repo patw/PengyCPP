@@ -1,6 +1,25 @@
 # Changelog
 
-## v1.6.3 (current)
+## v1.6.4 (current)
+
+- **Incremental persistence — a turn reaches disk before it finishes.** The CLI
+  (`appendAndSave`) and web server persist the user message up front and then
+  write each message a run produces as it lands. `WebChatWorker` emits a
+  `progress` signal and `WebServer::persistTurnProgress` appends whatever part
+  of the running turn isn't on disk yet (tracked via `m_persistedCount`). A
+  crash or cancel used to silently drop the whole turn's tool calls while the
+  user message stayed on disk.
+- **Mid-run renames are preserved.** `persistTurnProgress` re-reads the chat
+  from disk on every write, so a `/rename` landing mid-run is no longer
+  clobbered by the worker's stale copy.
+- **Dangling tool calls are repaired on any run end.** The GUI
+  (`onWorkerError`), CLI, and web server run `cleanDanglingToolCalls` before
+  their last save, synthesizing a placeholder tool message for any orphaned
+  assistant `tool_calls` so the next request does not go wrong.
+- New `webPersistsTurnMidRun` test covers the web path, and existing send tests
+  now wait on the assistant reply rather than just the up-front user message.
+
+## v1.6.3
 
 - **Fix: Stop button left the sidebar status bubble stuck.** Pressing Stop cleared
 the tab's thinking/tool-running state but never refreshed the quick-settings

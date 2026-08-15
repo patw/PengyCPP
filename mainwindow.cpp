@@ -685,6 +685,7 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
         QJsonArray messages = session->chat["messages"].toArray();
         messages.append(event["message"]);
         session->chat["messages"] = messages;
+        chatSave(session->chat);
 
     } else if (type == "question_request") {
         session->thinking    = true;
@@ -696,6 +697,16 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
         session->thinking    = true;
         updateTabTitle(session);
         session->chatView->appendMessage("tool_result", event);
+        // The LLM loop already has this on its own message list; persist it
+        // too, or the assistant tool_calls message above is left dangling.
+        QJsonObject answerMsg;
+        answerMsg["role"]         = "tool";
+        answerMsg["tool_call_id"] = event["tool_call_id"];
+        answerMsg["content"]      = event["content"];
+        QJsonArray messages = session->chat["messages"].toArray();
+        messages.append(answerMsg);
+        session->chat["messages"] = messages;
+        chatSave(session->chat);
 
     } else if (type == "tool_result") {
         session->toolRunning = false;
@@ -711,6 +722,7 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
         QJsonArray messages = session->chat["messages"].toArray();
         messages.append(toolMsg);
         session->chat["messages"] = messages;
+        chatSave(session->chat);
     }
 }
 
@@ -834,6 +846,13 @@ void MainWindow::onWorkerError(const QString& msg) {
     if (!session) return;
 
     session->chatView->appendMessageText("assistant", "Error: " + msg);
+    // The run died mid-turn: the last assistant message may hold tool_calls
+    // with no result behind them, which 400s on the next request.
+    if (!session->chat.isEmpty()) {
+        QJsonArray msgs = session->chat["messages"].toArray();
+        session->chat["messages"] = cleanDanglingToolCalls(msgs);
+        chatSave(session->chat);
+    }
     session->thinking    = false;
     session->toolRunning = false;
     updateTabTitle(session);

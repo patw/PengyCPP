@@ -333,8 +333,8 @@ class PengyCliApp {
 public:
     Config      cfg;
     QJsonObject chat;
-    QJsonArray  m_runMsgs;
     bool        m_firstEventDone = false;
+    bool        m_noSave = false;
     QString     m_outputMode = "pretty";
 
     void exec(bool singleShot, const QString& singleShotMsg,
@@ -419,6 +419,8 @@ private:
         const QString input = expandAttachments(rawInput);
         if (input.isEmpty()) return;
 
+        m_noSave = noSave;
+
         QJsonArray hist = chat["messages"].toArray();
         hist.append(QJsonObject{{"role","user"},{"content",input}});
         hist = cleanDanglingToolCalls(hist);
@@ -433,8 +435,19 @@ private:
             });
         for (const QJsonValue& v : hist) sendMsgs.append(v);
 
-        m_runMsgs = QJsonArray();
         m_firstEventDone = false;
+
+        // Persist the user message (and the derived title) before the run, so
+        // the turn's tool calls have something to extend as they land.  Nothing
+        // about the turn waits on the turn finishing to reach disk.
+        {
+            QJsonArray msgs = chat["messages"].toArray();
+            msgs.append(QJsonObject{{"role","user"},{"content",input}});
+            chat["messages"] = msgs;
+            if (chat["title"].toString() == "New Chat" && msgs.size() <= 2)
+                chat["title"] = input.left(60).replace('\n', ' ');
+            saveProgress();
+        }
 
         Tools::setSudoPasswordProvider([](){ return readPassword("Sudo password: "); });
 
@@ -450,15 +463,25 @@ private:
 
         Tools::clearSudoPasswordProvider();
 
+        // An abort or an error ends the run mid-turn, where the last assistant
+        // message can hold tool_calls with no result behind them (the API 400s
+        // on that next request) -- repair before the final write.
+        chat["messages"] = cleanDanglingToolCalls(chat["messages"].toArray());
+        saveProgress();
+    }
+
+    // Persist mid-run, so a crash can't take the turn's tool calls with it.
+    // One small per-chat file write; the whole store is not touched.
+    void saveProgress() {
+        if (!m_noSave) chatSave(chat);
+    }
+
+    // Append a message to the live chat and persist it immediately.
+    void appendAndSave(const QJsonObject& msg) {
         QJsonArray msgs = chat["messages"].toArray();
-        msgs.append(QJsonObject{{"role","user"},{"content",input}});
-        for (const QJsonValue& v : m_runMsgs) msgs.append(v);
+        msgs.append(msg);
         chat["messages"] = msgs;
-
-        if (chat["title"].toString() == "New Chat" && msgs.size() <= 2)
-            chat["title"] = input.left(60).replace('\n', ' ');
-
-        if (!noSave) chatSave(chat);
+        saveProgress();
     }
 
     void onEvent(const QJsonObject& ev) {
@@ -470,7 +493,7 @@ private:
         }
 
         if (type == "assistant_tool_calls") {
-            m_runMsgs.append(ev["message"].toObject());
+            appendAndSave(ev["message"].toObject());
 
         } else if (type == "tool_request") {
             outln();
@@ -480,8 +503,17 @@ private:
             if (argsText.size() > 4000) argsText = argsText.left(4000) + "\n… [truncated]";
             outln(dim(argsText));
 
+        } else if (type == "question_result") {
+            // The LLM loop already has this on its own message list; persist it
+            // too, or the assistant tool_calls message above is left dangling.
+            appendAndSave(QJsonObject{
+                {"role",         "tool"},
+                {"tool_call_id", ev["tool_call_id"].toString()},
+                {"content",      ev["content"].toString()}
+            });
+
         } else if (type == "tool_result") {
-            m_runMsgs.append(QJsonObject{
+            appendAndSave(QJsonObject{
                 {"role",         "tool"},
                 {"tool_call_id", ev["tool_call_id"].toString()},
                 {"content",      ev["content"].toString()}
@@ -498,7 +530,7 @@ private:
         } else if (type == "final_response") {
             const QString content = ev["content"].toString();
             if (!content.isEmpty())
-                m_runMsgs.append(QJsonObject{{"role","assistant"},{"content",content}});
+                appendAndSave(QJsonObject{{"role","assistant"},{"content",content}});
 
             if (m_outputMode == "silent") {
                 // No output

@@ -50,6 +50,7 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
             if (type == "assistant_tool_calls") {
                 yoloThisTurn = false;
                 accMsgs.append(ev["message"].toObject());
+                emit progress(accMsgs);
                 emit eventReady(ev);
 
             } else if (type == "tool_request") {
@@ -61,12 +62,15 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
                 enriched["auto_approved"] = autoApproved;
                 emit eventReady(enriched);
 
-            } else if (type == "tool_result") {
+            } else if (type == "tool_result" || type == "question_result") {
+                // question_result is a tool message too: without it the
+                // assistant tool_calls message above is left dangling.
                 accMsgs.append(QJsonObject{
                     {"role",         "tool"},
                     {"tool_call_id", ev["tool_call_id"].toString()},
                     {"content",      ev["content"].toString()}
                 });
+                emit progress(accMsgs);
                 emit eventReady(ev);
 
             } else if (type == "final_response") {
@@ -75,7 +79,10 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
                 if (msg.isEmpty() && !content.isEmpty()) {
                     msg = QJsonObject{{"role","assistant"},{"content",content}};
                 }
-                if (!msg.isEmpty()) accMsgs.append(msg);
+                if (!msg.isEmpty()) {
+                    accMsgs.append(msg);
+                    emit progress(accMsgs);
+                }
                 emit eventReady(ev);
 
             } else {

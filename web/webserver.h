@@ -60,6 +60,12 @@ private:
     QHash<QString, qint64>                m_completedAt;    // completion time for bounded replay retention
     QHash<QString, WebChatWorker*>        m_workers;
     QHash<QString, QString>               m_pending;
+    QHash<QString, int>                   m_persistedCount; // turn messages already written
+
+    // Append whatever part of the running turn is not on disk yet and save.
+    // Re-reads the chat each call, so a rename landing mid-run survives.
+    void persistTurnProgress(const QString& chatId, const QJsonArray& turnMsgs,
+                             bool repairDangling);
 
     // Returns false (and has already replied 403) if the request must be
     // rejected as cross-origin or rebound-DNS.

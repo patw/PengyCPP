@@ -1943,9 +1943,10 @@ private slots:
                                payload, "application/json");
         QCOMPARE(r.status, 200);
 
-        // The worker saves the chat when the conversation finishes.
+        // The user message is saved before the run starts and the turn is
+        // extended as it goes, so wait for the assistant reply specifically.
         QTRY_VERIFY_WITH_TIMEOUT(
-            !chatGet(chat["id"].toString())["messages"].toArray().isEmpty(), 5000);
+            chatGet(chat["id"].toString())["messages"].toArray().size() >= 2, 5000);
 
         QJsonArray msgs = chatGet(chat["id"].toString())["messages"].toArray();
         QString userContent = msgs[0].toObject()["content"].toString();
@@ -1978,8 +1979,61 @@ private slots:
                                "/chat/" + chat["id"].toString() + "/send",
                                payload, "application/json");
         QCOMPARE(r.status, 200);
+        // Wait for the assistant reply, not just the up-front user message:
+        // tearing the server down mid-run would leave a worker thread behind.
         QTRY_VERIFY_WITH_TIMEOUT(
-            !chatGet(chat["id"].toString())["messages"].toArray().isEmpty(), 5000);
+            chatGet(chat["id"].toString())["messages"].toArray().size() >= 2, 5000);
+    }
+
+    // A turn must reach disk as it happens, not only when it finishes: a
+    // crash, a cancel, or an error mid-tool-loop used to drop every tool call.
+    void webPersistsTurnMidRun() {
+        QTemporaryDir dir;
+        QString file = dir.path() + "/note.txt";
+        { QFile f(file); f.open(QIODevice::WriteOnly); f.write("file body here"); }
+
+        StubLlmServer llm;
+        llm.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_file",
+                                 QJsonObject{{"path", file}})}, 100, 20)
+            << llmCompletion("done", {}, 200, 30);
+
+        Config cfg = configLoad();
+        cfg.baseUrl = llm.baseUrl();
+        cfg.apiKey = "test";
+        cfg.toolConfirmation = "none";   // the run stalls awaiting confirmation
+        configSave(cfg);
+
+        QJsonObject chat = chatCreate("Mid-run");
+        const QString id = chat["id"].toString();
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+
+        QByteArray payload = QJsonDocument(QJsonObject{
+            {"content", "read it"}}).toJson(QJsonDocument::Compact);
+        WebResp r = webRequest("POST", server.port(), "/chat/" + id + "/send",
+                               payload, "application/json");
+        QCOMPARE(r.status, 200);
+
+        // The user message is on disk before the model has answered anything.
+        QJsonArray msgs = chatGet(id)["messages"].toArray();
+        QCOMPARE(msgs.size(), 1);
+        QCOMPARE(msgs[0].toObject()["role"].toString(), QString("user"));
+
+        // The run is now parked on tool confirmation -- the assistant's
+        // tool_calls message must already have reached disk.
+        QTRY_VERIFY_WITH_TIMEOUT(chatGet(id)["messages"].toArray().size() >= 2, 5000);
+        msgs = chatGet(id)["messages"].toArray();
+        QCOMPARE(msgs[1].toObject()["role"].toString(), QString("assistant"));
+        QVERIFY(!msgs[1].toObject()["tool_calls"].toArray().isEmpty());
+
+        // Stopping mid-tool leaves repaired history, not a dangling tool_call.
+        webRequest("POST", server.port(), "/chat/" + id + "/stop", "",
+                   "application/json");
+        QTRY_VERIFY_WITH_TIMEOUT(chatGet(id)["messages"].toArray().size() >= 3, 5000);
+        msgs = chatGet(id)["messages"].toArray();
+        QCOMPARE(msgs.last().toObject()["role"].toString(), QString("tool"));
+        QCOMPARE(msgs.last().toObject()["tool_call_id"].toString(), QString("tc1"));
     }
 
     // ── LlmClient conversation-loop tests (stub server) ──────────────

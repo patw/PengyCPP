@@ -24,6 +24,9 @@ public:
 signals:
     void eventReady(const QJsonObject& event);
     void sudoRequired();
+    // Emitted whenever a message is added to the turn, so the server can
+    // persist mid-run: a crash must not take the turn's tool calls with it.
+    void progress(const QJsonArray& newMessages);
     void finished(const QJsonArray& newMessages);
 
 private:

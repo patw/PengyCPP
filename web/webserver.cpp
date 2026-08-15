@@ -239,6 +239,24 @@ void WebServer::routeChatView(const QString& chatId, QTcpSocket* socket) {
     sendResponse(socket, 200, "text/html; charset=utf-8", renderChatPage(chatId));
 }
 
+void WebServer::persistTurnProgress(const QString& chatId, const QJsonArray& turnMsgs,
+                                     bool repairDangling) {
+    QJsonObject chat = chatGet(chatId);
+    if (chat.isEmpty()) return;
+
+    QJsonArray msgs = chat["messages"].toArray();
+    const int already = m_persistedCount.value(chatId, 0);
+    for (int i = already; i < turnMsgs.size(); ++i)
+        msgs.append(turnMsgs[i]);
+    m_persistedCount[chatId] = turnMsgs.size();
+
+    if (repairDangling)
+        msgs = cleanDanglingToolCalls(msgs);
+
+    chat["messages"] = msgs;
+    chatSave(chat);
+}
+
 void WebServer::routeChatSend(const QString& chatId,
                                const HttpRequest& req, QTcpSocket* socket) {
     QJsonObject body = bodyJson(req);
@@ -379,6 +397,17 @@ void WebServer::routeChatSend(const QString& chatId,
 
     m_pending[chatId] = displayContent;
 
+    // Persist the user message (and the derived title) up front, then let the
+    // worker's progress signal extend the same turn.  Nothing about the turn
+    // should wait on the turn finishing to reach disk.
+    {
+        QJsonArray stored = chat["messages"].toArray();
+        stored.append(QJsonObject{{"role","user"},{"content", displayContent}});
+        chat["messages"] = stored;
+        chatSave(chat);
+    }
+    m_persistedCount[chatId] = 0;
+
     auto* worker = new WebChatWorker(this);
     m_workers[chatId] = worker;
 
@@ -404,17 +433,19 @@ void WebServer::routeChatSend(const QString& chatId,
         pushSse(chatId, QJsonObject{{"type","sudo_request"}});
     });
 
+    connect(worker, &WebChatWorker::progress, this,
+            [this, chatId](const QJsonArray& newMsgs) {
+        persistTurnProgress(chatId, newMsgs, /*repairDangling=*/false);
+    });
+
     connect(worker, &WebChatWorker::finished, this,
             [this, chatId, worker](const QJsonArray& newMsgs) {
-        QString userInput = m_pending.take(chatId);
-        QJsonObject chat = chatGet(chatId);
-        QJsonArray msgs = chat["messages"].toArray();
-        msgs.append(QJsonObject{{"role","user"},{"content",userInput}});
-        for (const QJsonValue& v : newMsgs) msgs.append(v);
-        if (chat["title"].toString() == "New Chat" && !userInput.isEmpty())
-            chat["title"] = userInput.left(60).replace('\n', ' ');
-        chat["messages"] = msgs;
-        chatSave(chat);
+        m_pending.remove(chatId);
+        // A cancel or an error ends the run mid-turn, where the last assistant
+        // message can hold tool_calls with no result behind them (the API 400s
+        // on that next request) -- repair before the final write.
+        persistTurnProgress(chatId, newMsgs, /*repairDangling=*/true);
+        m_persistedCount.remove(chatId);
         m_workerDone[chatId] = true;
         const qint64 completedAt = QDateTime::currentMSecsSinceEpoch();
         m_completedAt[chatId] = completedAt;
