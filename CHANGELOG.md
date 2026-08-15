@@ -1,6 +1,16 @@
 # Changelog
 
-## v1.6.1 (current)
+## v1.6.2 (current)
+
+- **Persistent model list and per-tab model selection (desktop GUI):** the sidebar
+  "Model:" field is now an editable dropdown, pre-populated from a persistent model
+  list cached in `~/.config/pengy/models_cache.json` (shared across the Python, Rust
+  and C++ editions). Each chat tab remembers its own model — stored on the chat
+  record — overriding the global default, and the dropdown follows the active tab.
+  Settings → Fetch refreshes and re-persists the list; a hint appears under the
+  dropdown when no cache has been fetched yet.
+
+## v1.6.1
 
 - **Qt local-image rendering fix:** raw HTML `<img>` tags now render canonical
   `file:///…` local URLs correctly in the desktop chat view. The loader also
