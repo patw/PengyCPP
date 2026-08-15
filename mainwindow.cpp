@@ -903,6 +903,7 @@ void MainWindow::stopWorker() {
     session->thinking    = false;
     session->toolRunning = false;
     updateTabTitle(session);
+    updateQuickSettingsFor(session);
 
     if (!session->chat.isEmpty()) {
         QJsonArray msgs = session->chat["messages"].toArray();

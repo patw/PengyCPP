@@ -1,6 +1,15 @@
 # Changelog
 
-## v1.6.2 (current)
+## v1.6.3 (current)
+
+- **Fix: Stop button left the sidebar status bubble stuck.** Pressing Stop cleared
+the tab's thinking/tool-running state but never refreshed the quick-settings
+status dot, so the bubble stayed on "Thinking…" (blinking red) or
+"Running Tool…" (orange) instead of returning to green "Idle". The Stop handler
+now repaints the status bubble, matching the normal completion and error paths.
+Fixed in all three editions (Python, C++, Rust).
+
+## v1.6.2
 
 - **Persistent model list and per-tab model selection (desktop GUI):** the sidebar
   "Model:" field is now an editable dropdown, pre-populated from a persistent model
