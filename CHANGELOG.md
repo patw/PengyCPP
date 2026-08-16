@@ -1,6 +1,30 @@
 # Changelog
 
-## v1.6.4 (current)
+## v1.7.0 (current)
+
+- **Ask the user a question, interactively.** The CLI now prompts for each
+  `ask_user_question`: pick a numbered option, type your own free-text answer,
+  or enter `c` to cancel (a cancel reports an empty list to the harness). The
+  web UI surfaces it in an interactive modal (option indices, a free-text
+  "Other" field, submit/cancel) answered through a new `POST /chat/<id>/answer`
+  route. `LlmClient::run` now takes `onQuestion` as a required argument — a
+  frontend with no way to ask returns empty (a cancel) instead of selecting a
+  default and crashing the first time the model asks.
+- **Narration now renders before the tool cards.** The text the model writes
+  alongside its tool calls is persisted but was dropped from the live run — and
+  the reload path put it *after* the tool cards. CLI, desktop GUI, and web now
+  render it live, and the reload path renders it first (shared
+  `assistantDisplayMessage` helper).
+- **`PENGY_CONFIG_DIR` for built binaries.** Anything driving a built pengy
+  binary can now point it at a scratch config instead of silently using the
+  real settings (and API key). It sits between the explicit `--config-dir`
+  override and the default `~/.config/pengy`; a leading `~` is expanded, matching
+  the Python and Rust editions.
+- **Web hardening:** tool cards are de-duplicated on SSE reconnect, and
+  attribute content is escaped so model-supplied text can't break out of
+  `title="…"`.
+
+## v1.6.4
 
 - **Incremental persistence — a turn reaches disk before it finishes.** The CLI
   (`appendAndSave`) and web server persist the user message up front and then
