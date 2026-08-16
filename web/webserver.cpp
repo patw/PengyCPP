@@ -20,6 +20,7 @@
 #include <QDir>
 #include <QUuid>
 #include <QSet>
+#include <algorithm>
 
 WebServer::WebServer(const QString& host, quint16 port, QObject* parent)
     : QObject(parent), m_host(host), m_port(port),
@@ -190,6 +191,7 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
             if      (act == "send"    && req.method == "POST") routeChatSend(id, req, socket);
             else if (act == "stream"  && req.method == "GET")  routeChatStream(id, req, socket);
             else if (act == "confirm" && req.method == "POST") routeChatConfirm(id, req, socket);
+            else if (act == "answer"  && req.method == "POST") routeChatAnswer(id, req, socket);
             else if (act == "sudo"    && req.method == "POST") routeChatSudo(id, req, socket);
             else if (act == "stop"    && req.method == "POST") routeChatStop(id, socket);
             else if (act == "delete"  && req.method == "POST") routeChatDelete(id, socket);
@@ -506,6 +508,26 @@ void WebServer::routeChatConfirm(const QString& chatId,
     bool yolo      = body["yolo_turn"].toBool(false);
     if (auto* w = m_workers.value(chatId))
         w->sendConfirmation(confirmed, yolo);
+    sendJson(socket, 200, {{"status","ok"}});
+}
+
+// Answers to a pending ask_user_question.  "answered" with nothing selected is
+// a cancel, which the harness reports to the model as a cancelled question.
+void WebServer::routeChatAnswer(const QString& chatId,
+                                 const HttpRequest& req, QTcpSocket* socket) {
+    QJsonObject body = bodyJson(req);
+    QStringList answers;
+    if (body["answered"].toBool(false)) {
+        for (const QJsonValue& v : body["answers"].toArray()) {
+            answers.append(v.toString());
+        }
+        if (std::all_of(answers.cbegin(), answers.cend(),
+                        [](const QString& a) { return a.trimmed().isEmpty(); })) {
+            answers.clear();
+        }
+    }
+    if (auto* w = m_workers.value(chatId))
+        w->sendAnswers(answers);
     sendJson(socket, 200, {{"status","ok"}});
 }
 

@@ -203,6 +203,16 @@ static QJsonObject llmToolCall(const QString& id, const QString& name,
     };
 }
 
+// One ask_user_question argument object, shared by the question tests.
+static QJsonObject questionArgs() {
+    return QJsonObject{{"questions", QJsonArray{QJsonObject{
+        {"header",   "Approach"},
+        {"question", "Rebase or merge?"},
+        {"options",  QJsonArray{
+            QJsonObject{{"label", "Rebase"}, {"description", "linear history"}},
+            QJsonObject{{"label", "Merge"},  {"description", "keeps both parents"}}}}}}}};
+}
+
 static QString runCli(const QStringList& commands, int timeoutMs = 5000) {
     QProcess proc;
     proc.setProgram(cliBin());
@@ -232,9 +242,21 @@ private slots:
 
     void initTestCase() {
         QVERIFY(m_xdgDir.isValid());
-        // Override XDG config home so tests don't read/write ~/.config/pengy
+        // Override XDG config home so tests don't read/write ~/.config/pengy.
+        // PENGY_CONFIG_DIR outranks it, so an ambient value would point the
+        // whole suite back at the real config -- drop it first.
+        qunsetenv("PENGY_CONFIG_DIR");
         qputenv("XDG_CONFIG_HOME", m_xdgDir.path().toUtf8());
         QDir(m_xdgDir.path()).mkpath("pengy");
+
+        // The resolution order itself, before anything depends on it.
+        setConfigDir("");
+        qputenv("PENGY_CONFIG_DIR", QByteArray("/tmp/pengy-env-probe"));
+        QCOMPARE(pengyConfigDirPath(), QString("/tmp/pengy-env-probe"));
+        qputenv("PENGY_CONFIG_DIR", QByteArray("~/pengy-tilde-probe"));
+        QCOMPARE(pengyConfigDirPath(), QDir::homePath() + "/pengy-tilde-probe");
+        qunsetenv("PENGY_CONFIG_DIR");
+        QCOMPARE(pengyConfigDirPath(), m_xdgDir.path() + "/pengy");
     }
 
     void cleanupTestCase() {
@@ -2036,9 +2058,183 @@ private slots:
         QCOMPARE(msgs.last().toObject()["tool_call_id"].toString(), QString("tc1"));
     }
 
+    // ask_user_question over the web frontend: the browser must get the
+    // question, and POST /answer must resume the run with what it picked.
+    // The web worker used to omit LlmClient::run's onQuestion argument, so the
+    // first question called a null std::function and terminated the process.
+    void webAnswersQuestion() {
+        StubLlmServer llm;
+        llm.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tcq", "ask_user_question",
+                                 questionArgs())}, 100, 20)
+            << llmCompletion("done", {}, 200, 30);
+
+        Config cfg = configLoad();
+        cfg.baseUrl = llm.baseUrl();
+        cfg.apiKey = "test";
+        cfg.toolConfirmation = "all";   // YOLO must not skip the question
+        configSave(cfg);
+
+        QJsonObject chat = chatCreate("Question");
+        const QString id = chat["id"].toString();
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+
+        WebResp r = webRequest("POST", server.port(), "/chat/" + id + "/send",
+                               QJsonDocument(QJsonObject{{"content", "which way?"}})
+                                   .toJson(QJsonDocument::Compact),
+                               "application/json");
+        QCOMPARE(r.status, 200);
+
+        // The run parks on the question with its tool_calls message persisted.
+        QTRY_VERIFY_WITH_TIMEOUT(chatGet(id)["messages"].toArray().size() >= 2, 5000);
+
+        r = webRequest("POST", server.port(), "/chat/" + id + "/answer",
+                       QJsonDocument(QJsonObject{
+                           {"answered", true},
+                           {"tool_call_id", "tcq"},
+                           {"answers", QJsonArray{"Rebase"}}})
+                           .toJson(QJsonDocument::Compact),
+                       "application/json");
+        QCOMPARE(r.status, 200);
+
+        // Answering resumes the run: tool message, then the final answer.
+        QTRY_VERIFY_WITH_TIMEOUT(chatGet(id)["messages"].toArray().size() >= 4, 5000);
+        const QJsonArray msgs = chatGet(id)["messages"].toArray();
+        QCOMPARE(msgs[2].toObject()["role"].toString(), QString("tool"));
+        QCOMPARE(msgs[2].toObject()["tool_call_id"].toString(), QString("tcq"));
+        QVERIFY(msgs[2].toObject()["content"].toString().contains("Rebase"));
+        QCOMPARE(msgs[3].toObject()["content"].toString(), QString("done"));
+    }
+
+    // "Answered" with nothing selected is a cancel, not a blank answer.
+    void webEmptyAnswerCancelsQuestion() {
+        StubLlmServer llm;
+        llm.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tcq", "ask_user_question",
+                                 questionArgs())}, 100, 20)
+            << llmCompletion("fine", {}, 200, 30);
+
+        Config cfg = configLoad();
+        cfg.baseUrl = llm.baseUrl();
+        cfg.apiKey = "test";
+        cfg.toolConfirmation = "all";
+        configSave(cfg);
+
+        QJsonObject chat = chatCreate("Question cancel");
+        const QString id = chat["id"].toString();
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+
+        webRequest("POST", server.port(), "/chat/" + id + "/send",
+                   QJsonDocument(QJsonObject{{"content", "which way?"}})
+                       .toJson(QJsonDocument::Compact),
+                   "application/json");
+        QTRY_VERIFY_WITH_TIMEOUT(chatGet(id)["messages"].toArray().size() >= 2, 5000);
+
+        webRequest("POST", server.port(), "/chat/" + id + "/answer",
+                   QJsonDocument(QJsonObject{
+                       {"answered", true},
+                       {"tool_call_id", "tcq"},
+                       {"answers", QJsonArray{""}}})
+                       .toJson(QJsonDocument::Compact),
+                   "application/json");
+
+        QTRY_VERIFY_WITH_TIMEOUT(chatGet(id)["messages"].toArray().size() >= 4, 5000);
+        const QJsonArray msgs = chatGet(id)["messages"].toArray();
+        QCOMPARE(msgs[2].toObject()["content"].toString(),
+                 QString("User cancelled the question."));
+    }
+
     // ── LlmClient conversation-loop tests (stub server) ──────────────
     // Mirrors Pengy's tests/test_llm_loop.py and PengyR's loop_tests —
     // keep scenarios in sync across the three editions.
+
+    // ask_user_question is harness-level: it pauses for the user even in YOLO
+    // mode, and the chosen label (with its description) becomes the tool result.
+    void llmAskUserQuestionRoutesToCallback() {
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tcq", "ask_user_question",
+                                 questionArgs())})
+            << llmCompletion("ok");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.apiKey = "test-key";
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("which way?")};
+        p.toolConfirmation = "all";
+
+        QList<QJsonObject> events;
+        int asked = 0, confirms = 0, questionsSeen = 0;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            [&]() { confirms++; return std::make_pair(true, false); },
+            []() { return false; },
+            [&](const QJsonArray& questions) -> QStringList {
+                asked++;
+                questionsSeen = questions.size();
+                return QStringList{"Rebase"};
+            });
+
+        QCOMPARE(asked, 1);
+        QCOMPARE(questionsSeen, 1);
+        // Questions go to onQuestion, never through tool confirmation.
+        QCOMPARE(confirms, 0);
+        QStringList types;
+        for (const QJsonObject& ev : events) types << ev["type"].toString();
+        QVERIFY(types.contains("question_request"));
+        QVERIFY(types.contains("question_result"));
+
+        for (const QJsonObject& ev : events) {
+            if (ev["type"].toString() == "question_result") {
+                QVERIFY(ev["content"].toString().contains("**Approach**: Rebase"));
+                QVERIFY(ev["content"].toString().contains("linear history"));
+            }
+        }
+    }
+
+    // No answer (dialog cancelled) still has to leave a tool message behind, or
+    // the assistant tool_calls message dangles and the next request 400s.
+    void llmAskUserQuestionCancelled() {
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tcq", "ask_user_question",
+                                 questionArgs())})
+            << llmCompletion("ok");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.apiKey = "test-key";
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("which way?")};
+        p.toolConfirmation = "all";
+
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        bool sawDecline = false;
+        for (const QJsonObject& ev : events) {
+            if (ev["type"].toString() == "tool_result" && ev["declined"].toBool())
+                sawDecline = ev["content"].toString() == "User cancelled the question.";
+        }
+        QVERIFY(sawDecline);
+
+        // The follow-up request carries the cancelled result for tcq.
+        QVERIFY(stub.requests.size() >= 2);
+        bool sawToolMsg = false;
+        for (const QJsonValue& v : stub.requests[1]["messages"].toArray()) {
+            const QJsonObject m = v.toObject();
+            if (m["role"].toString() == "tool" && m["tool_call_id"].toString() == "tcq")
+                sawToolMsg = true;
+        }
+        QVERIFY(sawToolMsg);
+    }
 
     void llmFinalResponseNoTools() {
         StubLlmServer stub;
@@ -2055,7 +2251,8 @@ private slots:
         LlmClient().run(p,
             [&](const QJsonObject& ev) { events.append(ev); },
             []() { return std::make_pair(true, false); },
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         QCOMPARE(events.size(), 1);
         QCOMPARE(events[0]["type"].toString(), QString("final_response"));
@@ -2081,7 +2278,8 @@ private slots:
 
         LlmClient().run(p, [](const QJsonObject&) {},
             []() { return std::make_pair(true, false); },
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         QCOMPARE(stub.requests[0]["reasoning_effort"].toString(), QString("high"));
     }
@@ -2108,7 +2306,8 @@ private slots:
         LlmClient().run(p,
             [&](const QJsonObject& ev) { events.append(ev); },
             [&]() { confirms++; return std::make_pair(true, false); },
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         QCOMPARE(confirms, 0);
         QStringList types;
@@ -2159,7 +2358,8 @@ private slots:
         LlmClient().run(p,
             [&](const QJsonObject& ev) { events.append(ev); },
             [&]() { return std::make_pair(true, false); },
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         QVERIFY(events[2]["content"].toString().contains("Loaded shot.png"));
         QVERIFY(events[2]["content"].toString().contains(QString::fromUtf8("48×32")));
@@ -2207,7 +2407,8 @@ private slots:
 
         LlmClient().run(p, [](const QJsonObject&) {},
             [&]() { return std::make_pair(true, false); },
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         for (const QJsonValue& v : stub.requests[1]["messages"].toArray()) {
             if (v.toObject()["role"].toString() == "user")
@@ -2234,7 +2435,8 @@ private slots:
         int confirms = 0;
         LlmClient().run(p, [](const QJsonObject&) {},
             [&]() { confirms++; return std::make_pair(true, false); },
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         QCOMPARE(confirms, 1);
         QFile f(target);
@@ -2264,7 +2466,8 @@ private slots:
         LlmClient().run(p,
             [&](const QJsonObject& ev) { events.append(ev); },
             [&]() { confirms++; return std::make_pair(true, false); },
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         QCOMPARE(confirms, 0);
         QVERIFY(events[2]["content"].toString().contains("safe read"));
@@ -2290,7 +2493,8 @@ private slots:
         LlmClient().run(p,
             [&](const QJsonObject& ev) { events.append(ev); },
             []() { return std::make_pair(false, false); },
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         QJsonObject result = events[2];
         QCOMPARE(result["type"].toString(), QString("tool_result"));
@@ -2323,7 +2527,8 @@ private slots:
         int confirms = 0;
         LlmClient().run(p, [](const QJsonObject&) {},
             [&]() { confirms++; return std::make_pair(true, true); },  // yolo turn
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         QCOMPARE(confirms, 1);  // second tool call must not re-prompt
         QVERIFY(QFile::exists(f1));
@@ -2352,7 +2557,8 @@ private slots:
         int confirms = 0;
         LlmClient().run(p, [](const QJsonObject&) {},
             [&]() { confirms++; return std::make_pair(true, true); },
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         // yolo from round 1 must not leak into round 2
         QCOMPARE(confirms, 2);
@@ -2380,7 +2586,8 @@ private slots:
 
         LlmClient().run(p, [](const QJsonObject&) {},
             []() { return std::make_pair(true, false); },
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         QJsonArray msgs = stub.requests[1]["messages"].toArray();
         bool found = false;
@@ -2407,7 +2614,8 @@ private slots:
         LlmClient().run(p,
             [&](const QJsonObject& ev) { events.append(ev); },
             []() { return std::make_pair(true, false); },
-            []() { return false; });
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
 
         QCOMPARE(events.size(), 1);
         QCOMPARE(events[0]["type"].toString(), QString("final_response"));

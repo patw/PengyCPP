@@ -458,7 +458,8 @@ private:
             LlmParams{cfg.baseUrl, cfg.apiKey, cfg.model, sendMsgs, cfg.toolConfirmation, cfg.reasoningEffort, cfg.preserveReasoning, cfg.llmTimeout},
             [this](const QJsonObject& ev) { onEvent(ev); },
             [this]() -> std::pair<bool,bool> { return onConfirm(); },
-            []() -> bool { return false; }
+            []() -> bool { return false; },
+            [this](const QJsonArray& questions) -> QStringList { return onQuestion(questions); }
         );
 
         Tools::clearSudoPasswordProvider();
@@ -493,6 +494,7 @@ private:
         }
 
         if (type == "assistant_tool_calls") {
+            renderAssistantPreamble(ev["message"].toObject());
             appendAndSave(ev["message"].toObject());
 
         } else if (type == "tool_request") {
@@ -511,6 +513,7 @@ private:
                 {"tool_call_id", ev["tool_call_id"].toString()},
                 {"content",      ev["content"].toString()}
             });
+            outln(dim(ev["content"].toString()));
 
         } else if (type == "tool_result") {
             appendAndSave(QJsonObject{
@@ -559,6 +562,86 @@ private:
                 outln();
             }
         }
+    }
+
+    // Show the narration the model wrote alongside its tool calls.  It is
+    // persisted with the turn and shows up on a later /show, so a live run that
+    // skipped it looked like the model went straight to the tools with nothing
+    // to say.  json mode stays silent: its output is a single object built from
+    // the final response.
+    void renderAssistantPreamble(const QJsonObject& message) {
+        const QString content = message["content"].toString().trimmed();
+        if (content.isEmpty() || m_outputMode == "silent" || m_outputMode == "json")
+            return;
+
+        if (m_outputMode == "raw") {
+            outln(content);
+            return;
+        }
+
+        outln();
+        outln(green(bold("--- Pengy ---")));
+        renderMarkdownToTerminal(content);
+    }
+
+    // ask_user_question always pauses for the user, whatever the confirmation
+    // mode.  An empty return means "cancelled" to the harness.
+    QStringList onQuestion(const QJsonArray& questions) {
+        if (questions.isEmpty()) return QStringList();
+
+        outln();
+        outln(cyan(bold("--- The assistant needs your input ---")));
+
+        QStringList answers;
+        for (int qi = 0; qi < questions.size(); ++qi) {
+            const QJsonObject q = questions[qi].toObject();
+            const QString header = q["header"].toString(QString("Question %1").arg(qi + 1));
+            const QJsonArray options = q["options"].toArray();
+
+            outln();
+            outln(bold(header));
+            outln(dim(q["question"].toString()));
+            outln();
+            for (int oi = 0; oi < options.size(); ++oi) {
+                const QJsonObject opt = options[oi].toObject();
+                outln(QString("  [%1] %2  %3")
+                          .arg(oi + 1)
+                          .arg(opt["label"].toString(),
+                               dim("— " + opt["description"].toString())));
+            }
+            outln(dim("  (blank = 1, 'c' = cancel, or type your own answer)"));
+
+            for (;;) {
+                const QByteArray prompt =
+                    QString("  Choose [1-%1]: ").arg(options.size()).toUtf8();
+                const QString c = readline_qstring(prompt.constData()).trimmed();
+                if (c.compare("c", Qt::CaseInsensitive) == 0) {
+                    outln(red("Question cancelled."));
+                    return QStringList();
+                }
+                if (c.isEmpty()) {
+                    if (options.isEmpty()) continue;
+                    answers.append(options[0].toObject()["label"].toString());
+                    break;
+                }
+                bool isNumber = false;
+                const int idx = c.toInt(&isNumber) - 1;
+                if (isNumber) {
+                    if (idx >= 0 && idx < options.size()) {
+                        answers.append(options[idx].toObject()["label"].toString());
+                        break;
+                    }
+                    outln(red(QString("Please enter a number between 1 and %1.").arg(options.size())));
+                    continue;
+                }
+                // Anything else is a free-text answer, like the GUI's "Other".
+                answers.append(c);
+                break;
+            }
+        }
+
+        outln(green("Answers recorded."));
+        return answers;
     }
 
     std::pair<bool,bool> onConfirm() {

@@ -62,6 +62,15 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
                 enriched["auto_approved"] = autoApproved;
                 emit eventReady(enriched);
 
+            } else if (type == "question_request") {
+                // Arm the answer wait before the browser can see the question.
+                {
+                    QMutexLocker lk(&m_questionMutex);
+                    m_questionAnswers.clear();
+                    m_questionPending = true;
+                }
+                emit eventReady(ev);
+
             } else if (type == "tool_result" || type == "question_result") {
                 // question_result is a tool message too: without it the
                 // assistant tool_calls message above is left dangling.
@@ -104,9 +113,19 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
 
         LlmClient::CancelFn isCancelled = [this]() -> bool { return m_cancelled; };
 
+        // ask_user_question always pauses for the user.  The wait is armed in
+        // onEvent, before question_request goes out over SSE, so an answer that
+        // beats us here clears the flag instead of being lost.
+        LlmClient::QuestionFn onQuestion = [this](const QJsonArray&) -> QStringList {
+            QMutexLocker lk(&m_questionMutex);
+            while (m_questionPending && !m_cancelled)
+                m_questionCond.wait(&m_questionMutex);
+            return m_cancelled ? QStringList() : m_questionAnswers;
+        };
+
         LlmClient client;
         client.run(LlmParams{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation, m_reasoningEffort, m_preserveReasoning, llmTimeout},
-                   onEvent, onConfirm, isCancelled);
+                   onEvent, onConfirm, isCancelled, onQuestion);
 
         Tools::clearSudoPasswordProvider();
         emit finished(accMsgs);
@@ -125,6 +144,12 @@ void WebChatWorker::cancel() {
         m_cond.wakeAll();
     }
     {
+        QMutexLocker lk(&m_questionMutex);
+        m_questionAnswers.clear();
+        m_questionPending = false;
+        m_questionCond.wakeAll();
+    }
+    {
         QMutexLocker lk(&m_sudoMutex);
         m_sudoPending = false;
         m_sudoCond.wakeAll();
@@ -136,6 +161,13 @@ void WebChatWorker::sendConfirmation(bool confirmed, bool yoloTurn) {
     m_confirmState.status   = confirmed ? 2 : 3;
     m_confirmState.yoloTurn = yoloTurn;
     m_cond.wakeAll();
+}
+
+void WebChatWorker::sendAnswers(const QStringList& answers) {
+    QMutexLocker lk(&m_questionMutex);
+    m_questionAnswers = answers;
+    m_questionPending = false;
+    m_questionCond.wakeAll();
 }
 
 void WebChatWorker::sendSudoPassword(const QString& password) {

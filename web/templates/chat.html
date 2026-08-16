@@ -198,6 +198,28 @@
   </div>
 </div>
 
+<!-- Ask user question modal -->
+<div class="modal fade" id="questionModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title">
+          <i class="bi bi-question-circle text-info me-2"></i>Question
+        </h6>
+      </div>
+      <div class="modal-body" id="question-body"></div>
+      <div class="modal-footer">
+        <button class="btn btn-sm btn-outline-danger" onclick="submitAnswers(false)">
+          <i class="bi bi-x-circle me-1"></i>Cancel
+        </button>
+        <button class="btn btn-sm btn-success" onclick="submitAnswers(true)">
+          <i class="bi bi-check-circle me-1"></i>Submit Answers
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Sudo modal -->
 <div class="modal fade" id="sudoModal" tabindex="-1" data-bs-backdrop="static">
   <div class="modal-dialog modal-sm">
@@ -250,13 +272,15 @@ const ALL_CHATS = {{CHATS_JSON}};
 let es = null, processing = false, currentTurnDiv = null;
 let sseCursor = sessionStorage.getItem('pengy_sse_cursor_' + CHAT_ID) || '';
 let thinkingEl = null;
-let confirmModal, sudoModal, renameModal;
+let confirmModal, questionModal, sudoModal, renameModal;
+let pendingQuestionId = null, pendingQuestions = [];
 let pendingFiles = [];
 let wakeLock = null;
 
 // ── Bootstrap init ─────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   confirmModal = new bootstrap.Modal(document.getElementById('confirmModal'));
+  questionModal = new bootstrap.Modal(document.getElementById('questionModal'));
   sudoModal    = new bootstrap.Modal(document.getElementById('sudoModal'));
   renameModal  = new bootstrap.Modal(document.getElementById('renameModal'));
 
@@ -572,6 +596,9 @@ function startToolTurn() {
 
 function addToolCard(container, name, args, tcId, autoApproved) {
   const sid = 'tc_' + tcId.replace(/[^a-zA-Z0-9]/g, '');
+  // A replayed event (reconnect) must not duplicate a card already on screen.
+  const existing = document.getElementById(sid);
+  if (existing) return existing;
   const card = document.createElement('div');
   card.className = 'tool-card mb-1';
   card.id = sid;
@@ -821,7 +848,22 @@ function disconnectSSE() { if (es) { es.close(); es = null; } }
 function handleEvent(ev) {
   if (ev.type === 'assistant_tool_calls') {
     hideThinking();
+    // The assistant often narrates before calling tools. That text is
+    // persisted (and shows on reload), so it has to render live too.
+    const preamble = ((ev.message || {}).content || '').trim();
+    if (preamble) appendAssistantMsg(preamble);
     currentTurnDiv = startToolTurn();
+
+  } else if (ev.type === 'question_request') {
+    hideThinking();
+    if (!currentTurnDiv) currentTurnDiv = startToolTurn();
+    addToolCard(currentTurnDiv, ev.name || 'ask_user_question', ev.args || {}, ev.tool_call_id, false);
+    showQuestionModal(ev);
+
+  } else if (ev.type === 'question_result') {
+    hideThinking();
+    completeToolCard(ev.tool_call_id, ev.content || '', false);
+    showThinking();
 
   } else if (ev.type === 'tool_request') {
     hideThinking();
@@ -870,6 +912,8 @@ function handleEvent(ev) {
 }
 
 async function stopGeneration() {
+  // The worker blocks on the answer channel — unblock it before stopping.
+  if (questionModal._isShown) await submitAnswers(false);
   await fetch('/chat/' + CHAT_ID + '/stop', {method:'POST'});
   disconnectSSE();
   hideThinking();
@@ -928,6 +972,79 @@ async function submitConfirm(confirmed, yolo) {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({confirmed, yolo_turn: yolo})
+  });
+}
+
+// ── Ask user question modal ────────────────────────────────────────
+function showQuestionModal(ev) {
+  pendingQuestionId = ev.tool_call_id;
+  pendingQuestions = Array.isArray(ev.questions) ? ev.questions : [];
+
+  document.getElementById('question-body').innerHTML = pendingQuestions.map((q, qi) => {
+    const options = Array.isArray(q.options) ? q.options : [];
+    // Radio values are option indices — labels stay out of attributes and are
+    // looked up from pendingQuestions on submit.
+    const opts = options.map((opt, oi) =>
+      '<div class="form-check mb-2">' +
+        '<input class="form-check-input" type="radio" name="q' + qi + '" id="q' + qi + 'o' + oi + '"' +
+               ' value="' + oi + '"' + (oi === 0 ? ' checked' : '') + '>' +
+        '<label class="form-check-label" for="q' + qi + 'o' + oi + '">' +
+          '<span class="fw-semibold">' + esc(opt.label || '') + '</span>' +
+          (opt.description ? '<div class="text-muted small">' + esc(opt.description) + '</div>' : '') +
+        '</label>' +
+      '</div>').join('');
+    return '<div class="mb-4">' +
+        '<div class="fw-semibold text-info small text-uppercase mb-1">' + esc(q.header || ('Question ' + (qi + 1))) + '</div>' +
+        '<div class="mb-2">' + esc(q.question || '') + '</div>' +
+        opts +
+        '<div class="form-check">' +
+          '<input class="form-check-input" type="radio" name="q' + qi + '" id="q' + qi + 'other"' +
+                 ' value="__other__"' + (options.length ? '' : ' checked') + '>' +
+          '<label class="form-check-label" for="q' + qi + 'other">Other</label>' +
+          '<input type="text" class="form-control form-control-sm mt-1" id="q' + qi + 'otherText"' +
+                 ' placeholder="Your own answer…"' +
+                 ' oninput="document.getElementById(\'q' + qi + 'other\').checked = true">' +
+        '</div>' +
+      '</div>';
+  }).join('');
+
+  questionModal.show();
+}
+
+async function submitAnswers(answered) {
+  questionModal.hide();
+  if (!pendingQuestionId) return;
+
+  const tcId = pendingQuestionId;
+  let answers = [];
+  if (answered) {
+    answers = pendingQuestions.map((q, qi) => {
+      const picked = document.querySelector('input[name="q' + qi + '"]:checked');
+      if (!picked) return '';
+      if (picked.value === '__other__') {
+        return (document.getElementById('q' + qi + 'otherText').value || '').trim();
+      }
+      const opt = (q.options || [])[Number(picked.value)];
+      return opt ? (opt.label || '') : '';
+    });
+    // An empty "Other" with nothing typed is not an answer.
+    if (answers.every(a => !a)) answered = false;
+  }
+
+  const sid = 'tc_' + tcId.replace(/[^a-zA-Z0-9]/g, '');
+  const badge = document.getElementById('badge-' + sid);
+  if (badge) {
+    badge.className = 'badge ms-1 ' + (answered ? 'bg-secondary' : 'bg-danger');
+    badge.textContent = answered ? 'answering…' : 'cancelled';
+  }
+
+  pendingQuestionId = null;
+  pendingQuestions = [];
+  showThinking();
+  await fetch('/chat/' + CHAT_ID + '/answer', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({answered, tool_call_id: tcId, answers})
   });
 }
 

@@ -35,9 +35,15 @@ public:
     using QuestionFn = std::function<QStringList(const QJsonArray&)>;
 
     // Blocks the calling thread until the conversation ends or is cancelled.
+    //
+    // *onQuestion* is required, not defaulted: ask_user_question always pauses
+    // for the user, so a frontend that omits it would call a null std::function
+    // (std::bad_function_call → terminate) the first time the model asks
+    // anything.  A frontend with no way to ask returns an empty list, which the
+    // harness reports to the model as a cancelled question.
     void run(const LlmParams& params,
              EventFn   onEvent,
              ConfirmFn onConfirm,
              CancelFn  isCancelled,
-             QuestionFn onQuestion = nullptr);
+             QuestionFn onQuestion);
 };

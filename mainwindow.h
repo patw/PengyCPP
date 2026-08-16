@@ -66,6 +66,7 @@ private:
 
     // ── Message helpers ───────────────────────────────────────────
     void renderMessage(ChatView* view, const QJsonObject& msg);
+    static QJsonObject assistantDisplayMessage(const QJsonObject& msg);
     void processResponse(TabSession* session, const QJsonArray& apiMessages);
     void handleToolConfirm(TabSession* session, const QJsonObject& toolRequest);
     void handleFinalResponse(TabSession* session, const QJsonObject& response);

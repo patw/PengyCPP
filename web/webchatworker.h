@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 #include <atomic>
 
 class WebChatWorker : public QObject {
@@ -18,6 +19,8 @@ public:
                bool preserveReasoning = false, int llmTimeout = 300);
     void cancel();
     void sendConfirmation(bool confirmed, bool yoloTurn);
+    // Answers to a pending ask_user_question.  An empty list is a cancel.
+    void sendAnswers(const QStringList& answers);
     void sendSudoPassword(const QString& password);
     void cancelSudo();
 
@@ -36,6 +39,11 @@ private:
     QMutex         m_mutex;
     QWaitCondition m_cond;
     std::atomic<bool> m_cancelled = false;
+
+    mutable QMutex m_questionMutex;
+    QWaitCondition m_questionCond;
+    bool           m_questionPending = false;
+    QStringList    m_questionAnswers;
 
     mutable QMutex m_sudoMutex;
     QWaitCondition m_sudoCond;

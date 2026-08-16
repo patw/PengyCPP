@@ -363,6 +363,19 @@ void MainWindow::loadIntoNewTab(const QString& chatId) {
 
 // ── Message rendering ─────────────────────────────────────────────
 
+// The ChatView display object for an assistant message, carrying whichever
+// reasoning field the provider used.
+QJsonObject MainWindow::assistantDisplayMessage(const QJsonObject& msg) {
+    QJsonObject display;
+    display["role"]    = "assistant";
+    display["content"] = msg["content"].toString();
+    if (msg.contains("reasoning_content"))
+        display["reasoning_content"] = msg["reasoning_content"];
+    else if (msg.contains("reasoning"))
+        display["reasoning_content"] = msg["reasoning"];
+    return display;
+}
+
 void MainWindow::renderMessage(ChatView* view, const QJsonObject& msg) {
     QString role = msg["role"].toString();
 
@@ -373,38 +386,22 @@ void MainWindow::renderMessage(ChatView* view, const QJsonObject& msg) {
         view->appendMessageText("user", content, false);
 
     } else if (role == "assistant") {
-        QJsonArray toolCalls = msg["tool_calls"].toArray();
-        if (!toolCalls.isEmpty()) {
-            for (const QJsonValue& tc : toolCalls) {
-                QJsonObject tcObj = tc.toObject();
-                QJsonObject fn    = tcObj["function"].toObject();
-                QJsonObject argsObj = QJsonDocument::fromJson(
-                    fn["arguments"].toString().toUtf8()).object();
-                QJsonObject req;
-                req["tool_call_id"] = tcObj["id"];
-                req["name"]         = fn["name"];
-                req["args"]         = argsObj;
-                view->appendMessage("tool_request", req, false);
-            }
-            if (!msg["content"].toString().isEmpty()) {
-                QJsonObject display;
-                display["role"] = "assistant";
-                display["content"] = msg["content"].toString();
-                if (msg.contains("reasoning_content"))
-                    display["reasoning_content"] = msg["reasoning_content"];
-                else if (msg.contains("reasoning"))
-                    display["reasoning_content"] = msg["reasoning"];
-                view->appendMessage("assistant", display, false);
-            }
-        } else if (!msg["content"].toString().isEmpty()) {
-            QJsonObject display;
-            display["role"] = "assistant";
-            display["content"] = msg["content"].toString();
-            if (msg.contains("reasoning_content"))
-                display["reasoning_content"] = msg["reasoning_content"];
-            else if (msg.contains("reasoning"))
-                display["reasoning_content"] = msg["reasoning"];
-            view->appendMessage("assistant", display, false);
+        // Text first, tool cards after: the model wrote its narration *before*
+        // deciding on the tool calls in the same message, and that is the order
+        // the live run renders it in.
+        if (!msg["content"].toString().isEmpty())
+            view->appendMessage("assistant", assistantDisplayMessage(msg), false);
+
+        for (const QJsonValue& tc : msg["tool_calls"].toArray()) {
+            QJsonObject tcObj = tc.toObject();
+            QJsonObject fn    = tcObj["function"].toObject();
+            QJsonObject argsObj = QJsonDocument::fromJson(
+                fn["arguments"].toString().toUtf8()).object();
+            QJsonObject req;
+            req["tool_call_id"] = tcObj["id"];
+            req["name"]         = fn["name"];
+            req["args"]         = argsObj;
+            view->appendMessage("tool_request", req, false);
         }
     } else if (role == "tool") {
         QJsonObject result;
@@ -682,6 +679,13 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
 
     } else if (type == "assistant_tool_calls") {
         session->yoloThisTurn = false;
+        // The narration the model wrote alongside its tool calls is persisted
+        // and shows on reload, so it has to render live too -- before the tool
+        // cards, which is the order it was written in.
+        const QJsonObject assistantMsg = event["message"].toObject();
+        if (!assistantMsg["content"].toString().trimmed().isEmpty())
+            session->chatView->appendMessage("assistant",
+                                             assistantDisplayMessage(assistantMsg));
         QJsonArray messages = session->chat["messages"].toArray();
         messages.append(event["message"]);
         session->chat["messages"] = messages;

@@ -7,9 +7,16 @@
 #include <QSysInfo>
 
 /* Resolve the pengy config directory.
- * Uses $XDG_CONFIG_HOME if set, otherwise $HOME/.config — matching the
- * Python and Rust editions so all three share the same settings/chats/tasks.
- * Can be overridden via setConfigDir(). */
+ *
+ * Resolution order (highest priority first), matching the Python and Rust
+ * editions so all three share the same settings/chats/tasks:
+ *   1. setConfigDir()      -- --config-dir, test fixtures
+ *   2. PENGY_CONFIG_DIR    -- CI, test harnesses, throw-away runs
+ *   3. $XDG_CONFIG_HOME/pengy, else $HOME/.config/pengy
+ *
+ * PENGY_CONFIG_DIR is what anything driving a *built binary* should set:
+ * without it the only lever was $HOME/$XDG_CONFIG_HOME, so a harness that
+ * forgot silently used the real settings -- and the real API key. */
 static QString& configDirOverride() {
     static QString override;
     return override;
@@ -19,10 +26,23 @@ void setConfigDir(const QString& path) {
     configDirOverride() = path;
 }
 
+// Expand a leading "~" so PENGY_CONFIG_DIR=~/scratch behaves as a shell user
+// expects (the Python edition's expanduser()).
+static QString expandHome(const QString& path) {
+    if (path == "~")
+        return QDir::homePath();
+    if (path.startsWith("~/"))
+        return QDir::homePath() + path.mid(1);
+    return path;
+}
+
 QString pengyConfigDirPath() {
     QString& override = configDirOverride();
     if (!override.isEmpty())
         return override;
+    const QString envDir = qEnvironmentVariable("PENGY_CONFIG_DIR");
+    if (!envDir.isEmpty())
+        return expandHome(envDir);
     QString base = qEnvironmentVariable("XDG_CONFIG_HOME");
     if (base.isEmpty())
         base = QDir::homePath() + "/.config";

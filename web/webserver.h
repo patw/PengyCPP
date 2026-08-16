@@ -79,6 +79,7 @@ private:
     void routeChatSend(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatStream(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatConfirm(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
+    void routeChatAnswer(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatSudo(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatStop(const QString& chatId, QTcpSocket* socket);
     void routeChatDelete(const QString& chatId, QTcpSocket* socket);
