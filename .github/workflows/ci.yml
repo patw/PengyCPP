@@ -34,5 +34,5 @@ jobs:
           cd ..
 
           echo "=== Verify ==="
-          ls -lh build/pengy build/pengy_cli build/pengy_web
+          ls -lh build/pengy build/pengy-cli build/pengy-web
           file build/pengy
