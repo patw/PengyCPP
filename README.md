@@ -46,11 +46,11 @@ sudo apt install build-essential cmake qt6-base-dev libgl-dev
 ./build/pengy
 
 # CLI
-./build/pengy_cli                                              # interactive
-./build/pengy_cli "What is the capital of France?"             # single-shot
+./build/pengy-cli                                              # interactive
+./build/pengy-cli "What is the capital of France?"             # single-shot
 
 # Web
-./build/pengy_web                                              # http://localhost:5000
+./build/pengy-web                                              # http://localhost:5000
 ```
 
 The web UI is for single-user personal use. For remote access, put it behind nginx with SSL; use `--trusted-host` to set the public hostname when reverse-proxying.
@@ -191,7 +191,7 @@ PengyCPP is a **single CMake project** — no Rust, no Python, no FFI. All logic
 | `webserver` | QTcpServer HTTP server with SSE push; Bootstrap 5 UI |
 | `mainwindow` | Three-pane window with tool confirmation modal |
 
-Three binaries (`pengy`, `pengy_cli`, `pengy_web`) share the same config and chat storage. No runtime dependencies beyond system Qt6.
+Three binaries (`pengy`, `pengy-cli`, `pengy-web`) share the same config and chat storage. No runtime dependencies beyond system Qt6.
 
 ### Project structure
 
@@ -213,8 +213,8 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 
 ./build/pengy               # GUI
-./build/pengy_cli           # CLI
-./build/pengy_web           # Web (http://localhost:5000)
+./build/pengy-cli           # CLI
+./build/pengy-web           # Web (http://localhost:5000)
 
 # Run tests
 cmake --build build --target pengy_tests

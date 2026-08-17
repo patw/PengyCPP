@@ -33,8 +33,8 @@ smoke() {
     fi
 }
 if ! smoke "$ROOT/build/pengy" || \
-   ! smoke "$ROOT/build/pengy_cli" || \
-   ! smoke "$ROOT/build/pengy_web"; then
+   ! smoke "$ROOT/build/pengy-cli" || \
+   ! smoke "$ROOT/build/pengy-web"; then
     echo -e "\033[31m==> Binary smoke test failed — aborting .deb build!\033[0m"
     exit 1
 fi
@@ -49,8 +49,8 @@ mkdir -p "$STAGING/usr/share/doc/pengy"
 mkdir -p "$STAGING/DEBIAN"
 
 cp "$ROOT/build/pengy"      "$STAGING/usr/bin/pengy"
-cp "$ROOT/build/pengy_cli" "$STAGING/usr/bin/pengy-cli"
-cp "$ROOT/build/pengy_web" "$STAGING/usr/bin/pengy-web"
+cp "$ROOT/build/pengy-cli" "$STAGING/usr/bin/pengy-cli"
+cp "$ROOT/build/pengy-web" "$STAGING/usr/bin/pengy-web"
 chmod 755 "$STAGING/usr/bin/pengy" "$STAGING/usr/bin/pengy-cli" "$STAGING/usr/bin/pengy-web"
 
 cp "$ROOT/pengy.png"    "$STAGING/usr/share/icons/hicolor/256x256/apps/pengy.png"

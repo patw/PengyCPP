@@ -43,8 +43,8 @@ smoke() {
     fi
 }
 smoke "$ROOT/build_macos/pengy"
-smoke "$ROOT/build_macos/pengy_cli"
-smoke "$ROOT/build_macos/pengy_web"
+smoke "$ROOT/build_macos/pengy-cli"
+smoke "$ROOT/build_macos/pengy-web"
 if [ "$FAIL" -gt 0 ]; then
     echo -e "\033[31m==> $FAIL binary(s) failed smoke test!\033[0m"
     exit 1

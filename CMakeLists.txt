@@ -16,7 +16,7 @@ configure_file(
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg)
 
 # ── CLI ─────────────────────────────────────────────────────────────
-add_executable(pengy_cli
+add_executable(pengy-cli
     cli/main.cpp
     config.cpp
     chatmanager.cpp
@@ -25,14 +25,14 @@ add_executable(pengy_cli
     image_utils.cpp
 )
 # Qt6::Gui (not Widgets) for QImage — read_image decodes and rescales in tools.cpp.
-target_link_libraries(pengy_cli PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
+target_link_libraries(pengy-cli PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
 if(UNIX AND NOT WIN32)
-    target_link_libraries(pengy_cli PRIVATE readline)
+    target_link_libraries(pengy-cli PRIVATE readline)
 endif()
-target_include_directories(pengy_cli PRIVATE ${CMAKE_BINARY_DIR})
+target_include_directories(pengy-cli PRIVATE ${CMAKE_BINARY_DIR})
 
 # ── Web UI ───────────────────────────────────────────────────────────
-add_executable(pengy_web
+add_executable(pengy-web
     web/main.cpp
     web/webserver.cpp
     web/webchatworker.cpp
@@ -43,8 +43,8 @@ add_executable(pengy_web
     llmclient.cpp
     image_utils.cpp
 )
-target_link_libraries(pengy_web PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
-target_include_directories(pengy_web PRIVATE ${CMAKE_BINARY_DIR})
+target_link_libraries(pengy-web PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
+target_include_directories(pengy-web PRIVATE ${CMAKE_BINARY_DIR})
 
 # ── Desktop GUI ──────────────────────────────────────────────────────
 add_executable(pengy
@@ -113,6 +113,6 @@ if(Qt6Test_FOUND)
     )
     target_compile_definitions(pengy_tests PRIVATE PENGY_UNIT_TEST)
     # Ensure CLI and web binaries exist before tests run (subprocess tests)
-    add_dependencies(pengy_tests pengy_cli pengy_web)
+    add_dependencies(pengy_tests pengy-cli pengy-web)
     add_test(NAME PengyTests COMMAND pengy_tests)
 endif()

@@ -21,10 +21,10 @@ sudo apt install build-essential cmake qt6-base-dev libgl-dev
 ./build/pengy
 
 # CLI
-./build/pengy_cli
+./build/pengy-cli
 
 # Web
-./build/pengy_web
+./build/pengy-web
 ```
 
 ### AppImage
@@ -74,4 +74,4 @@ cmake --build build --target pengy_tests
 
 ## Architecture notes
 
-PengyCPP is a single CMake project producing three binaries (`pengy`, `pengy_cli`, `pengy_web`). All logic is pure C++17 — no FFI, no external dependencies beyond Qt6. The web UI uses a lightweight QTcpServer instead of an external HTTP framework.
+PengyCPP is a single CMake project producing three binaries (`pengy`, `pengy-cli`, `pengy-web`). All logic is pure C++17 — no FFI, no external dependencies beyond Qt6. The web UI uses a lightweight QTcpServer instead of an external HTTP framework.

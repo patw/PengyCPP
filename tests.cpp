@@ -107,7 +107,7 @@ static WebResp webRequest(const QString& method, quint16 port,
 // ── CLI subprocess helper ────────────────────────────────────────────
 
 static QString cliBin() {
-    return QCoreApplication::applicationDirPath() + "/pengy_cli";
+    return QCoreApplication::applicationDirPath() + "/pengy-cli";
 }
 
 // ── Stub LLM server ──────────────────────────────────────────────────
@@ -2627,10 +2627,10 @@ private slots:
 
     void cliHelp() {
         if (!QFile::exists(cliBin()))
-            QSKIP("pengy_cli not built yet");
+            QSKIP("pengy-cli not built yet");
 
         QString out = runCli({"/help"});
-        QVERIFY2(!out.isEmpty(), "pengy_cli produced no output");
+        QVERIFY2(!out.isEmpty(), "pengy-cli produced no output");
         QVERIFY(out.contains("Commands:"));
         QVERIFY(out.contains("/new"));
         QVERIFY(out.contains("/model"));
@@ -2640,7 +2640,7 @@ private slots:
 
     void cliConfig() {
         if (!QFile::exists(cliBin()))
-            QSKIP("pengy_cli not built yet");
+            QSKIP("pengy-cli not built yet");
 
         QString out = runCli({"/config"});
         QVERIFY(!out.isEmpty());
@@ -2653,7 +2653,7 @@ private slots:
 
     void cliNewAndList() {
         if (!QFile::exists(cliBin()))
-            QSKIP("pengy_cli not built yet");
+            QSKIP("pengy-cli not built yet");
 
         // Create a new chat, then list all
         QString out = runCli({"/new", "/list"});
@@ -2665,7 +2665,7 @@ private slots:
 
     void cliQuitExitsCleanly() {
         if (!QFile::exists(cliBin()))
-            QSKIP("pengy_cli not built yet");
+            QSKIP("pengy-cli not built yet");
 
         QProcess proc;
         proc.setProgram(cliBin());

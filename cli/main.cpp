@@ -1072,7 +1072,7 @@ static const QStringList kOutputModes = {"pretty", "raw", "json", "silent"};
 /// Report a command-line usage error and exit 2, matching the other frontends.
 [[noreturn]] static void argError(const QString& msg) {
     QTextStream(stderr) << "error: " << msg << "\n"
-                        << "Try 'pengy_cli --help' for more information.\n";
+                        << "Try 'pengy-cli --help' for more information.\n";
     std::exit(2);
 }
 
@@ -1105,7 +1105,7 @@ int main(int argc, char* argv[]) {
             outln(QString("Pengy v") + PENGY_VERSION);
             return 0;
         } else if (a == "-h" || a == "--help") {
-            outln("Usage: pengy_cli [prompt...] [OPTIONS]");
+            outln("Usage: pengy-cli [prompt...] [OPTIONS]");
             outln();
             outln("Arguments:");
             outln("  prompt      Optional prompt for single-shot mode. If omitted, starts interactive mode.");

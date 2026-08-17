@@ -73,12 +73,12 @@ fi
 
 # ── 6. Build Linux (quick) ──────────────────────────────────────────
 echo "--- Build Linux ---"
-if [ -f build/pengy ] && [ -f build/pengy_cli ] && [ -f build/pengy_web ]; then
+if [ -f build/pengy ] && [ -f build/pengy-cli ] && [ -f build/pengy-web ]; then
     ok "Binaries already built (skipping rebuild)"
 else
     echo "  Building..."
     ./build_linux.sh > /tmp/pengycpp_build.log 2>&1
-    if [ -f build/pengy ] && [ -f build/pengy_cli ] && [ -f build/pengy_web ]; then
+    if [ -f build/pengy ] && [ -f build/pengy-cli ] && [ -f build/pengy-web ]; then
         ok "Build succeeded"
     else
         fail "Build failed — check /tmp/pengycpp_build.log"
@@ -87,9 +87,9 @@ fi
 
 # ── 7. Verify binaries (existence + --version/--help smoke test) ───
 echo "--- Verify binaries ---"
-ls -lh build/pengy build/pengy_cli build/pengy_web build/pengy_tests 2>/dev/null
+ls -lh build/pengy build/pengy-cli build/pengy-web build/pengy_tests 2>/dev/null
 file build/pengy | grep -q "ELF" && ok "pengy is a valid ELF binary" || warn "pengy doesn't look like an ELF"
-for bin in build/pengy build/pengy_cli build/pengy_web; do
+for bin in build/pengy build/pengy-cli build/pengy-web; do
     name=$(basename "$bin")
     if [ ! -f "$bin" ]; then warn "$name not found"; continue; fi
     if "$bin" --version 2>/dev/null | grep -q "^Pengy v"; then

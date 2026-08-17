@@ -34,7 +34,7 @@ PengyCPP is a pure C++17/Qt6 port of [Pengy](https://github.com/patw/pengy) — 
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Frontends (three binaries from one CMake project)                   │
 │                                                                      │
-│  ┌─ Qt6 GUI (pengy) ─────────────┐  ┌─ CLI (pengy_cli) ──────────┐ │
+│  ┌─ Qt6 GUI (pengy) ─────────────┐  ┌─ CLI (pengy-cli) ──────────┐ │
 │  │ ChatHistory / ChatView /       │  │ Interactive REPL           │ │
 │  │ ChatInput / SettingsDialog     │  │ Single-shot mode           │ │
 │  │ ChatWorker (QThread)           │  │ Slash commands             │ │
@@ -43,7 +43,7 @@ PengyCPP is a pure C++17/Qt6 port of [Pengy](https://github.com/patw/pengy) — 
 │               │  LlmClient::run()                  │  LlmClient::run()│
 │               │  (on QThread)                      │  (main thread)  │
 │               │                                   │                 │
-│  ┌─ Web UI (pengy_web) ──────────┐                │                 │
+│  ┌─ Web UI (pengy-web) ──────────┐                │                 │
 │  │ Bootstrap 5 + SSE streaming    │                │                 │
 │  │ WebChatWorker (QThread)        │                │                 │
 │  │ WebServer (QTcpServer)         │                │                 │
@@ -66,7 +66,7 @@ PengyCPP is a pure C++17/Qt6 port of [Pengy](https://github.com/patw/pengy) — 
 
 ```
 PengyCPP/
-├── CMakeLists.txt          # Single CMake project — builds pengy, pengy_cli, pengy_web, pengy_tests
+├── CMakeLists.txt          # Single CMake project — builds pengy, pengy-cli, pengy-web, pengy_tests
 ├── main.cpp                # Desktop GUI entry point — QApplication setup
 ├── config.cpp/h            # Settings load/save + system message rendering
 ├── chatmanager.cpp/h       # Chat session CRUD + message cleaning + context elision
@@ -196,19 +196,19 @@ Tool calls are stored as unified `tool_block` messages (request + result combine
 
 ## CLI Interface
 
-The CLI binary (`pengy_cli`) provides an interactive REPL and single-shot mode. It uses the core modules directly — no threading.
+The CLI binary (`pengy-cli`) provides an interactive REPL and single-shot mode. It uses the core modules directly — no threading.
 
 ### Entry Points
 
 ```bash
 # Interactive REPL
-pengy_cli
+pengy-cli
 
 # Single-shot
-pengy_cli "What is the capital of France?"
+pengy-cli "What is the capital of France?"
 
 # Single-shot without saving
-pengy_cli --no-save "quick question"
+pengy-cli --no-save "quick question"
 ```
 
 Flags (shared with the Python and Rust CLIs): `--no-save`, `--model NAME`, `--system MSG`, `--output pretty|raw|json|silent`, `--config-dir PATH`, `-v/--version`. `--model` and `--system` are in-memory overrides — they never modify `settings.json`.
@@ -226,7 +226,7 @@ The `PengyCliApp` class drives `LlmClient::run()` on the main thread. Tool confi
 
 1. Creates a throw-away chat (persisted unless `--no-save` is passed)
 2. Sends the prompt, drives the conversation to completion, and exits
-3. Useful for scripting: `pengy_cli "summarize this file" && pengy_cli "translate to French"`
+3. Useful for scripting: `pengy-cli "summarize this file" && pengy-cli "translate to French"`
 
 ### Slash Commands
 
@@ -264,16 +264,16 @@ The `@path/to/file` syntax anywhere in a message reads the file's contents and i
 
 ## Web Interface
 
-The Web binary (`pengy_web [port]`) runs a `QTcpServer` HTTP server (default port 5000) with a Bootstrap 5 UI. Intended for single-user personal use; SSL and authentication are expected to be handled by a reverse proxy (nginx).
+The Web binary (`pengy-web [port]`) runs a `QTcpServer` HTTP server (default port 5000) with a Bootstrap 5 UI. Intended for single-user personal use; SSL and authentication are expected to be handled by a reverse proxy (nginx).
 
 ### Entry Points
 
 ```bash
-pengy_web                            # localhost:5000
-pengy_web 8080                       # custom port (positional)
-pengy_web 8080 --host 0.0.0.0        # expose beyond localhost (no auth — trusted networks only)
-pengy_web --config-dir PATH          # custom config directory
-pengy_web -h                         # help
+pengy-web                            # localhost:5000
+pengy-web 8080                       # custom port (positional)
+pengy-web 8080 --host 0.0.0.0        # expose beyond localhost (no auth — trusted networks only)
+pengy-web --config-dir PATH          # custom config directory
+pengy-web -h                         # help
 ```
 
 The server prints its URL on startup; it does not auto-open a browser.
@@ -612,8 +612,8 @@ All 15 tools implemented in `tools.cpp` using Qt APIs:
 sudo apt install build-essential cmake qt6-base-dev libgl-dev
 ./build_linux.sh
 # → build/pengy  (~8 MB, Qt6 linked dynamically)
-# → build/pengy_cli
-# → build/pengy_web
+# → build/pengy-cli
+# → build/pengy-web
 ```
 
 ### Linux AppImage (GUI only)
@@ -678,7 +678,7 @@ REM → Pengy-Windows.zip
 
 **Chat export to Markdown:** The 💾 button in the sidebar exports any chat to a `.md` file via `QFileDialog::getSaveFileName`, pre-filled with the chat title. All three Pengy editions share this feature.
 
-**Single CMake project:** All three binaries (`pengy`, `pengy_cli`, `pengy_web`) and tests (`pengy_tests`) are built from one `CMakeLists.txt`. Source files are shared directly — no library, no FFI, no subprojects. CLI and Web link only `Qt6::Core` + `Qt6::Network`; GUI also links `Qt6::Widgets`.
+**Single CMake project:** All three binaries (`pengy`, `pengy-cli`, `pengy-web`) and tests (`pengy_tests`) are built from one `CMakeLists.txt`. Source files are shared directly — no library, no FFI, no subprojects. CLI and Web link only `Qt6::Core` + `Qt6::Network`; GUI also links `Qt6::Widgets`.
 
 ---
 

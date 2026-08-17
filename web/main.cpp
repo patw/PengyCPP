@@ -7,7 +7,7 @@
 /// Report a command-line usage error and exit 2, matching the other frontends.
 [[noreturn]] static void argError(const QString& msg) {
     QTextStream(stderr) << "error: " << msg << "\n"
-                        << "Try 'pengy_web --help' for more information.\n";
+                        << "Try 'pengy-web --help' for more information.\n";
     std::exit(2);
 }
 
@@ -40,7 +40,7 @@ int main(int argc, char* argv[]) {
         } else if (args[i] == "-h" || args[i] == "--help") {
             QTextStream(stdout)
                 << "Pengy web UI — chat with LLMs from your browser\n\n"
-                << "Usage: pengy_web [OPTIONS]\n\n"
+                << "Usage: pengy-web [OPTIONS]\n\n"
                 << "Options:\n"
                 << "  --port PORT     Bind port (default: 5000).\n"
                 << "  --host HOST     Bind host (default: 127.0.0.1). Pass\n"

@@ -26,7 +26,7 @@ server {
 Then run PengyCPP Web bound to loopback with `--trusted-host`:
 
 ```bash
-pengy_web --trusted-host pengy.example
+pengy-web --trusted-host pengy.example
 ```
 
 ## What does `--trusted-host` do?
