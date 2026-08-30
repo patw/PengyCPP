@@ -476,3 +476,84 @@ QJsonArray elideOldToolResults(const QJsonArray& messages, int keepTurns) {
     }
     return result;
 }
+
+// Drop the last message and repair any dangling tool_calls it leaves behind.
+//
+// One "redact" call pops exactly one raw message off the end -- a tool
+// result, an assistant tool_calls request, or a final response.
+//
+// Popping a tool result can't just fall through to cleanDanglingToolCalls():
+// that function *synthesizes* a "cancelled" placeholder for any tool_calls
+// entry left unsatisfied, so a naive pop-then-repair would regenerate an
+// equivalent stub every time and redaction could never advance past it.
+// Instead the popped tool_call_id is struck directly from its assistant
+// message's tool_calls array; if that empties the array (and the assistant
+// left no other text), the now-empty assistant message is dropped too, so
+// redacting a single-tool-call round removes it in one call, not two.
+//
+// Safe to call repeatedly down to an empty array.
+QJsonArray messagesRedactLast(const QJsonArray& messages) {
+    if (messages.isEmpty()) return QJsonArray();
+
+    QJsonArray working = messages;
+    QJsonObject last = working.last().toObject();
+    working.removeLast();
+
+    if (last["role"].toString() == "tool") {
+        QString lastId = last["tool_call_id"].toString();
+        if (!lastId.isEmpty()) {
+            // Find the assistant message that declared this tool_call_id --
+            // not necessarily the immediately preceding message, since a
+            // multi-tool round has several tool results trailing one
+            // assistant message.
+            for (int i = working.size() - 1; i >= 0; --i) {
+                QJsonObject candidate = working[i].toObject();
+                if (candidate["role"].toString() != "assistant") continue;
+
+                QJsonArray toolCalls = candidate["tool_calls"].toArray();
+                bool owns = false;
+                QJsonArray remaining;
+                for (const QJsonValue& tc : toolCalls) {
+                    if (tc.toObject()["id"].toString() == lastId) {
+                        owns = true;
+                    } else {
+                        remaining.append(tc);
+                    }
+                }
+                if (owns) {
+                    if (!remaining.isEmpty()) {
+                        candidate["tool_calls"] = remaining;
+                        working[i] = candidate;
+                    } else if (!candidate["content"].toString().isEmpty()) {
+                        candidate.remove("tool_calls");
+                        working[i] = candidate;
+                    } else {
+                        working.removeAt(i);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    return cleanDanglingToolCalls(working);
+}
+
+// Accumulate one turn's token usage into the chat's running total.
+//
+// LlmClient's "final_response" event reports usage for that turn only
+// (reset every call), so without this each frontend only ever showed the
+// *last* turn's numbers -- no signal for how much context a long-running
+// chat has actually burned through. Stored on chat["usage"] (not
+// session/tab-only state) so the running total persists across reloads and
+// is visible from any frontend, not just the process that made the call.
+// Returns the updated chat (with chat["usage"] set); the caller is
+// responsible for persisting it via chatSave()/chatSaveProgress().
+QJsonObject chatAddUsage(QJsonObject chat, const QJsonObject& usage) {
+    QJsonObject totals = chat["usage"].toObject();
+    totals["prompt_tokens"]     = totals["prompt_tokens"].toInt() + usage["prompt_tokens"].toInt();
+    totals["completion_tokens"] = totals["completion_tokens"].toInt() + usage["completion_tokens"].toInt();
+    totals["total_tokens"]      = totals["total_tokens"].toInt() + usage["total_tokens"].toInt();
+    chat["usage"] = totals;
+    return chat;
+}

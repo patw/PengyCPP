@@ -52,11 +52,11 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     uiForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
 
     m_uiScale = new WidePopupComboBox;
-    int scales[] = {75, 100, 125, 150, 175, 200};
+    int scales[] = {75, 100, 110, 125, 135, 150, 175, 200};
     int idx = 1;
-    for (int i = 0; i < 6; ++i) {
+    for (size_t i = 0; i < sizeof(scales) / sizeof(scales[0]); ++i) {
         m_uiScale->addItem(QString("%1%").arg(scales[i]), scales[i]);
-        if (scales[i] == cfg.uiScale) idx = i;
+        if (scales[i] == cfg.uiScale) idx = static_cast<int>(i);
     }
     m_uiScale->setCurrentIndex(idx);
     m_uiScale->setToolTip("Scales the entire UI. Restart Pengy to apply a change.");

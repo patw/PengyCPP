@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Pengy VERSION 1.7.0 LANGUAGES CXX)
+project(Pengy VERSION 1.7.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ add_executable(pengy-cli
     cli/main.cpp
     config.cpp
     chatmanager.cpp
+    taskmanager.cpp
     tools.cpp
     llmclient.cpp
     image_utils.cpp
@@ -39,6 +40,7 @@ add_executable(pengy-web
     web/web_resources.qrc
     config.cpp
     chatmanager.cpp
+    taskmanager.cpp
     tools.cpp
     llmclient.cpp
     image_utils.cpp
@@ -95,6 +97,19 @@ if(Qt6Test_FOUND)
     target_link_libraries(pengy_chatview_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg)
     target_include_directories(pengy_chatview_test PRIVATE ${CMAKE_BINARY_DIR})
     add_test(NAME PengyChatViewTest COMMAND pengy_chatview_test)
+
+    # Sidebar addChat()/removeChat() + model-hint-gap regression tests
+    # (standalone binary, mirrors PengyR's gui/tests/test_chathistory.cpp).
+    add_executable(pengy_chathistory_test
+        test_chathistory.cpp
+        chathistory.cpp
+        chatmanager.cpp
+        config.cpp
+    )
+    target_compile_definitions(pengy_chathistory_test PRIVATE PENGY_UNIT_TEST)
+    target_link_libraries(pengy_chathistory_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg)
+    target_include_directories(pengy_chathistory_test PRIVATE ${CMAKE_BINARY_DIR})
+    add_test(NAME PengyChatHistoryTest COMMAND pengy_chathistory_test)
 
     add_executable(pengy_tests
         tests.cpp

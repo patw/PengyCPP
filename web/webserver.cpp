@@ -1,6 +1,7 @@
 #include "webserver.h"
 #include "../config.h"
 #include "../chatmanager.h"
+#include "../taskmanager.h"
 #include "../tools.h"
 #include "../image_utils.h"
 #include <QTcpSocket>
@@ -178,6 +179,10 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
         routeModels(socket);
     } else if (parts[0] == "files" && req.method == "GET") {
         routeFile(req, socket);
+    } else if (parts[0] == "tasks" && parts.size() == 1 && req.method == "GET") {
+        routeTasks(socket);
+    } else if (parts[0] == "tasks" && parts.size() == 2 && parts[1] == "render" && req.method == "POST") {
+        routeTasksRender(req, socket);
     } else if (parts[0] == "chat") {
         if (parts.size() == 1) {
             routeRoot(socket);
@@ -197,6 +202,7 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
             else if (act == "delete"  && req.method == "POST") routeChatDelete(id, socket);
             else if (act == "export"  && req.method == "GET")  routeChatExport(id, socket);
             else if (act == "rename"  && req.method == "POST") routeChatRename(id, req, socket);
+            else if (act == "redact"  && req.method == "POST") routeChatRedact(id, req, socket);
             else if (act == "command" && req.method == "POST") routeChatCommand(id, req, socket);
             else sendJson(socket, 404, {{"error","not found"}});
         } else {
@@ -422,8 +428,17 @@ void WebServer::routeChatSend(const QString& chatId,
             QString title = curChat["title"].toString();
             if (title == "New Chat" && !userInput.isEmpty())
                 title = userInput.left(60).replace('\n', ' ');
+            // Accumulate into chat["usage"] rather than overwrite: LlmClient
+            // reports usage per turn only, and the chat's running total is a
+            // more useful "how much context has this chat burned through"
+            // signal than the last turn alone. Saved immediately (not left
+            // to persistTurnProgress, which only ever touches "messages") so
+            // a page reload right after this event still sees it.
+            curChat = chatAddUsage(curChat, ev["usage"].toObject());
+            chatSave(curChat);
             QJsonObject enriched = ev;
             enriched["chat_title"] = title;
+            enriched["cumulative_usage"] = curChat["usage"].toObject();
             pushSse(chatId, enriched);
         } else {
             pushSse(chatId, ev);
@@ -665,6 +680,100 @@ void WebServer::routeChatRename(const QString& chatId,
     chat["title"] = newTitle;
     chatSave(chat);
     sendJson(socket, 200, {{"status","ok"},{"title",newTitle}});
+}
+
+// Delete the last N raw messages (default 1) from the chat -- the
+// context-pruning "undo" button, repeatable all the way to an empty chat.
+// Refused while a turn is in flight for this chat, since popping messages
+// out from under an in-progress WebChatWorker (which holds its own
+// snapshot mid-run) would race with the worker's own saves.
+void WebServer::routeChatRedact(const QString& chatId,
+                                const HttpRequest& req, QTcpSocket* socket) {
+    if (m_workers.contains(chatId)) {
+        sendJson(socket, 409, {{"error","Cannot redact while a response is in progress"}});
+        return;
+    }
+
+    QJsonObject body = bodyJson(req);
+    int n = 1;
+    if (body.contains("count")) {
+        QJsonValue v = body["count"];
+        if (v.isDouble()) {
+            n = v.toInt(-1);
+        } else {
+            sendJson(socket, 400, {{"error","count must be an integer"}});
+            return;
+        }
+    }
+    if (n < 1) {
+        sendJson(socket, 400, {{"error","count must be an integer"}});
+        return;
+    }
+
+    QJsonObject chat = chatGet(chatId);
+    if (chat.isEmpty()) {
+        sendJson(socket, 404, {{"error","Chat not found"}});
+        return;
+    }
+
+    QJsonArray msgs = chat["messages"].toArray();
+    int before = msgs.size();
+    for (int i = 0; i < n && !msgs.isEmpty(); ++i)
+        msgs = messagesRedactLast(msgs);
+    chat["messages"] = msgs;
+    chatSave(chat);
+
+    sendJson(socket, 200, {
+        {"status","ok"},
+        {"removed", before - msgs.size()},
+        {"message_count", msgs.size()}
+    });
+}
+
+// ── Tasks (prompt templates) ────────────────────────────────────────
+// Chat-independent: same store (tasks.json) as the GUI's Tasks dialog. The
+// client fills placeholders, renders here, then feeds the result through
+// the normal /send path.
+
+void WebServer::routeTasks(QTcpSocket* socket) {
+    QJsonArray tasks = tasksLoad();
+    QJsonArray out;
+    for (const QJsonValue& v : tasks) {
+        QJsonObject t = v.toObject();
+        QJsonArray placeholders;
+        for (const QString& p : extractPlaceholders(t["template"].toString()))
+            placeholders.append(p);
+        out.append(QJsonObject{
+            {"id", t["id"]},
+            {"title", t["title"]},
+            {"template", t["template"]},
+            {"placeholders", placeholders}
+        });
+    }
+    sendJson(socket, 200, {{"tasks", out}});
+}
+
+void WebServer::routeTasksRender(const HttpRequest& req, QTcpSocket* socket) {
+    QJsonObject body = bodyJson(req);
+    QString id = body["id"].toString();
+    QJsonObject task = taskGet(id);
+    if (task.isEmpty()) {
+        sendJson(socket, 404, {{"error","Task not found"}});
+        return;
+    }
+
+    QJsonValue valuesRaw = body["values"];
+    if (!valuesRaw.isObject() && !valuesRaw.isUndefined() && !valuesRaw.isNull()) {
+        sendJson(socket, 400, {{"error","values must be an object"}});
+        return;
+    }
+    QMap<QString, QString> values;
+    QJsonObject valuesObj = valuesRaw.toObject();
+    for (auto it = valuesObj.begin(); it != valuesObj.end(); ++it)
+        values[it.key()] = it.value().toString();
+
+    QString prompt = renderTaskTemplate(task["template"].toString(), values).trimmed();
+    sendJson(socket, 200, {{"prompt", prompt}});
 }
 
 void WebServer::routeChatCommand(const QString& chatId,
@@ -1017,6 +1126,8 @@ QByteArray WebServer::renderChatPage(const QString& chatId) {
         safeJs(QJsonDocument(chat["messages"].toArray()).toJson(QJsonDocument::Compact)));
     html.replace("{{CHATS_JSON}}",
         safeJs(QJsonDocument(chats).toJson(QJsonDocument::Compact)));
+    html.replace("{{CUMULATIVE_TOKENS}}",
+        QString::number(chat["usage"].toObject()["total_tokens"].toInt()));
 
     return html.toUtf8();
 }

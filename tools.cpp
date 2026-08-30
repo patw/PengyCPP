@@ -691,6 +691,43 @@ static QString truncateHeadLines(const QString& text, int limit,
     return kept;
 }
 
+static const int kBinarySampleChars = 4096;
+static const double kBinaryNonprintableRatio = 0.25;
+
+static bool isNonprintable(QChar c) {
+    return c != '\n' && c != '\r' && c != '\t' && (c.category() == QChar::Other_Control);
+}
+
+/// Heuristically detect binary blobs that decoded as text without erroring.
+///
+/// readAndRemove() already decodes leniently (QString::fromUtf8 substitutes
+/// U+FFFD for invalid sequences rather than failing), so a hard-invalid byte
+/// sequence never crashes or vanishes here. What this catches is the case
+/// that never raised in the first place: bytes that happen to form valid
+/// text (a UTF-16 file decoded as UTF-8 leaves a NUL between every ASCII
+/// byte; a core dump or compiled binary can have long printable-looking
+/// runs) but aren't meaningful for the model to read and can blow out the
+/// context window.
+///
+/// Returns the non-printable ratio via *outRatio* and whether the sample
+/// looks binary, computed over a leading sample.
+static bool looksBinary(const QString& text, double* outRatio) {
+    if (text.isEmpty()) {
+        if (outRatio) *outRatio = 0.0;
+        return false;
+    }
+    QString sample = text.left(kBinarySampleChars);
+    int nonprintable = 0;
+    bool hasNull = false;
+    for (const QChar& c : sample) {
+        if (c == QChar(u'\0')) hasNull = true;
+        if (isNonprintable(c)) ++nonprintable;
+    }
+    double ratio = static_cast<double>(nonprintable) / sample.size();
+    if (outRatio) *outRatio = ratio;
+    return hasNull || ratio > kBinaryNonprintableRatio;
+}
+
 /// Tail-biased truncation for *command* output (run_bash, run_python).
 ///
 /// Keeps the head (~20%) and tail (~80%) and snips the middle: a command echo
@@ -698,7 +735,21 @@ static QString truncateHeadLines(const QString& text, int limit,
 /// middle of a build log is the disposable part.  File reads use
 /// truncateHeadLines instead — a gap in the middle of a source file is not
 /// disposable, and unlike a log it can be paged around.
+///
+/// Runs the binary guard first: output that looks like a binary blob rather
+/// than text is blocked outright rather than truncated, since truncating a
+/// binary dump still floods the context with useless bytes.
 static QString snipMiddle(const QString& text) {
+    double ratio = 0.0;
+    if (looksBinary(text, &ratio)) {
+        return QString(
+            "[Binary output blocked: %1 chars, ~%2% non-printable/control characters. "
+            "Refusing to load this into context. If you need the data, redirect it to a "
+            "file and use read_file/search_content on it, or use download_file for URLs.]")
+            .arg(text.size())
+            .arg(qRound(ratio * 100));
+    }
+
     int limit = g_toolOutputMaxChars;
     if (limit <= 0 || text.size() <= limit) return text;
 

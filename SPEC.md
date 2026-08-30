@@ -70,7 +70,7 @@ PengyCPP/
 ├── main.cpp                # Desktop GUI entry point — QApplication setup
 ├── config.cpp/h            # Settings load/save + system message rendering
 ├── chatmanager.cpp/h       # Chat session CRUD + message cleaning + context elision
-├── tools.cpp/h             # 15 OpenAI function-calling tools (Qt APIs)
+├── tools.cpp/h             # 16 OpenAI function-calling tools (Qt APIs)
 ├── llmclient.cpp/h         # Blocking LLM chat loop (QNetworkAccessManager + QEventLoop)
 ├── chatworker.cpp/h        # QThread worker — runs LlmClient + confirmation QWaitCondition
 ├── mainwindow.cpp/h        # Three-pane main window, tool confirmation dialog
@@ -111,7 +111,7 @@ All three binaries share these modules — no code duplication, no FFI:
 |--------|-------|---------------|
 | `Config` | `config.cpp/h` | Load/save `~/.config/pengy/settings.json` with default merging; `configRenderSystemMessage()` fills `{date}`, `{username}`, `{hostname}`, `{osinfo}` at send time |
 | `ChatManager` | `chatmanager.cpp/h` | CRUD for `~/.config/pengy/chats.json`; `cleanDanglingToolCalls()` removes orphaned tool_calls; `elideOldToolResults()` replaces old tool content with `[elided]` |
-| `Tools` | `tools.cpp/h` | 15 OpenAI function-calling tool schemas and execution via Qt APIs; `isReadOnly()` classification; sudo password provider callback |
+| `Tools` | `tools.cpp/h` | 16 OpenAI function-calling tool schemas and execution via Qt APIs; `isReadOnly()` classification; sudo password provider callback |
 | `LlmClient` | `llmclient.cpp/h` | Blocking chat loop via `QNetworkAccessManager` + local `QEventLoop`; emits events via `std::function` callbacks |
 
 ---
@@ -139,11 +139,12 @@ All three binaries share these modules — no code duplication, no FFI:
 ```
 
 ### Left Pane (Sidebar)
-- **+ New Chat button** — Creates a new chat session
+- **+ New Chat button** — Creates a new chat session. Inserts one row into the chat list (`ChatHistoryWidget::addChat`) rather than reloading the whole list, so the cost doesn't scale with total chat count.
 - **⚙ Settings button** — Opens the settings dialog
+- **Tasks button** — Opens the prompt-template Tasks manager/player
 - **Chat history list** — Scrollable, sorted newest first; click to load
 - **Per-row buttons** — 💾 (export chat to Markdown file) and 🗑 (delete chat)
-- **Quick settings panel** — Shows status dot (● idle / ● running), model name, tool confirmation mode, and last turn token counts
+- **Quick settings panel** — Shows status dot (● idle / ● running), model name, tool confirmation mode, and cumulative token usage for the active chat (`chat["usage"]`, summed across every turn — not just the last one)
 
 ### Right-Top Pane (Chat View)
 - Markdown-rendered chat messages via `QTextBrowser`
@@ -159,6 +160,7 @@ All three binaries share these modules — no code duplication, no FFI:
 - **Image paste from clipboard** — Pasted images saved to temp file, sent as base64 data URIs
 - **File chips** — Selected files shown as removable badges above the input
 - **Text input** — Multi-line QPlainTextEdit; Enter to send, Shift+Enter for newline
+- **Redact button** — Deletes the last raw message from the active chat (`messagesRedactLast`), repeatable all the way to an empty chat. Refused while a turn is in flight. A context-pruning "undo" for when the model goes down a wrong path; wrecks prompt caching for that chat.
 - **⏹ Stop button** — Cancels the running LLM conversation; visible only during generation
 
 ---
@@ -253,6 +255,9 @@ The `PengyCliApp` class drives `LlmClient::run()` on the main thread. Tool confi
 | `/load <index>` | Load a chat by its `/list` index |
 | `/delete <index>` | Delete a chat by its `/list` index |
 | `/compact` | Elide old tool results to free context window space |
+| `/redact [n]` | Delete the last n messages (default 1) — repeatable up to the top |
+| `/tasks` | List saved prompt-template Tasks |
+| `/task <n>` | Run a Task by its `/tasks` index, prompting for any `%placeholders%` |
 | `/attach <path>` | Attach a text file (or use `@path` inline in your prompt) |
 | `/quit`, `/exit`, `/q` | Exit the CLI |
 
@@ -315,7 +320,10 @@ The server prints its URL on startup; it does not auto-open a browser.
 | POST | `/chat/:id/delete` | Delete chat and redirect to index |
 | GET | `/chat/:id/export` | Download the chat as a Markdown file |
 | POST | `/chat/:id/rename` | Rename a chat |
+| POST | `/chat/:id/redact` | Delete the last N raw messages (default 1); 409 while a turn is in flight |
 | POST | `/chat/:id/command` | Web slash commands (`/new /yolo /model /rename /export /help`) typed in the chat input |
+| GET | `/tasks` | List saved prompt-template Tasks with their placeholders |
+| POST | `/tasks/render` | Render a Task's template with the given placeholder values |
 | GET | `/models` | Fetch available models from the endpoint (settings page Fetch button) |
 | GET/POST | `/settings` | View/update all config fields |
 | POST | `/chat/:id/stop` | Cancel running generation for a chat |
@@ -326,7 +334,7 @@ The server prints its URL on startup; it does not auto-open a browser.
 |------|---------|---------------|
 | `tool_request` | `name`, `args`, `auto_approved` | Append tool card; if not auto-approved, show confirmation modal |
 | `tool_result` | `content`, `declined` | Update tool card body and badge |
-| `final_response` | `html`, `usage` | Append assistant bubble |
+| `final_response` | `html`, `usage`, `cumulative_usage` | Append assistant bubble; `cumulative_usage` (running total across the chat, via `chatAddUsage()`) updates the navbar token badge |
 | `sudo_request` | — | Show sudo password modal |
 | `error` | `message` | Append error alert, re-enable input |
 | `keepalive` | — | SSE comment (`: keepalive`); browser ignores |
@@ -570,11 +578,12 @@ Array of chat session objects with `user`, `assistant` (including `tool_calls`),
 
 ## Tools
 
-All 15 tools implemented in `tools.cpp` using Qt APIs:
+All 16 tools implemented in `tools.cpp` using Qt APIs:
 
 | Tool | Read-only | Implementation |
 |------|:---:|---|
 | `read_file` | ✅ | `QFile` |
+| `read_image` | ✅ | Reads and downscales an image (PNG/JPEG/GIF/WebP/BMP/TIFF) for the model to see directly; added to the conversation, not returned as tool text |
 | `read_multiple_files` | ✅ | `QFile` × N (20 file max; per-file budget follows `tool_output_max_chars`, with a 5× total batch budget) |
 | `write_file` | ❌ | `QFile` + `QDir::mkpath` |
 | `replace_in_file` | ❌ | Read→exact-match→replace→write (single-match enforcement) |
@@ -590,7 +599,9 @@ All 15 tools implemented in `tools.cpp` using Qt APIs:
 | `todowrite` | ✅ | Validates task list (pending/in_progress/completed), enforces single-active-task rule, echoes back formatted list |
 | `ask_user_question` | — | Harness-handled tool; returns fixed message if it ever reaches `execute_tool` directly |
 
-`Tools::isReadOnly(name)` is used by the tool confirmation logic to auto-approve in `"safe"` mode. Read-only: `read_file`, `read_multiple_files`, `directory_tree`, `search_content`, `web_search`, `fetch_url`, `glob`, `todowrite`. Mutating: everything else.
+`Tools::isReadOnly(name)` is used by the tool confirmation logic to auto-approve in `"safe"` mode. Read-only: `read_file`, `read_image`, `read_multiple_files`, `directory_tree`, `search_content`, `web_search`, `fetch_url`, `glob`, `todowrite`. Mutating: everything else.
+
+**Binary output guard:** `snipMiddle()` — the shared truncation point for `run_bash`, `run_python`, `directory_tree`, `search_content`, and `glob` — runs a `looksBinary()` heuristic first (a NUL byte anywhere in the first 4KB, or a non-printable/control-character ratio over ~25%) and blocks the output outright with a short diagnostic instead of loading a binary blob into context. `readAndRemove()`'s `QString::fromUtf8()` already decodes leniently (U+FFFD for invalid sequences), so this guard exists for the case that never raised in the first place: bytes that happen to form valid text (a UTF-16 file decoded as UTF-8, a core dump) but aren't meaningful for the model to read.
 
 ---
 
@@ -687,7 +698,7 @@ REM → Pengy-Windows.zip
 | Feature | Pengy (Python) | PengyR (Rust) | PengyCPP |
 |---------|:---:|:---:|:---:|
 | OpenAI-compatible LLM API | ✅ | ✅ | ✅ |
-| 15 tools (bash, python, files, web, etc.) | ✅ | ✅ | ✅ |
+| 16 tools (bash, python, files, web, etc.) | ✅ | ✅ | ✅ |
 | Three-pane Qt6 desktop GUI | ✅ | ✅ | ✅ |
 | Markdown rendering + syntax highlighting | ✅ | ✅ | ✅ |
 | Collapsible tool call blocks | ✅ | ✅ | ✅ |
@@ -706,11 +717,14 @@ REM → Pengy-Windows.zip
 | Web file attachments | ✅ | ✅ | ✅ |
 | Web chat export + rename | ✅ | ✅ | ✅ |
 | Web Fetch Models (`/models` route) | ✅ | ✅ | ✅ |
-| Tasks (prompt templates, GUI dialog) | ✅ | ✅ | ✅ |
+| Tasks (prompt templates, all three frontends) | ✅ | ✅ | ✅ |
 | Theme system (mode + accent) | ✅ | ✅ | ✅ |
 | Reasoning effort / preservation | ✅ | ✅ | ✅ |
 | Context elision | ✅ | ✅ | ✅ |
 | Skills system | ✅ | ✅ | ✅ |
+| Binary output guard | ✅ | ✅ | ✅ |
+| Redact last message (all three frontends) | ✅ | ✅ | ✅ |
+| Cumulative token usage (all three frontends) | ✅ | ✅ | ✅ |
 
 ---
 

@@ -128,8 +128,17 @@
     <div class="d-flex align-items-center gap-1">
       <span class="text-muted small d-none d-sm-inline" id="navbar-model"></span>
       <span class="badge bg-secondary small" id="navbar-tc-badge">Confirm</span>
+      <span class="text-muted small d-none d-md-inline ms-1" id="navTokens"
+            title="Cumulative token usage for this chat" hidden>0 tokens</span>
+      <button class="btn btn-outline-secondary" onclick="openTasks()" title="Run a saved prompt template" aria-label="Tasks">
+        <i class="bi bi-list-task"></i>
+      </button>
       <button class="btn btn-outline-secondary" onclick="exportChat()" title="Export chat as Markdown" aria-label="Export chat">
         <i class="bi bi-download"></i>
+      </button>
+      <button class="btn btn-outline-secondary" onclick="redactLast()"
+              title="Redact last message — delete the last message from context (repeatable)" aria-label="Redact last message">
+        <i class="bi bi-eraser"></i>
       </button>
       <a href="/settings" class="btn btn-outline-secondary" aria-label="Settings">
         <i class="bi bi-gear"></i><span class="d-none d-sm-inline ms-1">Settings</span>
@@ -259,6 +268,36 @@
   </div>
 </div>
 
+<!-- Tasks modal -->
+<div class="modal fade" id="tasksModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title">Tasks</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="tasksListView">
+          <p class="text-muted small" id="tasksEmptyHint" hidden>
+            No tasks saved yet — create one in the desktop app's Tasks dialog
+            (they're shared across all three frontends).
+          </p>
+          <div id="tasksList" class="list-group"></div>
+        </div>
+        <div id="tasksFormView" hidden>
+          <button type="button" class="btn btn-sm btn-link ps-0 mb-2" onclick="showTasksList()">&larr; Back to Tasks</button>
+          <h6 id="tasksFormTitle" class="mb-3"></h6>
+          <div id="tasksFormFields"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button id="tasksRunBtn" class="btn btn-sm btn-primary" onclick="runSelectedTask()" hidden>Run</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 // ── Server data ────────────────────────────────────────────────────
@@ -267,14 +306,16 @@ const MODEL     = '{{MODEL}}';
 const TOOL_CONF = '{{TOOL_CONFIRMATION}}';
 const MESSAGES  = {{MESSAGES_JSON}};
 const ALL_CHATS = {{CHATS_JSON}};
+const CUMULATIVE_TOKENS = {{CUMULATIVE_TOKENS}};
 
 // ── State ──────────────────────────────────────────────────────────
 let es = null, processing = false, currentTurnDiv = null;
 let sseCursor = sessionStorage.getItem('pengy_sse_cursor_' + CHAT_ID) || '';
 let thinkingEl = null;
-let confirmModal, questionModal, sudoModal, renameModal;
+let confirmModal, questionModal, sudoModal, renameModal, tasksModal;
 let pendingQuestionId = null, pendingQuestions = [];
 let pendingFiles = [];
+let tasksCache = [], selectedTask = null;
 let wakeLock = null;
 
 // ── Bootstrap init ─────────────────────────────────────────────────
@@ -283,6 +324,7 @@ document.addEventListener('DOMContentLoaded', () => {
   questionModal = new bootstrap.Modal(document.getElementById('questionModal'));
   sudoModal    = new bootstrap.Modal(document.getElementById('sudoModal'));
   renameModal  = new bootstrap.Modal(document.getElementById('renameModal'));
+  tasksModal   = new bootstrap.Modal(document.getElementById('tasksModal'));
 
   // Navbar model + badge
   document.getElementById('navbar-model').textContent = MODEL;
@@ -291,6 +333,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const tc = tcMap[TOOL_CONF] || tcMap.none;
   tcBadge.textContent = tc[0];
   tcBadge.className = 'badge small ' + tc[1];
+  updateCumulativeTokens({total_tokens: CUMULATIVE_TOKENS});
 
   renderSidebar(ALL_CHATS, CHAT_ID);
   renderInitMessages(MESSAGES);
@@ -739,6 +782,138 @@ function applyTitle(title) {
   if (link) link.textContent = title;
 }
 
+// ── Redact last ──────────────────────────────────────────────────
+// Context-pruning "undo": deletes the last raw message from the chat.
+// Repeatable straight up to an empty chat — each click just reloads the
+// page against the freshly-trimmed history, same as a normal chat load.
+
+async function redactLast() {
+  if (processing) {
+    alert('Cannot redact while a response is in progress.');
+    return;
+  }
+  const r = await fetch('/chat/' + CHAT_ID + '/redact', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({count: 1})
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    alert(data.error || 'Redact failed.');
+    return;
+  }
+  location.reload();
+}
+
+// ── Tasks ─────────────────────────────────────────────────────────
+// Prompt templates shared with the GUI's Tasks dialog (tasks.json). Selecting
+// one fills in its %placeholders%, renders it server-side, then routes the
+// result through the normal send path.
+
+async function openTasks() {
+  const r = await fetch('/tasks');
+  const data = await r.json();
+  tasksCache = data.tasks || [];
+  renderTasksList();
+  showTasksList();
+  tasksModal.show();
+}
+
+function renderTasksList() {
+  const list = document.getElementById('tasksList');
+  const empty = document.getElementById('tasksEmptyHint');
+  list.innerHTML = '';
+  empty.hidden = tasksCache.length > 0;
+
+  for (const task of tasksCache) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'list-group-item list-group-item-action';
+    const title = document.createElement('div');
+    title.className = 'fw-semibold';
+    title.textContent = task.title;
+    const preview = document.createElement('div');
+    preview.className = 'text-muted small text-truncate';
+    preview.textContent = task.template;
+    btn.appendChild(title);
+    btn.appendChild(preview);
+    btn.addEventListener('click', () => selectTask(task.id));
+    list.appendChild(btn);
+  }
+}
+
+function showTasksList() {
+  document.getElementById('tasksListView').hidden = false;
+  document.getElementById('tasksFormView').hidden = true;
+  document.getElementById('tasksRunBtn').hidden = true;
+  selectedTask = null;
+}
+
+function selectTask(id) {
+  selectedTask = tasksCache.find(t => t.id === id);
+  if (!selectedTask) return;
+
+  document.getElementById('tasksFormTitle').textContent = selectedTask.title;
+  const fields = document.getElementById('tasksFormFields');
+  fields.innerHTML = '';
+  for (const name of selectedTask.placeholders) {
+    const wrap = document.createElement('div');
+    wrap.className = 'mb-2';
+    const label = document.createElement('label');
+    label.className = 'form-label small mb-1';
+    label.textContent = name;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'form-control form-control-sm task-field-input';
+    input.dataset.name = name;
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    fields.appendChild(wrap);
+  }
+
+  document.getElementById('tasksListView').hidden = true;
+  document.getElementById('tasksFormView').hidden = false;
+  document.getElementById('tasksRunBtn').hidden = false;
+  if (selectedTask.placeholders.length > 0) {
+    fields.querySelector('.task-field-input').focus();
+  }
+}
+
+async function runSelectedTask() {
+  if (!selectedTask) return;
+  const values = {};
+  document.querySelectorAll('#tasksFormFields .task-field-input').forEach(input => {
+    values[input.dataset.name] = input.value;
+  });
+
+  const r = await fetch('/tasks/render', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: selectedTask.id, values})
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    alert(data.error || 'Failed to run task.');
+    return;
+  }
+  if (!data.prompt) {
+    alert('This task produced an empty prompt.');
+    return;
+  }
+  tasksModal.hide();
+  sendMessage(data.prompt);
+}
+
+// ── Cumulative token usage ────────────────────────────────────────
+
+function updateCumulativeTokens(cumulativeUsage) {
+  const el = document.getElementById('navTokens');
+  const total = cumulativeUsage && cumulativeUsage.total_tokens;
+  if (!total) return;
+  el.textContent = total.toLocaleString() + ' tokens';
+  el.hidden = false;
+}
+
 // ── Slash commands ─────────────────────────────────────────────────
 async function handleSlashCommand(text) {
   const r = await fetch('/chat/' + CHAT_ID + '/command', {
@@ -880,6 +1055,7 @@ function handleEvent(ev) {
   } else if (ev.type === 'final_response') {
     hideThinking();
     appendAssistantMsg(ev.content || '', ev.usage);
+    updateCumulativeTokens(ev.cumulative_usage);
     if (ev.chat_title) {
       document.title = 'Pengy — ' + ev.chat_title;
       const link = document.querySelector('.chat-list-item.active .chat-title');

@@ -103,6 +103,7 @@ void ChatHistoryWidget::setupUi() {
     m_modelHint = new QLabel("");
     m_modelHint->setWordWrap(true);
     m_modelHint->setStyleSheet(QString("color: %1; font-size: 9pt;").arg(m_theme["muted"]));
+    m_modelHint->hide();  // shown only when setModels() has no cached list
     qsLayout->addWidget(m_modelHint);
 
     m_confirmLabel = new QLabel("Tool Confirm: Confirm All");
@@ -194,6 +195,34 @@ void ChatHistoryWidget::loadChats(const QJsonArray& chats) {
         item->setSizeHint(QSize(0, qMax(widget->sizeHint().height(), 32)));
         m_chatList->addItem(item);
         m_chatList->setItemWidget(item, widget);
+    }
+}
+
+void ChatHistoryWidget::addChat(const QString& id, const QString& title) {
+    // Insert one new row at the top, without touching the other rows. A
+    // freshly created chat is always the newest (chats sort newest-first),
+    // so it always belongs at index 0 -- no need to pay loadChats()'s full
+    // clear-and-rebuild, which costs one QWidget (with icon-bearing buttons)
+    // per *existing* row and was the dominant cost behind "New Chat feels
+    // slow" once the sidebar has more than a handful of chats.
+    auto* item = new QListWidgetItem;
+    item->setData(Qt::UserRole, id);
+    auto* widget = makeItemWidget(id, title);
+    item->setSizeHint(QSize(0, qMax(widget->sizeHint().height(), 32)));
+    m_chatList->insertItem(0, item);
+    m_chatList->setItemWidget(item, widget);
+}
+
+void ChatHistoryWidget::removeChat(const QString& id) {
+    // For callers that already deleted the chat from disk themselves (e.g.
+    // MainWindow discarding an empty "New Chat" tab) and just need the
+    // sidebar to stop showing a row for it. A no-op if the chat was never
+    // shown here, or has already been removed.
+    for (int i = 0; i < m_chatList->count(); i++) {
+        if (m_chatList->item(i)->data(Qt::UserRole).toString() == id) {
+            delete m_chatList->takeItem(i);
+            return;
+        }
     }
 }
 
@@ -305,10 +334,16 @@ void ChatHistoryWidget::setModels(const QStringList& models, const QString& curr
         m_modelCombo->setCurrentText(current);
     m_currentModel = current.isEmpty() ? m_modelCombo->currentText() : current;
 
-    if (models.isEmpty())
+    // An empty QLabel still claims a line of layout height, so hide it
+    // outright once populated instead of just clearing its text -- otherwise
+    // it leaves a permanent gap above "Tool Confirm:".
+    if (models.isEmpty()) {
         m_modelHint->setText("No cached model list — use Settings → Fetch to populate.");
-    else
+        m_modelHint->show();
+    } else {
         m_modelHint->setText("");
+        m_modelHint->hide();
+    }
 }
 
 void ChatHistoryWidget::onModelCommit() {

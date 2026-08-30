@@ -119,6 +119,17 @@ void MainWindow::setupUi() {
     connect(m_chatInput, &ChatInputWidget::messageSent, this, &MainWindow::sendMessage);
     inputLayout->addWidget(m_chatInput);
 
+    m_redactBtn = new QPushButton("Redact");
+    m_redactBtn->setFixedHeight(scaledSize(32, m_runtimeUiScale));
+    applyPengyIcon(m_redactBtn, "delete", makeTheme(m_config.themeMode, m_config.themeAccent), 16, "muted", "danger");
+    m_redactBtn->setToolTip(
+        "Delete the last message from the active chat. Repeatable up to "
+        "the top — a way to prune context after the model goes down a "
+        "wrong path. Wrecks prompt caching for this chat.");
+    m_redactBtn->setAccessibleName("Redact last message");
+    connect(m_redactBtn, &QPushButton::clicked, this, &MainWindow::redactLast);
+    inputLayout->addWidget(m_redactBtn);
+
     m_stopBtn = new QPushButton("Stop");
     m_stopBtn->setFixedHeight(scaledSize(32, m_runtimeUiScale));
     applyPengyIcon(m_stopBtn, "stop", makeTheme(m_config.themeMode, m_config.themeAccent), 16, "primary_fg", "primary_fg");
@@ -151,6 +162,10 @@ void MainWindow::applyTheme() {
     qApp->setStyleSheet(appStyleSheet(theme, m_runtimeUiScale));
     if (m_chatInput) m_chatInput->applyTheme(theme, m_runtimeUiScale);
     if (m_chatHistory) m_chatHistory->applyTheme(theme, m_runtimeUiScale);
+    if (m_redactBtn) {
+        m_redactBtn->setFixedHeight(scaledSize(32, m_runtimeUiScale));
+        applyPengyIcon(m_redactBtn, "delete", theme, 16, "muted", "danger");
+    }
     if (m_stopBtn) {
         m_stopBtn->setFixedHeight(scaledSize(32, m_runtimeUiScale));
         applyPengyIcon(m_stopBtn, "stop", theme, 16, "primary_fg", "primary_fg");
@@ -213,6 +228,11 @@ TabSession* MainWindow::addTab(const QJsonObject& chat, bool switchTo) {
     TabSession session;
     session.chat     = chat;
     session.chatView = chatView;
+    // Seed the cumulative token display from what's already on disk, so
+    // reopening a chat shows its running total instead of resetting to 0.
+    QJsonObject usage = chat["usage"].toObject();
+    session.promptTokens = usage["prompt_tokens"].toInt();
+    session.completionTokens = usage["completion_tokens"].toInt();
 
     // Apply theme FIRST so renderNow() uses the correct colours
     Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
@@ -278,10 +298,18 @@ void MainWindow::closeTab(int index) {
     // Save or delete the chat
     bool isEmptyNew = (session.chat["title"].toString() == "New Chat"
                        && session.chat["messages"].toArray().isEmpty());
-    if (isEmptyNew)
+    if (isEmptyNew) {
         chatDelete(chatId);
-    else
+        // addChat() put a row in the sidebar for this chat when it was
+        // created; deleting it from disk without also dropping that row
+        // left a phantom "New Chat" entry that a later createNewChat()
+        // would never recognize as already gone (its dedup check only
+        // looks at *open* tabs), so every close-then-reopen added another
+        // ghost row -- endless "New Chat" entries piling up in the sidebar.
+        m_chatHistory->removeChat(chatId);
+    } else {
         chatSave(session.chat);
+    }
 
     m_tabWidget->removeTab(index);
     m_openTabs.remove(chatId);
@@ -340,6 +368,9 @@ void MainWindow::loadIntoNewTab(const QString& chatId) {
         if (onlySession.chat["title"].toString() == "New Chat"
             && onlySession.chat["messages"].toArray().isEmpty()) {
             chatDelete(onlySession.chat["id"].toString());
+            // Same ghost-row leak as closeTab() if the sidebar row (added by
+            // createNewChat()'s addChat() call) isn't dropped too.
+            m_chatHistory->removeChat(onlySession.chat["id"].toString());
             for (int i = 0; i < m_tabWidget->count(); ++i) {
                 if (m_tabWidget->widget(i) == onlySession.chatView) {
                     m_tabWidget->removeTab(i);
@@ -431,9 +462,14 @@ void MainWindow::createNewChat() {
     QJsonObject chat = chatCreate("New Chat");
     if (chat.isEmpty()) return;
 
-    loadChatList();
     addTab(chat, true);
     m_activeChatId = chat["id"].toString();
+    // A single insert, not a full loadChatList() rebuild: that rebuilds
+    // every row in the sidebar (one QWidget with icon-bearing buttons per
+    // *existing* chat) and was the dominant cost behind "New Chat feels
+    // slow" once the sidebar has more than a handful of chats. The new
+    // chat is always the newest, so it always belongs at the top.
+    m_chatHistory->addChat(chat["id"].toString(), chat["title"].toString());
     m_chatHistory->selectChatById(m_activeChatId);
 
     TabSession* session = tabForChat(m_activeChatId);
@@ -733,6 +769,18 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
 void MainWindow::handleFinalResponse(TabSession* session, const QJsonObject& response) {
     QString content = response["content"].toString();
 
+    // Accumulate into chat["usage"] rather than overwrite: LlmClient reports
+    // usage per turn only, and this label is more useful as "how much
+    // context has this whole chat burned through" than "last turn only" --
+    // the same signal that tells you when it's time to /compact or redact.
+    // Stored on the chat object (not just session state) so it persists
+    // across reloads. Done *before* the message-append save below so both
+    // land in the same write instead of the usage total lagging a turn behind.
+    session->chat = chatAddUsage(session->chat, response["usage"].toObject());
+    QJsonObject cumulative = session->chat["usage"].toObject();
+    session->promptTokens     = cumulative["prompt_tokens"].toInt();
+    session->completionTokens = cumulative["completion_tokens"].toInt();
+
     if (!content.isEmpty()) {
         QJsonObject asstMsg = response["message"].toObject();
         if (asstMsg.isEmpty()) {
@@ -754,10 +802,6 @@ void MainWindow::handleFinalResponse(TabSession* session, const QJsonObject& res
         session->chatView->appendMessage("assistant", display);
         chatSave(session->chat);
     }
-
-    QJsonObject usage = response["usage"].toObject();
-    session->promptTokens     = usage["prompt_tokens"].toInt();
-    session->completionTokens = usage["completion_tokens"].toInt();
 
     if (session == tabForChat(m_activeChatId))
         updateQuickSettingsFor(session);
@@ -934,6 +978,33 @@ void MainWindow::stopWorker() {
         session->chatView->appendMessageText("assistant", "⏹ *Stopped*");
         chatSave(session->chat);
     }
+}
+
+void MainWindow::redactLast() {
+    // User pressed Redact -- drop the last raw message from the active
+    // tab's chat and rebuild the view from what remains.
+    //
+    // Refused while a turn is in flight: popping messages out from under a
+    // running worker (which holds its own snapshot for the whole run) would
+    // race with the worker's own saves.
+    TabSession* session = tabForChat(m_activeChatId);
+    if (!session || session->chat.isEmpty()) return;
+    if (session->worker) {
+        QMessageBox::information(
+            this, "Redact",
+            "Cannot redact while a response is in progress. Press Stop first.");
+        return;
+    }
+    QJsonArray messages = session->chat["messages"].toArray();
+    if (messages.isEmpty()) return;
+
+    session->chat["messages"] = messagesRedactLast(messages);
+    chatSave(session->chat);
+
+    session->chatView->clear();
+    for (const QJsonValue& v : session->chat["messages"].toArray())
+        renderMessage(session->chatView, v.toObject());
+    session->chatView->renderNow();
 }
 
 void MainWindow::pollToolConfirmation() {

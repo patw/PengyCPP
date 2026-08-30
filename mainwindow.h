@@ -43,6 +43,7 @@ private slots:
     void onWorkerFinished();
     void onWorkerError(const QString& msg);
     void stopWorker();
+    void redactLast();
     void pollToolConfirmation();
     void onModelChanged(const QString& model);
 
@@ -86,6 +87,7 @@ private:
     QTabWidget*        m_tabWidget;
     ChatInputWidget*   m_chatInput;
     QPushButton*       m_stopBtn;
+    QPushButton*       m_redactBtn;
 
     // Tab state
     QMap<QString, TabSession> m_openTabs;

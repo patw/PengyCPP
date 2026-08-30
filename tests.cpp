@@ -18,6 +18,7 @@
 
 #include "config.h"
 #include "chatmanager.h"
+#include "taskmanager.h"
 #include <QImage>
 #include "tools.h"
 #include "llmclient.h"
@@ -551,6 +552,93 @@ private slots:
         QCOMPARE(elided[1].toObject()["content"].toString(), "old answer");
     }
 
+    // ── ChatManager: messagesRedactLast ─────────────────────────────
+
+    void redactEmptyIsNoop() {
+        QVERIFY(messagesRedactLast(QJsonArray()).isEmpty());
+    }
+
+    void redactPopsPlainFinalResponse() {
+        QJsonArray msgs{userMsg("hello"), assistantMsg("hi there")};
+        QJsonArray redacted = messagesRedactLast(msgs);
+        QCOMPARE(redacted.size(), 1);
+        QCOMPARE(redacted[0].toObject()["role"].toString(), "user");
+    }
+
+    void redactSingleToolCallRemovesWholeRound() {
+        // Popping the last (and only) tool result of a round strikes it
+        // from its assistant's tool_calls array; since nothing is left of
+        // that assistant message, it's dropped too rather than left as a
+        // dangling stub that redaction could never get past.
+        QJsonArray msgs{
+            userMsg("hello"),
+            assistantWithTools({"tc-1"}),
+            toolMsg("tc-1", "file contents")
+        };
+        QJsonArray redacted = messagesRedactLast(msgs);
+        QCOMPARE(redacted.size(), 1);
+        QCOMPARE(redacted[0].toObject()["role"].toString(), "user");
+    }
+
+    void redactOneOfTwoToolCallsKeepsSibling() {
+        QJsonArray msgs{
+            userMsg("hello"),
+            assistantWithTools({"tc-1", "tc-2"}),
+            toolMsg("tc-1", "result1"),
+            toolMsg("tc-2", "result2")
+        };
+        QJsonArray redacted = messagesRedactLast(msgs);
+        QCOMPARE(redacted.size(), 3);
+        QJsonArray remainingCalls = redacted[1].toObject()["tool_calls"].toArray();
+        QCOMPARE(remainingCalls.size(), 1);
+        QCOMPARE(remainingCalls[0].toObject()["id"].toString(), "tc-1");
+        QCOMPARE(redacted[2].toObject()["tool_call_id"].toString(), "tc-1");
+        QCOMPARE(redacted[2].toObject()["content"].toString(), "result1");
+    }
+
+    void redactRepeatedCallsWalkBackToEmpty() {
+        QJsonArray msgs{
+            userMsg("hello"),
+            assistantWithTools({"tc-1"}),
+            toolMsg("tc-1", "file contents")
+        };
+        QJsonArray step1 = messagesRedactLast(msgs);
+        QCOMPARE(step1.size(), 1);
+        QJsonArray step2 = messagesRedactLast(step1);
+        QVERIFY(step2.isEmpty());
+        // Calling again on an already-empty array must not crash.
+        QJsonArray step3 = messagesRedactLast(step2);
+        QVERIFY(step3.isEmpty());
+    }
+
+    void redactDoesNotMutateInput() {
+        QJsonArray original{userMsg("a"), assistantMsg("b")};
+        QJsonArray originalCopy = original;
+        messagesRedactLast(original);
+        QCOMPARE(original.size(), 2);
+        QCOMPARE(original, originalCopy);
+    }
+
+    // ── ChatManager: chatAddUsage ────────────────────────────────────
+
+    void addUsageCreatesAndAccumulates() {
+        QJsonObject chat = chatCreate("Test");
+        QVERIFY(!chat.contains("usage") || chat["usage"].toObject().isEmpty());
+
+        QJsonObject usage1{{"prompt_tokens", 10}, {"completion_tokens", 5}, {"total_tokens", 15}};
+        chat = chatAddUsage(chat, usage1);
+        QCOMPARE(chat["usage"].toObject()["total_tokens"].toInt(), 15);
+
+        QJsonObject usage2{{"prompt_tokens", 20}, {"completion_tokens", 8}, {"total_tokens", 28}};
+        chat = chatAddUsage(chat, usage2);
+        QJsonObject totals = chat["usage"].toObject();
+        QCOMPARE(totals["prompt_tokens"].toInt(), 30);
+        QCOMPARE(totals["completion_tokens"].toInt(), 13);
+        QCOMPARE(totals["total_tokens"].toInt(), 43);
+
+        chatDelete(chat["id"].toString());
+    }
+
     // ── Tools: classification ───────────────────────────────────────
 
     void readonlyToolsCorrect() {
@@ -722,6 +810,38 @@ private slots:
         QVERIFY(out.startsWith("line 1"));
         QVERIFY(out.trimmed().endsWith("line 5000"));
         QVERIFY(out.contains("snipped"));
+    }
+
+    // Text with embedded NULs (e.g. a UTF-16 file decoded as UTF-8) is
+    // blocked outright rather than truncated into context.
+    void binaryGuardBlocksNullBytes() {
+        QString unit = QString("a") + QChar(u'\0') + "b" + QChar(u'\0') + "c" + QChar(u'\0');
+        QString text = unit.repeated(100);
+        QString out = Tools::snipMiddleForTest(text);
+        QVERIFY(out.startsWith("[Binary output blocked:"));
+        QVERIFY(out.contains("non-printable"));
+    }
+
+    // Output that is mostly control/non-printable characters, even without
+    // NULs, is still classified as binary.
+    void binaryGuardBlocksHighControlCharRatio() {
+        QString text;
+        for (int i = 0; i < 500; ++i) text += QChar((i % 31) + 1);
+        QString out = Tools::snipMiddleForTest(text);
+        QVERIFY(out.startsWith("[Binary output blocked:"));
+    }
+
+    // Ordinary command output must not trip the binary guard.
+    void binaryGuardLeavesNormalTextAlone() {
+        QString text = QString("def foo():\n\treturn 'hello world!' # comment\n").repeated(50);
+        QString out = Tools::snipMiddleForTest(text);
+        QCOMPARE(out, text);
+    }
+
+    void runBashBlocksBinaryOutput() {
+        QString out = Tools::execute("run_bash",
+            QJsonObject{{"command", "head -c 4000 /dev/urandom"}});
+        QVERIFY2(out.startsWith("[Binary output blocked:"), qPrintable(out.left(80)));
     }
 
     // Character-index cuts left a broken half-line at each seam, which on source
@@ -1834,6 +1954,114 @@ private slots:
         QCOMPARE(r.status, 400);
     }
 
+    void webRedactRemovesLastMessage() {
+        QJsonObject chat = chatCreate("Redact Test");
+        chat["messages"] = QJsonArray{userMsg("hi"), assistantMsg("hello")};
+        chatSave(chat);
+
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/redact");
+        QCOMPARE(r.status, 200);
+        QJsonObject data = QJsonDocument::fromJson(r.body).object();
+        QCOMPARE(data["removed"].toInt(), 1);
+        QCOMPARE(data["message_count"].toInt(), 1);
+
+        QJsonArray msgs = chatGet(chat["id"].toString())["messages"].toArray();
+        QCOMPARE(msgs.size(), 1);
+        QCOMPARE(msgs[0].toObject()["role"].toString(), "user");
+    }
+
+    void webRedactCountRemovesN() {
+        QJsonObject chat = chatCreate("Redact Count Test");
+        chat["messages"] = QJsonArray{userMsg("hi"), assistantMsg("one"),
+                                       userMsg("again"), assistantMsg("two")};
+        chatSave(chat);
+
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/redact",
+                               R"({"count": 3})", "application/json");
+        QJsonObject data = QJsonDocument::fromJson(r.body).object();
+        QCOMPARE(data["removed"].toInt(), 3);
+        QCOMPARE(chatGet(chat["id"].toString())["messages"].toArray().size(), 1);
+    }
+
+    void webRedactMoreThanAvailableEmptiesWithoutErroring() {
+        QJsonObject chat = chatCreate("Redact Overshoot Test");
+        chat["messages"] = QJsonArray{userMsg("hi"), assistantMsg("hello")};
+        chatSave(chat);
+
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/redact",
+                               R"({"count": 50})", "application/json");
+        QCOMPARE(r.status, 200);
+        QJsonObject data = QJsonDocument::fromJson(r.body).object();
+        QCOMPARE(data["removed"].toInt(), 2);
+        QVERIFY(chatGet(chat["id"].toString())["messages"].toArray().isEmpty());
+    }
+
+    void webRedactUnknownChat404() {
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(), "/chat/nope/redact");
+        QCOMPARE(r.status, 404);
+    }
+
+    void webRedactInvalidCount400() {
+        QJsonObject chat = chatCreate("Redact Invalid Test");
+        chat["messages"] = QJsonArray{userMsg("hi")};
+        chatSave(chat);
+
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(),
+                               "/chat/" + chat["id"].toString() + "/redact",
+                               R"({"count": 0})", "application/json");
+        QCOMPARE(r.status, 400);
+    }
+
+    void webTasksListsAndRenders() {
+        QJsonObject task = taskCreate("Greet", "Say hello to %name% in %language%");
+
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+
+        WebResp listResp = webRequest("GET", server.port(), "/tasks");
+        QCOMPARE(listResp.status, 200);
+        QJsonArray tasks = QJsonDocument::fromJson(listResp.body).object()["tasks"].toArray();
+        QVERIFY(!tasks.isEmpty());
+        QJsonObject found;
+        for (const QJsonValue& v : tasks)
+            if (v.toObject()["id"].toString() == task["id"].toString()) found = v.toObject();
+        QCOMPARE(found["title"].toString(), QString("Greet"));
+        QJsonArray placeholders = found["placeholders"].toArray();
+        QCOMPARE(placeholders.size(), 2);
+
+        WebResp renderResp = webRequest("POST", server.port(), "/tasks/render",
+            QJsonDocument(QJsonObject{
+                {"id", task["id"]},
+                {"values", QJsonObject{{"name","Ada"},{"language","French"}}}
+            }).toJson(QJsonDocument::Compact), "application/json");
+        QCOMPARE(renderResp.status, 200);
+        QCOMPARE(QJsonDocument::fromJson(renderResp.body).object()["prompt"].toString(),
+                 QString("Say hello to Ada in French"));
+
+        taskDelete(task["id"].toString());
+    }
+
+    void webTasksRenderUnknownTask404() {
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(), "/tasks/render",
+            R"({"id": "nope", "values": {}})", "application/json");
+        QCOMPARE(r.status, 404);
+    }
+
     void webCommandYoloPersists() {
         QJsonObject chat = chatCreate("Cmd Test");
         WebServer server("127.0.0.1", 0);
@@ -2056,6 +2284,42 @@ private slots:
         msgs = chatGet(id)["messages"].toArray();
         QCOMPARE(msgs.last().toObject()["role"].toString(), QString("tool"));
         QCOMPARE(msgs.last().toObject()["tool_call_id"].toString(), QString("tc1"));
+    }
+
+    // Cumulative usage must accumulate across turns in chat["usage"], not
+    // just report the last turn's numbers.
+    void webCumulativeUsageAccumulates() {
+        StubLlmServer llm;
+        llm.responses
+            << llmCompletion("hi there", {}, 10, 5)
+            << llmCompletion("again", {}, 20, 8);
+
+        Config cfg = configLoad();
+        cfg.baseUrl = llm.baseUrl();
+        cfg.apiKey = "test";
+        cfg.toolConfirmation = "all";
+        configSave(cfg);
+
+        QJsonObject chat = chatCreate("Usage Test");
+        const QString id = chat["id"].toString();
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+
+        webRequest("POST", server.port(), "/chat/" + id + "/send",
+                   QJsonDocument(QJsonObject{{"content", "hi"}}).toJson(QJsonDocument::Compact),
+                   "application/json");
+        QTRY_VERIFY_WITH_TIMEOUT(
+            chatGet(id)["usage"].toObject()["total_tokens"].toInt() == 15, 5000);
+
+        webRequest("POST", server.port(), "/chat/" + id + "/send",
+                   QJsonDocument(QJsonObject{{"content", "again"}}).toJson(QJsonDocument::Compact),
+                   "application/json");
+        QTRY_VERIFY_WITH_TIMEOUT(
+            chatGet(id)["usage"].toObject()["total_tokens"].toInt() == 43, 5000);
+
+        QJsonObject totals = chatGet(id)["usage"].toObject();
+        QCOMPARE(totals["prompt_tokens"].toInt(), 30);
+        QCOMPARE(totals["completion_tokens"].toInt(), 13);
     }
 
     // ask_user_question over the web frontend: the browser must get the
@@ -2675,6 +2939,78 @@ private slots:
         proc.write("/quit\n");
         QVERIFY(proc.waitForFinished(4000));
         QCOMPARE(proc.exitCode(), 0);
+    }
+
+    void cliHelpListsRedactAndTasks() {
+        if (!QFile::exists(cliBin()))
+            QSKIP("pengy-cli not built yet");
+
+        QString out = runCli({"/help"});
+        QVERIFY(out.contains("/redact"));
+        QVERIFY(out.contains("/tasks"));
+        QVERIFY(out.contains("/task"));
+    }
+
+    // /redact operates on whichever chat the CLI auto-loads at startup
+    // (newest by created_at), so this chat is given a far-future timestamp
+    // to make it unambiguously "newest" regardless of what other tests in
+    // this suite created around the same wall-clock second.
+    void cliRedactRemovesLastMessage() {
+        if (!QFile::exists(cliBin()))
+            QSKIP("pengy-cli not built yet");
+
+        QJsonObject chat;
+        chat["id"] = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        chat["title"] = "Redact CLI Test";
+        chat["created_at"] = "2999-01-01T00:00:00";
+        chat["messages"] = QJsonArray{userMsg("hi"), assistantMsg("hello")};
+        chatSave(chat);
+
+        QString out = runCli({"/redact"});
+        QVERIFY2(out.contains("Redacted 1 message"), qPrintable(out));
+
+        QJsonArray after = chatGet(chat["id"].toString())["messages"].toArray();
+        QCOMPARE(after.size(), 1);
+        QCOMPARE(after[0].toObject()["role"].toString(), "user");
+
+        chatDelete(chat["id"].toString());
+    }
+
+    void cliTaskRendersAndSends() {
+        if (!QFile::exists(cliBin()))
+            QSKIP("pengy-cli not built yet");
+
+        // A closed local port fails the connection immediately (unlike a
+        // real unreachable host, which can hang on DNS/routing) -- a
+        // StubLlmServer in this test process isn't reliably serviced while
+        // QProcess::waitForFinished() blocks, so the point here is just to
+        // fail fast, not to complete a turn. The persist-before-network-call
+        // ordering in runLlm() means the rendered user message reaches disk
+        // regardless of what happens to the request afterward.
+        Config cfg = configLoad();
+        cfg.baseUrl = "http://127.0.0.1:1";
+        configSave(cfg);
+
+        QJsonObject task = taskCreate("Greet", "Say hello to %name%");
+
+        QJsonObject chat;
+        chat["id"] = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        chat["title"] = "New Chat";
+        chat["created_at"] = "2999-01-01T00:00:01";
+        chat["messages"] = QJsonArray();
+        chatSave(chat);
+
+        // /task 1 prompts once for %name%; the next line answers that prompt.
+        QString out = runCli({"/task 1", "Ada", "/quit"});
+        QVERIFY2(out.contains("name:"), qPrintable(out));
+
+        QJsonArray msgs = chatGet(chat["id"].toString())["messages"].toArray();
+        QVERIFY(!msgs.isEmpty());
+        QCOMPARE(msgs[0].toObject()["role"].toString(), "user");
+        QCOMPARE(msgs[0].toObject()["content"].toString(), QString("Say hello to Ada"));
+
+        chatDelete(chat["id"].toString());
+        taskDelete(task["id"].toString());
     }
 };
 

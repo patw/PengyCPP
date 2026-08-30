@@ -1,6 +1,63 @@
 # Changelog
 
-## v1.7.0 (current)
+## v1.7.2 (current)
+
+Ported from the Python and Rust editions, restoring feature parity across all
+three editions.
+
+- **Docs fix.** SPEC.md corrected to document the `read_image` tool (already
+  implemented in `tools.cpp`, but missing from the tools table and tool-count
+  references, which undercounted 15 instead of 16) and to list it as
+  read-only in the `isReadOnly()` summary.
+- **Binary output guard.** `snipMiddle()` (the shared truncation point for
+  `run_bash`, `run_python`, `directory_tree`, `search_content`, and `glob`)
+  now runs a `looksBinary()` heuristic first: a NUL byte anywhere in the
+  first 4KB, or a non-printable/control-char ratio over ~25%, blocks the
+  output outright with a short diagnostic instead of loading it into
+  context. `readAndRemove()`'s `QString::fromUtf8()` was already lenient
+  (substitutes U+FFFD for invalid sequences rather than failing), so this
+  edition never had the "invalid UTF-8 silently vanishes" bug the Python and
+  Rust editions had — only the "valid-but-garbage" case needed a new guard.
+- **Redact last message.** `messagesRedactLast()` pops exactly one raw
+  message off the end of a chat per call — a tool result, an assistant
+  `tool_calls` request, or a final response — repeatable all the way to an
+  empty chat. A popped tool result strikes its id directly from the
+  assistant's `tool_calls` array rather than falling through to
+  `cleanDanglingToolCalls()`'s "cancelled" synthesis, which would regenerate
+  an identical stub forever and never let redaction advance. Wired as
+  `/redact [n]` in the CLI, a redact button in the Web navbar (`POST
+  /chat/:id/redact`, refused with 409 while a turn is in flight), and a
+  "Redact" button in the GUI input row.
+- **Tasks in the CLI and Web UI.** Previously GUI-only (`taskmanager.cpp`
+  wasn't even compiled into the `pengy-cli`/`pengy-web` binaries); `/tasks`
+  and `/task <n>` in the CLI, and a Tasks modal (`GET /tasks`, `POST
+  /tasks/render`) in the Web UI, both routing the rendered prompt through the
+  normal send path.
+- **Cumulative token usage.** `chatAddUsage()` accumulates each turn's token
+  counts into `chat["usage"]` (persisted, not session-only state), so the
+  running total for a chat survives reloads and tab switches instead of only
+  ever showing the last turn's numbers. All three frontends show it next to
+  the model/tool-confirmation status.
+- **GUI: "New Chat" sidebar performance.** Two stacked costs scaling with
+  total chat count made "New Chat" visibly slow with more than a couple dozen
+  chats: `pengyIcon()` rebuilt a 15-pixmap `QIcon` from scratch on every call
+  even though every sidebar row requests the same `(name, color)` (fixed with
+  a cache), and `createNewChat()` called `loadChats()`'s full
+  clear-and-rebuild on every click (fixed with `ChatHistoryWidget::addChat()`,
+  a single-row insert). Fixing the full rebuild uncovered a real regression:
+  `closeTab()`/`loadIntoNewTab()` delete an abandoned empty "New Chat" from
+  disk but never removed its sidebar row, previously masked by the full
+  rebuild that ran right after — without it, closing an empty chat and
+  clicking New Chat again left a permanent ghost row each time. Fixed with
+  the matching `ChatHistoryWidget::removeChat()`.
+- **GUI: quick-settings whitespace gap.** The "no cached model list" hint
+  label was only text-cleared once populated, not hidden — an empty `QLabel`
+  still claims a line of layout height, leaving a permanent gap above "Tool
+  Confirm:". Now hidden outright when a model list exists.
+- **Settings: two more UI scale options.** 110% and 135% added alongside the
+  existing 75/100/125/150/175/200% steps.
+
+## v1.7.0
 
 - **Ask the user a question, interactively.** The CLI now prompts for each
   `ask_user_question`: pick a numbered option, type your own free-text answer,

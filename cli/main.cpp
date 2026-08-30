@@ -28,6 +28,7 @@
 #include "../config.h"
 #include "../chatmanager.h"
 #include "../llmclient.h"
+#include "../taskmanager.h"
 #include "../tools.h"
 #include "version.h"
 
@@ -535,12 +536,22 @@ private:
             if (!content.isEmpty())
                 appendAndSave(QJsonObject{{"role","assistant"},{"content",content}});
 
+            // Accumulate into chat["usage"] rather than overwrite: LlmClient
+            // reports usage per turn only, and the running total across the
+            // chat is a more useful "how much context has this chat burned
+            // through" signal than the last turn alone -- the same pressure
+            // /compact and /redact exist to relieve.
+            chat = chatAddUsage(chat, ev["usage"].toObject());
+            saveProgress();
+            const QJsonObject totals = chat["usage"].toObject();
+
             if (m_outputMode == "silent") {
                 // No output
             } else if (m_outputMode == "json") {
                 QJsonObject result;
                 result["content"] = content;
                 result["usage"] = ev["usage"].toObject();
+                result["cumulative_usage"] = totals;
                 outln(QJsonDocument(result).toJson(QJsonDocument::Indented));
             } else if (m_outputMode == "raw") {
                 if (!content.trimmed().isEmpty())
@@ -555,9 +566,10 @@ private:
                 }
                 const QJsonObject usage = ev["usage"].toObject();
                 if (usage["total_tokens"].toInt() > 0) {
-                    outln(dim(QString("(%1 in / %2 out tokens)")
+                    outln(dim(QString("(%1 in / %2 out tokens this turn, %3 total this chat)")
                         .arg(usage["prompt_tokens"].toInt())
-                        .arg(usage["completion_tokens"].toInt())));
+                        .arg(usage["completion_tokens"].toInt())
+                        .arg(totals["total_tokens"].toInt())));
                 }
                 outln();
             }
@@ -795,6 +807,15 @@ private:
                   QString::number(turns) + " turns. (" +
                   QString::number(oldCount) + " -> " + QString::number(newCount) + " messages)");
 
+        } else if (cmd == "/redact") {
+            cmdRedact(arg);
+
+        } else if (cmd == "/tasks") {
+            cmdTasks();
+
+        } else if (cmd == "/task") {
+            cmdTask(arg);
+
         } else if (cmd == "/list") {
             listChats();
 
@@ -965,6 +986,89 @@ private:
         }
     }
 
+    // Delete the last N raw messages (default 1) from the current chat.
+    //
+    // This is the "undo the model's last step" button: repeatable all the
+    // way to an empty chat. It edits chats.json directly, so it wrecks
+    // prompt caching on most backends -- that's the expected trade-off for
+    // pruning a wrong path out of context.
+    void cmdRedact(const QString& arg) {
+        QJsonArray msgs = chat["messages"].toArray();
+        if (msgs.isEmpty()) {
+            outln(dim("Chat is already empty."));
+            return;
+        }
+
+        int n = 1;
+        if (!arg.isEmpty()) {
+            bool ok; n = arg.toInt(&ok);
+            if (!ok || n < 1) {
+                outln("Usage: /redact [n]  — delete the last n messages (default 1)");
+                return;
+            }
+        }
+
+        int before = msgs.size();
+        for (int i = 0; i < n && !msgs.isEmpty(); ++i)
+            msgs = messagesRedactLast(msgs);
+        chat["messages"] = msgs;
+        chatSave(chat);
+
+        int removed = before - msgs.size();
+        outln(green(QString("✓ Redacted %1 message(s).").arg(removed)) +
+              QString(" (%1 -> %2)").arg(before).arg(msgs.size()));
+        if (!msgs.isEmpty()) cmdShow("3");
+    }
+
+    // List saved prompt-template Tasks (shared with the GUI's Tasks dialog).
+    void cmdTasks() {
+        QJsonArray tasks = tasksLoad();
+        if (tasks.isEmpty()) {
+            outln(dim("No tasks defined yet. Create one in the GUI's Tasks dialog "
+                      "(or add one to tasks.json), then run it here with /task <n>."));
+            return;
+        }
+        outln(bold("Tasks:"));
+        for (int i = 0; i < tasks.size(); ++i) {
+            QJsonObject task = tasks[i].toObject();
+            QString preview = task["template"].toString().replace('\n', ' ');
+            if (preview.size() > 60) preview = preview.left(57) + "...";
+            outln(QString("  %1  %2  %3")
+                .arg(QString::number(i + 1) + ".", -4)
+                .arg(task["title"].toString(), -24)
+                .arg(preview));
+        }
+        outln(dim("Run one with /task <n>"));
+    }
+
+    // Run a Task: fill in its %placeholders%, then send it like a normal message.
+    void cmdTask(const QString& arg) {
+        if (arg.isEmpty()) { cmdTasks(); return; }
+
+        QJsonArray tasks = tasksLoad();
+        bool ok; int n = arg.toInt(&ok);
+        if (!ok || n < 1 || n > tasks.size()) {
+            outln("Usage: /task <n>  (use /tasks to see indices)");
+            return;
+        }
+
+        QJsonObject task = tasks[n - 1].toObject();
+        const QString templ = task["template"].toString();
+        const QStringList placeholders = extractPlaceholders(templ);
+        QMap<QString, QString> values;
+        for (const QString& name : placeholders) {
+            const QByteArray prompt = ("  " + name + ": ").toUtf8();
+            values[name] = readline_qstring(prompt.constData());
+        }
+
+        const QString rendered = renderTaskTemplate(templ, values).trimmed();
+        if (rendered.isEmpty()) {
+            outln(dim("This task produced an empty prompt."));
+            return;
+        }
+        runLlm(rendered);
+    }
+
     // ── Updated existing commands ────────────────────────────────────
 
     void printHelp() {
@@ -990,6 +1094,9 @@ private:
             {"/download-max <mb>",    "Set default download size limit in MB (0 = no limit)"},
             {"/agent [str]",         "Show or set user agent string"},
             {"/compact",             "Elide old tool results in current chat"},
+            {"/redact [n]",          "Delete the last n messages (default 1) — repeatable up to the top"},
+            {"/tasks",               "List saved prompt-template Tasks"},
+            {"/task <n>",            "Run a Task by its /tasks index, prompting for any %placeholders%"},
             {"/list",                "List all chats"},
             {"/load <n>",            "Load chat by number"},
             {"/delete <n>",          "Delete chat by number"},

@@ -15,6 +15,8 @@ public:
     void applyTheme(const Theme& theme, int scale = 100);
 
     void loadChats(const QJsonArray& chats);
+    void addChat(const QString& id, const QString& title);
+    void removeChat(const QString& id);
     void selectChatById(const QString& id);
     void updateChatTitle(const QString& id, const QString& title);
     void setModels(const QStringList& models, const QString& current);
@@ -22,6 +24,13 @@ public:
     void updateTokenUsage(int prompt, int completion);
     void setThinking(bool thinking);
     void setToolRunning(bool running);
+
+#ifdef PENGY_UNIT_TEST
+    int testChatCount() const { return m_chatList->count(); }
+    QString testChatIdAt(int i) const { return m_chatList->item(i)->data(Qt::UserRole).toString(); }
+    bool testModelHintHidden() const { return m_modelHint->isHidden(); }
+    QString testModelHintText() const { return m_modelHint->text(); }
+#endif
 
 signals:
     void chatSelected(const QString& id);

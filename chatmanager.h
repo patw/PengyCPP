@@ -22,3 +22,11 @@ bool        chatSave(const QJsonObject& chat);
 QJsonObject chatGet(const QString& id);
 QJsonArray  cleanDanglingToolCalls(const QJsonArray& messages);
 QJsonArray  elideOldToolResults(const QJsonArray& messages, int keepTurns);
+// Context-pruning "undo": pops exactly one raw message off the end,
+// repairing any dangling tool_calls it leaves behind. Safe to call
+// repeatedly down to an empty array.
+QJsonArray  messagesRedactLast(const QJsonArray& messages);
+// Accumulates one turn's token usage into chat["usage"] (persisted running
+// total, not session-only state) and returns the updated chat. Caller must
+// still persist it (chatSave/chatSaveProgress).
+QJsonObject chatAddUsage(QJsonObject chat, const QJsonObject& usage);
