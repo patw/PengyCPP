@@ -786,6 +786,13 @@ static QString toolReadFile(const QJsonObject& args) {
         return "Error reading file: " + f.errorString();
     const QString text = QString::fromUtf8(f.readAll());
 
+    // QString::fromUtf8 is lenient (U+FFFD for invalid sequences), so a
+    // hard-invalid byte sequence never fails here. This catches the other half
+    // of the binary problem — valid UTF-8 bytes that aren't text (a UTF-16
+    // file leaves a NUL between every ASCII byte).
+    if (looksBinary(text, nullptr))
+        return "Error: File appears to be binary (not text): " + path;
+
     // 0 means "not supplied" — aInt's default; neither is a valid 1-based line.
     const int offset = aInt(args, "offset", 0);
     const int limit  = aInt(args, "limit", 0);
@@ -951,9 +958,12 @@ static QString toolReplaceInFile(const QJsonObject& args) {
 
 // ── sudo askpass helper ──────────────────────────────────────────────
 
-// Temporary SUDO_ASKPASS helper script. The password itself never touches the
-// disk — the script just echoes the PENGY_SUDO_PASSWORD environment variable
-// handed to the child process. Directory and script are both mode 0700.
+// Temporary SUDO_ASKPASS helper script. The password is written to a private
+// 0600 file that only the askpass script reads — it is deliberately *not*
+// placed in the child process's environment, where a `printenv`/`env` or any
+// grandchild (a build script, a package post-install) could observe it and leak
+// it back into tool output. Directory/script/password file are all single-use
+// and removed when the command exits.
 //
 // Askpass replaces the older "pipe the password to the shell's stdin and
 // rewrite the first sudo to `sudo -S`" approach, which broke whenever anything
@@ -962,26 +972,34 @@ static QString toolReplaceInFile(const QJsonObject& args) {
 // second sudo after the single piped password had been consumed.
 class AskpassHelper {
 public:
-    AskpassHelper() {
+    AskpassHelper(const QString& password) {
         qint64 nanos = QDateTime::currentMSecsSinceEpoch();
         qint64 pid   = QCoreApplication::applicationPid();
         m_dir = QDir::tempPath() + QString("/pengy-askpass-%1-%2").arg(pid).arg(nanos);
         if (!QDir().mkpath(m_dir)) return;
+        m_pwPath = m_dir + "/pw";
+        QFile pwf(m_pwPath);
+        if (!pwf.open(QIODevice::WriteOnly)) return;
+        pwf.write(password.toUtf8());
+        pwf.close();
         m_path = m_dir + "/askpass.sh";
         QFile f(m_path);
         if (!f.open(QIODevice::WriteOnly)) return;
-        f.write("#!/bin/sh\nprintf '%s\\n' \"$PENGY_SUDO_PASSWORD\"\n");
+        f.write(QString("#!/bin/sh\ncat '%1'\n").arg(m_pwPath).toUtf8());
         f.close();
         QFile::setPermissions(m_dir,
             QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
         QFile::setPermissions(m_path,
             QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        QFile::setPermissions(m_pwPath,
+            QFile::ReadOwner | QFile::WriteOwner);
         m_valid = true;
     }
 
     ~AskpassHelper() {
-        if (!m_path.isEmpty()) QFile::remove(m_path);
-        if (!m_dir.isEmpty())  QDir().rmdir(m_dir);
+        if (!m_path.isEmpty())  QFile::remove(m_path);
+        if (!m_pwPath.isEmpty()) QFile::remove(m_pwPath);
+        if (!m_dir.isEmpty())   QDir().rmdir(m_dir);
     }
 
     AskpassHelper(const AskpassHelper&) = delete;
@@ -993,6 +1011,7 @@ public:
 private:
     QString m_dir;
     QString m_path;
+    QString m_pwPath;
     bool    m_valid = false;
 };
 
@@ -1038,7 +1057,7 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
             }
             ctx->setCachedSudoPassword(pw);
         }
-        askpass = std::make_unique<AskpassHelper>();
+        askpass = std::make_unique<AskpassHelper>(ctx->cachedSudoPassword());
         if (!askpass->valid()) {
             return "Error: Could not create sudo askpass helper.";
         }
@@ -1064,7 +1083,6 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
     if (askpass) {
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         env.insert("SUDO_ASKPASS", askpass->path());
-        env.insert("PENGY_SUDO_PASSWORD", ctx->cachedSudoPassword());
         proc.setProcessEnvironment(env);
     }
 
@@ -1914,6 +1932,9 @@ static QString toolFetchUrl(const QJsonObject& args) {
         text = text.trimmed();
     }
 
+    if (looksBinary(text, nullptr))
+        return "Error fetching URL: response appears to be binary data, not text";
+
     if (limit > 0 && text.size() > limit) {
         text = text.left(limit) + QString("\n\n[... truncated at %1 characters — pass max_chars to adjust ...]").arg(limit);
     }
@@ -2126,6 +2147,13 @@ static QString toolReadMultipleFiles(const QJsonObject& args) {
         }
         QString content = QString::fromUtf8(f.readAll());
         f.close();
+
+        // Same binary guard as read_file: valid-UTF-8 bytes that aren't text
+        // (e.g. a UTF-16 file's NUL-interleaved ASCII) must not flood context.
+        if (looksBinary(content, nullptr)) {
+            parts.append(header + "\n  ❌ Binary file (not text).");
+            continue;
+        }
 
         // Same head-truncation and line-range reporting as read_file, so the
         // model can follow up with read_file(offset=...) on whichever file was cut.

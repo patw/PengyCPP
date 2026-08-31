@@ -472,6 +472,17 @@ function hideThinking() {
   if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
 }
 
+function showRetrying(data) {
+  hideThinking();
+  thinkingEl = document.createElement('div');
+  thinkingEl.className = 'msg-thinking';
+  const delay = (data.delay_secs != null ? data.delay_secs : 0);
+  thinkingEl.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div>' +
+    `<span>Overloaded — retrying in ${delay.toFixed(1)}s (${data.attempt}/${data.max_attempts})</span>`;
+  document.getElementById('messages').appendChild(thinkingEl);
+  scrollBottom();
+}
+
 // ── Wake Lock (prevents screen sleep during tasks) ───────────
 
 async function acquireWakeLock() {
@@ -1051,6 +1062,9 @@ function handleEvent(ev) {
     hideThinking();
     completeToolCard(ev.tool_call_id, ev.content || '', !!ev.declined);
     showThinking();
+
+  } else if (ev.type === 'retrying') {
+    showRetrying(ev);
 
   } else if (ev.type === 'final_response') {
     hideThinking();

@@ -49,6 +49,7 @@ static inline QString green(const QString& s)  { return clr("\033[32m", s); }
 static inline QString cyan(const QString& s)   { return clr("\033[36m", s); }
 static inline QString blue(const QString& s)   { return clr("\033[34m", s); }
 static inline QString red(const QString& s)    { return clr("\033[31m", s); }
+static inline QString yellow(const QString& s) { return clr("\033[33m", s); }
 
 static void out(const QString& s) {
     fputs(s.toUtf8().constData(), stdout);
@@ -497,6 +498,14 @@ private:
         if (type == "assistant_tool_calls") {
             renderAssistantPreamble(ev["message"].toObject());
             appendAndSave(ev["message"].toObject());
+
+        } else if (type == "retrying") {
+            // 429/529 backoff — surface it instead of hanging silently.
+            outln(yellow(QString("Overloaded (HTTP %1) — retrying in %2s (%3/%4)")
+                .arg(ev["status_code"].toVariant().toString())
+                .arg(ev["delay_secs"].toDouble(), 0, 'f', 1)
+                .arg(ev["attempt"].toInt())
+                .arg(ev["max_attempts"].toInt())));
 
         } else if (type == "tool_request") {
             outln();

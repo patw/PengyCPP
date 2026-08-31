@@ -318,6 +318,14 @@ void ChatHistoryWidget::setToolRunning(bool running) {
     }
 }
 
+void ChatHistoryWidget::setRetrying(const QString& text) {
+    // Transient status while the LLM backs off and retries (429/529). Not
+    // blinking and not "Running Tool…": this is a network backoff pause.
+    m_blinkTimer->stop();
+    m_statusDot->setStyleSheet(QString("color: %1; font-size: 14px;").arg(m_theme["muted"]));
+    m_statusText->setText(text);
+}
+
 void ChatHistoryWidget::blinkDot() {
     m_dotPhase = !m_dotPhase;
     QString color = m_dotPhase ? m_theme["danger"] : "transparent";

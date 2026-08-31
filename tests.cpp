@@ -639,6 +639,51 @@ private slots:
         chatDelete(chat["id"].toString());
     }
 
+    // ── ChatManager: delete trims legacy + no resurrection ──────────
+
+    void chatDeleteTrimsLegacyAndPreventsResurrection() {
+        QString legacy = m_xdgDir.path() + "/pengy/chats.json";
+        QJsonArray seed;
+        seed.append(QJsonObject{{"id","old-1"},{"title","OLD"},
+                                {"messages",QJsonArray()},{"created_at","2020-01-01T00:00:00"}});
+        seed.append(QJsonObject{{"id","old-2"},{"title","KEEP"},
+                                {"messages",QJsonArray()},{"created_at","2020-01-02T00:00:00"}});
+        QFile f(legacy);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QJsonDocument(seed).toJson(QJsonDocument::Indented));
+        f.close();
+
+        // Import makes both visible.
+        chatsLoadIndex();
+        QVERIFY(!chatGet("old-1").isEmpty());
+        QVERIFY(!chatGet("old-2").isEmpty());
+
+        // Delete old-1: it must also be trimmed out of the legacy seed.
+        QVERIFY(chatDelete("old-1"));
+        QFile lf(legacy);
+        QVERIFY(lf.open(QIODevice::ReadOnly));
+        QJsonArray after = QJsonDocument::fromJson(lf.readAll()).array();
+        lf.close();
+        bool stillInLegacy = false;
+        for (const QJsonValue& v : after)
+            if (v.toObject()["id"].toString() == "old-1") stillInLegacy = true;
+        QVERIFY(!stillInLegacy);
+
+        // Simulate index loss: rebuilding must re-run the legacy import, but
+        // old-1 was trimmed out, so it stays gone.
+        QFile::remove(m_xdgDir.path() + "/pengy/chats/index.json");
+        QJsonArray idx = chatsLoadIndex();
+        bool hasOld = false, hasKeep = false;
+        for (const QJsonValue& v : idx) {
+            QString title = v.toObject()["title"].toString();
+            if (title == "OLD") hasOld = true;
+            if (title == "KEEP") hasKeep = true;
+        }
+        QVERIFY(!hasOld);
+        QVERIFY(hasKeep);
+        QVERIFY(chatGet("old-1").isEmpty());
+    }
+
     // ── Tools: classification ───────────────────────────────────────
 
     void readonlyToolsCorrect() {
@@ -836,6 +881,33 @@ private slots:
         QString text = QString("def foo():\n\treturn 'hello world!' # comment\n").repeated(50);
         QString out = Tools::snipMiddleForTest(text);
         QCOMPARE(out, text);
+    }
+
+    // UTF-16 text decodes as *valid* UTF-8 (ASCII interleaved with NULs), so
+    // the strict decode alone misses it — read_file needs the guard too.
+    void readFileBlocksBinaryThatDecodesAsUtf8() {
+        QTemporaryDir dir;
+        QString path = dir.path() + "/utf16.txt";
+        QString hello = "hello";
+        QByteArray utf16le(reinterpret_cast<const char*>(hello.utf16()), hello.size() * 2);
+        { QFile f(path); f.open(QIODevice::WriteOnly); f.write(utf16le); }
+        QString result = Tools::execute("read_file", QJsonObject{{"path", path}});
+        QVERIFY2(result.contains("binary", Qt::CaseInsensitive), qPrintable(result));
+        QVERIFY(!result.contains("hello"));
+    }
+
+    void readMultipleFilesBlocksBinaryThatDecodesAsUtf8() {
+        QTemporaryDir dir;
+        QString bin = dir.path() + "/utf16.txt";
+        QString hello = "hello";
+        QByteArray utf16le(reinterpret_cast<const char*>(hello.utf16()), hello.size() * 2);
+        { QFile f(bin); f.open(QIODevice::WriteOnly); f.write(utf16le); }
+        QString good = dir.path() + "/good.txt";
+        { QFile f(good); f.open(QIODevice::WriteOnly); f.write("plain text"); }
+        QString result = Tools::execute("read_multiple_files",
+            QJsonObject{{"paths", QJsonArray{bin, good}}});
+        QVERIFY2(result.contains("binary", Qt::CaseInsensitive), qPrintable(result));
+        QVERIFY(result.contains("plain text"));
     }
 
     void runBashBlocksBinaryOutput() {
@@ -1546,6 +1618,18 @@ private slots:
         QVERIFY(result.size() < 5000);
     }
 
+    void fetchUrlBlocksBinaryBody() {
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+        QByteArray body;
+        for (int i = 0; i < 200; ++i) body += QByteArray("a\0b\0c\0", 6);
+        servePlain(server, body);
+
+        QString url = QString("http://127.0.0.1:%1/").arg(server.serverPort());
+        QString result = Tools::execute("fetch_url", QJsonObject{{"url", url}});
+        QVERIFY2(result.contains("binary", Qt::CaseInsensitive), qPrintable(result));
+    }
+
     void fetchUrlMaxCharsOverride() {
         QTcpServer server;
         QVERIFY(server.listen(QHostAddress::LocalHost, 0));
@@ -1636,6 +1720,8 @@ private slots:
                 "if [ \"$1\" != \"-A\" ]; then echo \"sudo: no tty present\" >&2; exit 1; fi\n"
                 "shift\n"
                 "pw=\"$(\"$SUDO_ASKPASS\")\"\n"
+                "if [ -n \"${PENGY_SUDO_PASSWORD:-}\" ]; then echo \"LEAK:${PENGY_SUDO_PASSWORD}\"; fi\n"
+                "if grep -q s3cret \"$SUDO_ASKPASS\" 2>/dev/null; then echo \"SCRIPTLEAK\"; fi\n"
                 "echo \"pw=$pw\"\n"
                 "exec \"$@\"\n");
         f.close();
@@ -1664,6 +1750,10 @@ private slots:
                      qPrintable(QString("%1 -> %2").arg(c, r)));
             QVERIFY2(!r.contains("no tty present"),
                      qPrintable(QString("%1 -> %2").arg(c, r)));
+            QVERIFY2(!r.contains("LEAK:"),
+                     qPrintable(QString("password leaked into env: %1 -> %2").arg(c, r)));
+            QVERIFY2(!r.contains("SCRIPTLEAK"),
+                     qPrintable(QString("password leaked into askpass script: %1 -> %2").arg(c, r)));
         }
 
         qputenv("PATH", oldPath);

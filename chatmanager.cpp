@@ -29,7 +29,9 @@
 //
 // The legacy chats.json is still read, so a machine that switches between the
 // Python, Rust and C++ editions doesn't appear to lose history. It is never
-// written and never deleted.
+// appended to — it stays as a one-time seed. The single exception:
+// chatDelete() removes a deleted chat's entry from it too, so a later legacy
+// re-import can't silently resurrect it.
 
 static const char* kIndexFile   = "index.json";
 static const int   kIndexVersion = 1;
@@ -357,10 +359,27 @@ QJsonObject chatCreate(const QString& title) {
     return chat;
 }
 
+// Drop `id` from the legacy chats.json seed, so a deleted chat can't be
+// resurrected by a later legacy import (triggered by an index rebuild or an
+// externally rewritten chats.json).
+static void removeFromLegacy(const QString& id) {
+    QJsonDocument doc = readJson(legacyFilePath());
+    if (!doc.isArray()) return;
+    QJsonArray arr = doc.array();
+    QJsonArray kept;
+    bool changed = false;
+    for (const QJsonValue& v : arr) {
+        if (v.toObject()["id"].toString() == id) { changed = true; continue; }
+        kept.append(v);
+    }
+    if (changed) atomicWrite(legacyFilePath(), QJsonDocument(kept));
+}
+
 bool chatDelete(const QString& id) {
     ensureCurrent();
     QFile::remove(chatFilePath(id));
     dropIndexEntry(id);
+    removeFromLegacy(id);
     return true;
 }
 

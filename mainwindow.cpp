@@ -691,6 +691,16 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
     if (type == "final_response") {
         handleFinalResponse(session, event);
 
+    } else if (type == "retrying") {
+        // 429/529 backoff: surface it instead of hanging silently.
+        if (session == tabForChat(m_activeChatId)) {
+            m_chatHistory->setRetrying(
+                QString("Overloaded — retrying in %1s (%2/%3)")
+                    .arg(event["delay_secs"].toDouble(), 0, 'f', 1)
+                    .arg(event["attempt"].toInt())
+                    .arg(event["max_attempts"].toInt()));
+        }
+
     } else if (type == "tool_request") {
         session->thinking    = true;
         session->toolRunning = true;
