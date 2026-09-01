@@ -1,6 +1,9 @@
 # Changelog
 
-## v1.7.2 (current)
+## v1.7.3 (current)
+
+- **Safer sudo handling.** `run_bash` now requires explicit `elevated=true` before invoking sudo, ignores sudo mentions in quotes/comments/data, and scopes cached sudo credentials to each web worker. Rust and C++ editions flush tool output before the hidden-password prompt for reliable terminal ordering.
+
 
 Ported from the Python and Rust editions, restoring feature parity across all
 three editions.

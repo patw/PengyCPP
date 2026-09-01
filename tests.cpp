@@ -1534,9 +1534,27 @@ private slots:
         // A context with no provider must refuse sudo regardless of the default.
         Tools::ToolContext ctx;
         QString r = Tools::execute("run_bash",
-                                   QJsonObject{{"command", "sudo true"}},
+                                   QJsonObject{{"command", "sudo true"}, {"elevated", true}},
                                    nullptr, &ctx);
         QVERIFY(r.contains("no password provider"));
+    }
+
+    void runBashSudoRequiresExplicitElevation() {
+        Tools::ToolContext ctx; bool prompted = false;
+        ctx.setSudoProvider([&prompted] { prompted = true; return QString("secret"); });
+        QString r = Tools::execute("run_bash", QJsonObject{{"command", "sudo true"}}, nullptr, &ctx);
+        QVERIFY(r.contains("Elevation required"));
+        QVERIFY(!prompted);
+    }
+
+    void runBashSudoMentionsDoNotPrompt() {
+        for (const QString& command : {QString("echo sudo"), QString("echo 'sudo apt update'"), QString("# sudo\\necho ok")}) {
+            Tools::ToolContext ctx; bool prompted = false;
+            ctx.setSudoProvider([&prompted] { prompted = true; return QString("secret"); });
+            QString r = Tools::execute("run_bash", QJsonObject{{"command", command}}, nullptr, &ctx);
+            QVERIFY(!r.contains("Elevation required"));
+            QVERIFY(!prompted);
+        }
     }
 
     void runBashCwd() {
@@ -1706,6 +1724,9 @@ private slots:
         QCOMPARE(Tools::rewriteSudoForAskpass("echo sudoku"), QString("echo sudoku"));
         QCOMPARE(Tools::rewriteSudoForAskpass("ls /dev/pseudo-tty"),
                  QString("ls /dev/pseudo-tty"));
+        QCOMPARE(Tools::rewriteSudoForAskpass("echo sudo"), QString("echo sudo"));
+        QCOMPARE(Tools::rewriteSudoForAskpass("echo 'sudo apt update'"),
+                 QString("echo 'sudo apt update'"));
     }
 
     void sudoAuthenticatesViaAskpass() {
@@ -1744,7 +1765,7 @@ private slots:
             "echo hi | sudo tee /dev/null",
         };
         for (const QString& c : commands) {
-            QString r = Tools::execute("run_bash", QJsonObject{{"command", c}},
+            QString r = Tools::execute("run_bash", QJsonObject{{"command", c}, {"elevated", true}},
                                        nullptr, &ctx);
             QVERIFY2(r.contains("pw=s3cret"),
                      qPrintable(QString("%1 -> %2").arg(c, r)));

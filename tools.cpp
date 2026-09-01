@@ -279,10 +279,11 @@ const QJsonArray& toolDefinitions() {
             },
             QJsonArray{"changes"}),
 
-        td("run_bash", "Run a command with bash. The command is non-interactive: stdin is closed, so anything that prompts or waits for input (a password prompt, an editor, `read`) will fail rather than wait — pass non-interactive flags instead. Set cwd to run the command in a specific working directory (defaults to the current directory). sudo is supported and prompts the user for their password separately. Commands are killed once the configured tool timeout elapses.",
+        td("run_bash", "Run a command with bash. The command is non-interactive: stdin is closed, so anything that prompts or waits for input (a password prompt, an editor, `read`) will fail rather than wait — pass non-interactive flags instead. Set cwd to run the command in a specific working directory (defaults to the current directory). To invoke sudo, set elevated=true; Pengy then prompts for the user's password separately. Do not set elevated merely because text or arguments mention sudo. Commands are killed once the configured tool timeout elapses.",
             QJsonObject{
                 {"command", prop("string", "The bash command to execute")},
-                {"cwd",     prop("string", "Optional working directory to run the command in")}},
+                {"cwd",     prop("string", "Optional working directory to run the command in")},
+                {"elevated", prop("boolean", "Set true only when this command intentionally invokes sudo.")}},
             QJsonArray{"command"}),
 
         td("web_search",
@@ -1015,16 +1016,41 @@ private:
     bool    m_valid = false;
 };
 
-// Rewrite *every* word-boundary `sudo` to `sudo -A` so it authenticates via
-// SUDO_ASKPASS rather than stdin. Any existing `-S` is dropped, since stdin no
-// longer carries the password. Word-boundary matching leaves `sudoku` and
-// `pseudo-tty` untouched.
+// Find unquoted sudo command words. A textual mention, quote, or comment must
+// never request a password or alter the source command.
+static QList<QPair<int, int>> sudoInvocationSpans(const QString& command) {
+    QList<QPair<int, int>> spans; int i = 0; bool commandStart = true;
+    while (i < command.size()) {
+        QChar c = command[i];
+        if (c.isSpace()) { if (c == '\n') commandStart = true; ++i; continue; }
+        if (c == '#' && (i == 0 || command[i - 1].isSpace() || QString(";|&()\n").contains(command[i - 1]))) {
+            i = command.indexOf('\n', i); if (i < 0) break; ++i; commandStart = true; continue;
+        }
+        if (QString(";|&()").contains(c)) { commandStart = true; ++i; continue; }
+        int start = i; bool quoted = false;
+        while (i < command.size() && !command[i].isSpace() && !QString(";|&()").contains(command[i])) {
+            if (command[i] == '\\') { i += 2; continue; }
+            if (command[i] == '\'' || command[i] == '"') { quoted = true; QChar q = command[i++]; while (i < command.size() && command[i] != q) ++i; if (i < command.size()) ++i; continue; }
+            ++i;
+        }
+        QString word = command.mid(start, i - start);
+        if (commandStart && !quoted && (word == "sudo" || word == "/usr/bin/sudo" || word == "/bin/sudo")) spans.append({start, i});
+        commandStart = false;
+    }
+    return spans;
+}
+
 QString rewriteSudoForAskpass(QString command) {
-    static QRegularExpression stdinRx("\\bsudo\\s+-S\\b");
-    static QRegularExpression rewriteRx("\\bsudo\\b(?!\\s+-A\\b)");
-    command.replace(stdinRx, "sudo");
-    command.replace(rewriteRx, "sudo -A");
-    return command;
+    const auto spans = sudoInvocationSpans(command); QString out; int last = 0;
+    for (const auto& span : spans) {
+        out += command.mid(last, span.first - last) + command.mid(span.first, span.second - span.first);
+        static QRegularExpression flagRx("^\\s+-([AS])\\b");
+        auto m = flagRx.match(command.mid(span.second));
+        if (m.hasMatch() && m.captured(1) == "S") { out += " -A"; last = span.second + m.capturedEnd(); }
+        else if (m.hasMatch()) { last = span.second; }
+        else { out += " -A"; last = span.second; }
+    }
+    return out + command.mid(last);
 }
 
 // ── Bash (with temp file output & process groups) ────────────────────
@@ -1041,15 +1067,16 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
     int timeoutSecs = toolTimeout();
 
     // ── sudo detection ──────────────────────────────────────────────
-    static QRegularExpression sudoRx("\\bsudo\\b");
-    bool needsSudo = sudoRx.match(command).hasMatch();
+    bool needsSudo = !sudoInvocationSpans(command).isEmpty();
+    if (needsSudo && !args.value("elevated").toBool(false))
+        return "Elevation required: this command invokes sudo. Retry run_bash with elevated=true to request sudo access.";
 
     std::unique_ptr<AskpassHelper> askpass;
     if (needsSudo) {
         if (ctx->cachedSudoPassword().isEmpty()) {
             auto provider = ctx->sudoProvider();
             if (!provider) {
-                return "Error: sudo detected but no password provider is configured.";
+                return "Error: sudo requested but no password provider is configured.";
             }
             QString pw = provider();
             if (pw.isEmpty()) {
