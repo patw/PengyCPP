@@ -4,6 +4,8 @@
 #include "../taskmanager.h"
 #include "../tools.h"
 #include "../image_utils.h"
+#include "../attachments.h"
+#include "../provider_messages.h"
 #include <QTcpSocket>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -179,6 +181,8 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
         routeModels(socket);
     } else if (parts[0] == "files" && req.method == "GET") {
         routeFile(req, socket);
+    } else if (parts[0] == "attachments" && parts.size() == 3 && req.method == "GET") {
+        routeAttachment(req, socket);
     } else if (parts[0] == "tasks" && parts.size() == 1 && req.method == "GET") {
         routeTasks(socket);
     } else if (parts[0] == "tasks" && parts.size() == 2 && parts[1] == "render" && req.method == "POST") {
@@ -190,6 +194,8 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
             routeChatNew(socket);
         } else if (parts.size() == 2) {
             routeChatView(parts[1], socket);
+        } else if (parts.size() == 4 && parts[2] == "export" && req.method == "GET") {
+            routeChatExportBundle(parts[1], parts[3], socket);
         } else if (parts.size() == 3) {
             const QString& id  = parts[1];
             const QString& act = parts[2];
@@ -275,6 +281,7 @@ void WebServer::routeChatSend(const QString& chatId,
     const QJsonArray files = body["files"].toArray();
     QStringList textBlocks;
     QJsonArray imageParts;
+    QJsonArray attachmentRefs;
     QStringList displayParts;
     Config cfg = configLoad();
 
@@ -301,17 +308,15 @@ void WebServer::routeChatSend(const QString& chatId,
                 if (tmpFile.open(QIODevice::WriteOnly)) {
                     tmpFile.write(raw);
                     tmpFile.close();
-                    ImageResult ir = imagePreprocess(tmpPath, cfg.imageMaxDimension, cfg.imageMaxMb, cfg.imageQuality);
+                    QJsonObject ref = attachmentImportImage(tmpPath, fname, cfg.imageMaxDimension, cfg.imageMaxMb, cfg.imageQuality);
                     QFile::remove(tmpPath);
-                    if (ir.ok) {
-                        QJsonObject imgPart;
-                        imgPart["type"] = "image_url";
-                        imgPart["image_url"] = QJsonObject{
-                            {"url", QString("data:%1;base64,%2")
-                                .arg(ir.mime, QString::fromUtf8(ir.bytes_base64))}
-                        };
-                        imageParts.append(imgPart);
-                        displayParts.append(QString("[Image: %1]").arg(fname));
+                    if (!ref.isEmpty()) {
+                        QString url = attachmentImageDataUrl(ref, cfg.imageMaxDimension, cfg.imageMaxMb, cfg.imageQuality);
+                        if (!url.isEmpty()) {
+                            imageParts.append(QJsonObject{{"type","image_url"},{"image_url",QJsonObject{{"url",url}}}});
+                            attachmentRefs.append(ref);
+                            displayParts.append(QString("[Image: %1]").arg(fname));
+                        }
                     }
                 }
             } else {
@@ -374,7 +379,12 @@ void WebServer::routeChatSend(const QString& chatId,
     Tools::setImageLimits(cfg.imageMaxDimension, cfg.imageMaxMb, cfg.imageQuality);
 
     QJsonArray hist = chat["messages"].toArray();
-    hist.append(QJsonObject{{"role","user"},{"content", displayContent}});
+    // Preserve injected text-file context in the textual history; image bytes
+    // remain durable refs and are represented only in provider payloads.
+    QString persistedContent = imageParts.isEmpty() ? displayContent : content;
+    QJsonObject persistedUser{{"role","user"},{"content", persistedContent}};
+    if (!attachmentRefs.isEmpty()) persistedUser["attachments"] = attachmentRefs;
+    hist.append(persistedUser);
     hist = cleanDanglingToolCalls(hist);
     if (cfg.contextKeepTurns > 0)
         hist = elideOldToolResults(hist, cfg.contextKeepTurns);
@@ -391,17 +401,13 @@ void WebServer::routeChatSend(const QString& chatId,
             {"role","system"},
             {"content", configRenderSystemMessage(cfg.systemMessage)}
         });
-    // Prior messages from history (cleaned)
-    for (int i = 0; i < hist.size() - 1; ++i) sendMsgs.append(hist[i]);
-    // Current user message — with real multimodal content if images
-    if (!imageParts.isEmpty()) {
-        QJsonArray apiParts = imageParts;
-        if (!apiTextContent.isEmpty())
-            apiParts.append(QJsonObject{{"type","text"},{"text", apiTextContent}});
-        sendMsgs.append(QJsonObject{{"role","user"},{"content", apiParts}});
-    } else {
-        sendMsgs.append(QJsonObject{{"role","user"},{"content", apiTextContent}});
-    }
+    // Transform the persisted copy at the storage/provider boundary. This
+    // resolves only retained historical images and strips local metadata.
+    QJsonArray providerMessages = messagesForProvider(
+        hist, cfg.attachmentContextKeepTurns,
+        cfg.imageMaxDimension, cfg.imageMaxMb, cfg.imageQuality);
+    for (const QJsonValue& v : providerMessages)
+        sendMsgs.append(v);
 
     m_pending[chatId] = displayContent;
 
@@ -410,7 +416,7 @@ void WebServer::routeChatSend(const QString& chatId,
     // should wait on the turn finishing to reach disk.
     {
         QJsonArray stored = chat["messages"].toArray();
-        stored.append(QJsonObject{{"role","user"},{"content", displayContent}});
+        stored.append(persistedUser);
         chat["messages"] = stored;
         chatSave(chat);
     }
@@ -664,6 +670,43 @@ void WebServer::routeChatExport(const QString& chatId, QTcpSocket* socket) {
     socket->disconnectFromHost();
 }
 
+static QByteArray exportHtmlForChat(const QJsonObject& chat) {
+    const QString title = chat["title"].toString("Chat").toHtmlEscaped();
+    QString html = "<!doctype html><meta charset=\"utf-8\"><title>" + title + "</title><h1>" + title + "</h1>";
+    for (const QJsonValue& v : chat["messages"].toArray()) {
+        const QJsonObject msg = v.toObject();
+        QString text;
+        if (msg["content"].isArray()) {
+            for (const QJsonValue& pv : msg["content"].toArray()) {
+                const QJsonObject part = pv.toObject();
+                if (part["type"].toString() == "text") text += part["text"].toString() + "\\n";
+                else if (part["type"].toString() == "image_url") text += "[image]\\n";
+            }
+        } else text = msg["content"].toString();
+        if (!text.isEmpty()) html += "<section><h3>" + msg["role"].toString().toHtmlEscaped() + "</h3><pre>" + text.toHtmlEscaped() + "</pre></section>";
+    }
+    return html.toUtf8();
+}
+
+void WebServer::routeChatExportBundle(const QString& chatId, const QString& format, QTcpSocket* socket) {
+    const QJsonObject chat = chatGet(chatId);
+    if (chat.isEmpty()) { sendJson(socket, 404, {{"error", "chat not found"}}); return; }
+    QString safe = chat["title"].toString("chat"); safe.remove(QRegularExpression("[^a-zA-Z0-9 _-]")); safe = safe.trimmed().left(50); if (safe.isEmpty()) safe = "chat";
+    if (format == "html") { sendResponse(socket, 200, "text/html; charset=utf-8", exportHtmlForChat(chat)); return; }
+    if (format == "zip") {
+        // Minimal standards-compliant stored ZIP containing index.html.
+        const QByteArray data = exportHtmlForChat(chat), name = "index.html";
+        auto u16=[](quint16 v){ QByteArray b; b.append(char(v)); b.append(char(v>>8)); return b; };
+        auto u32=[](quint32 v){ QByteArray b; for(int i=0;i<4;++i){b.append(char(v));v>>=8;} return b; };
+        quint32 crc=0xffffffffu; for(unsigned char c:data){crc^=c;for(int i=0;i<8;++i)crc=(crc>>1)^(0xedb88320u&-(crc&1));} crc^=0xffffffffu;
+        QByteArray zip=QByteArray::fromHex("504b0304")+u16(20)+u16(0)+u16(0)+u32(crc)+u32(data.size())+u32(data.size())+u16(name.size())+u16(0)+name+data;
+        quint32 central=zip.size(); zip+=QByteArray::fromHex("504b0102")+u16(20)+u16(20)+u16(0)+u16(0)+u32(crc)+u32(data.size())+u32(data.size())+u16(name.size())+u16(0)+u16(0)+u16(0)+u16(0)+u32(0)+u32(0)+name;
+        zip+=QByteArray::fromHex("504b0506")+u16(0)+u16(0)+u16(1)+u16(1)+u32(zip.size()-central)+u32(central)+u16(0);
+        QByteArray hdr=QString("HTTP/1.1 200 OK\\r\\nContent-Type: application/zip\\r\\nContent-Disposition: attachment; filename=\\\"%1.zip\\\"\\r\\nContent-Length: %2\\r\\nConnection: close\\r\\n\\r\\n").arg(safe).arg(zip.size()).toUtf8(); socket->write(hdr); socket->write(zip); socket->flush(); socket->disconnectFromHost(); return;
+    }
+    sendJson(socket, 400, {{"error", "format must be html or zip"}});
+}
+
 void WebServer::routeChatRename(const QString& chatId,
                                  const HttpRequest& req, QTcpSocket* socket) {
     QJsonObject body = bodyJson(req);
@@ -902,6 +945,20 @@ void WebServer::routeModels(QTcpSocket* socket) {
 
 // ── File serving for local images ──────────────────────────────────
 
+void WebServer::routeAttachment(const HttpRequest& req, QTcpSocket* socket) {
+    const QStringList parts = req.path.split('?', Qt::SkipEmptyParts).first().split('/', Qt::SkipEmptyParts);
+    if (parts.size() != 3) { sendJson(socket, 400, {{"error","invalid attachment"}}); return; }
+    const QString id = "sha256:" + parts[1];
+    const QString name = parts[2] == "thumbnail" ? "thumbnail-256-v1.jpg" : parts[2] == "display" ? "image-display-v1.jpg" : QString();
+    if (!attachmentIdIsValid(id) || name.isEmpty()) { sendJson(socket, 400, {{"error","invalid attachment"}}); return; }
+    QFile file(attachmentDerivativePath(id, name));
+    if (!file.open(QIODevice::ReadOnly)) { sendJson(socket, 404, {{"error","attachment not found"}}); return; }
+    QByteArray data = file.readAll();
+    QByteArray resp = QString("HTTP/1.1 200 OK\\r\\nContent-Type: image/jpeg\\r\\nX-Content-Type-Options: nosniff\\r\\nCache-Control: private, no-store\\r\\nContent-Length: %1\\r\\nConnection: close\\r\\n\\r\\n").arg(data.size()).toUtf8();
+    socket->write(resp); socket->write(data); socket->flush(); socket->disconnectFromHost();
+}
+
+
 void WebServer::routeFile(const HttpRequest& req, QTcpSocket* socket) {
     // Extract the 'path' query parameter
     QString rawPath;
@@ -1011,7 +1068,8 @@ void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {
         if (f.contains("tool_timeout"))      cfg.toolTimeout      = f["tool_timeout"].toInt();
         if (f.contains("tool_output_max_chars")) cfg.toolOutputMaxChars = f["tool_output_max_chars"].toInt();
         if (f.contains("download_max_mb"))       cfg.downloadMaxMb       = f["download_max_mb"].toInt();
-        if (f.contains("context_keep_turns"))cfg.contextKeepTurns = f["context_keep_turns"].toInt();
+        if (f.contains("context_keep_turns")) cfg.contextKeepTurns = qMax(0, f["context_keep_turns"].toInt());
+        if (f.contains("attachment_context_keep_turns")) cfg.attachmentContextKeepTurns = qMax(0, f["attachment_context_keep_turns"].toInt());
         configSave(cfg);
         sendRedirect(socket, "/settings?saved=1");
     } else {

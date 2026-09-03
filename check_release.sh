@@ -17,9 +17,9 @@ echo "========================================="
 
 # ── 1. Version consistency ──────────────────────────────────────────
 echo "--- Version consistency ---"
-CMAKE_VER=$(grep -oP 'project\(\w+ VERSION \K[\d.]+' CMakeLists.txt | head -1)
-# build_deb.sh now auto-derives version from CMakeLists.txt via grep
-DEB_DERIVED=$(grep -oP 'project\(\w+ VERSION \K[\d.]+' CMakeLists.txt | head -1)
+CMAKE_VER=$(sed -n 's/^project([^ ]* VERSION \([^ ]*\).*/\1/p' CMakeLists.txt | head -1)
+# build_deb.sh now auto-derives version from CMakeLists.txt via sed
+DEB_DERIVED="$CMAKE_VER"
 echo "  CMakeLists.txt:  $CMAKE_VER"
 echo "  build_deb.sh:    auto-detected from CMakeLists.txt → $DEB_DERIVED"
 if [ -n "$CMAKE_VER" ]; then
@@ -63,7 +63,7 @@ fi
 
 # ── 5. CI release.yml Windows Qt version ────────────────────────────
 echo "--- Windows Qt version in CI ---"
-QT_VER=$(grep -oP "version:\s*'[^']+'" .github/workflows/release.yml | head -1 | grep -oP "[\d.]+")
+QT_VER=$(sed -n "s/.*version:[[:space:]]*'\([^']*\)'.*/\1/p" .github/workflows/release.yml | head -1)
 echo "  release.yml Qt version: $QT_VER"
 if [ -n "$QT_VER" ] && [ "$(echo "$QT_VER" | cut -d. -f2)" -ge 8 ]; then
     ok "Qt version $QT_VER is recent enough for aqt XML parsing"

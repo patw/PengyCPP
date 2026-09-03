@@ -72,6 +72,7 @@ QJsonObject Config::toJson() const {
     o["reasoning_effort"]   = reasoningEffort;
     o["preserve_reasoning"] = preserveReasoning;
     o["context_keep_turns"] = contextKeepTurns;
+    o["attachment_context_keep_turns"] = attachmentContextKeepTurns;
     o["ui_scale"]           = uiScale;
     o["theme_mode"]         = themeMode;
     o["theme_accent"]       = themeAccent;
@@ -98,7 +99,8 @@ Config Config::fromJson(const QJsonObject& o) {
     if (o.contains("tool_confirmation"))  c.toolConfirmation  = o["tool_confirmation"].toString(c.toolConfirmation);
     if (o.contains("reasoning_effort"))   c.reasoningEffort   = o["reasoning_effort"].toString(c.reasoningEffort);
     if (o.contains("preserve_reasoning")) c.preserveReasoning = o["preserve_reasoning"].toBool(false);
-    if (o.contains("context_keep_turns")) c.contextKeepTurns  = o["context_keep_turns"].toInt(0);
+    if (o.contains("context_keep_turns")) c.contextKeepTurns  = qMax(0, o["context_keep_turns"].toInt(0));
+    if (o.contains("attachment_context_keep_turns")) c.attachmentContextKeepTurns = qMax(0, o["attachment_context_keep_turns"].toInt(4));
     if (o.contains("ui_scale"))           c.uiScale           = o["ui_scale"].toInt(100);
     if (o.contains("theme_mode"))         c.themeMode         = o["theme_mode"].toString(c.themeMode);
     if (o.contains("theme_accent"))       c.themeAccent       = o["theme_accent"].toString(c.themeAccent);

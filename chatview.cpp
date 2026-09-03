@@ -1,4 +1,5 @@
 #include "chatview.h"
+#include "attachments.h"
 #include <QScrollBar>
 #include <QDesktopServices>
 #include <QRegularExpression>
@@ -53,6 +54,9 @@ table { border:1px solid %6; margin:6px 0; }
 th, td { border:1px solid %6; padding:4px 10px; }
 th { background-color:%7; font-weight:bold; }
 img { max-width:600px; }
+.attachment-gallery { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0; }
+.attachment-card { width:96px; height:96px; object-fit:cover; border-radius:6px; }
+.attachment-unavailable { color:%16; font-size:0.85em; padding:6px; border:1px dashed %6; }
 .role-user { color:%8; font-weight:bold; font-size:0.9em; margin:8px 0 2px 0; }
 .role-assistant { color:%10; font-weight:bold; font-size:0.9em; margin:8px 0 2px 0; }
 .tool-card { border:1px solid %11; padding:4px 8px; margin:6px 0; background-color:%12; }
@@ -78,7 +82,15 @@ h1 { font-size:1.4em; } h2 { font-size:1.3em; } h3 { font-size:1.1em; } h4, h5, 
 }
 
 void ChatView::appendMessage(const QString& role, const QJsonValue& content, bool doRender) {
-    if (role == "tool_request") {
+    if (role == "user") {
+        QJsonObject obj = content.toObject();
+        QJsonObject msg;
+        msg["role"] = "user";
+        msg["content"] = obj.contains("content") ? obj["content"] : content;
+        msg["attachments"] = obj["attachments"];
+        m_messages.append(msg);
+        m_htmlCache.append(QString());
+    } else if (role == "tool_request") {
         // Create a unified tool_block with result = null (not yet available)
         QJsonObject obj = content.toObject();
         QJsonObject msg;
@@ -249,10 +261,27 @@ QString ChatView::renderMessage(const QJsonObject& msg, int idx) const {
     QString role = msg["role"].toString();
 
     if (role == "user") {
+        QString gallery;
+        for (const QJsonValue& value : msg["attachments"].toArray()) {
+            QJsonObject ref = value.toObject();
+            QString id = ref["id"].toString();
+            if (ref["kind"].toString() == "image" && attachmentIdIsValid(id)) {
+                QString path = attachmentDerivativePath(id, "thumbnail-256-v1.jpg");
+                if (QFile::exists(path)) {
+                    gallery += QString("<a href=\"%1\"><img class='attachment-card' src=\"%1\" alt=\"%2\"></a>")
+                        .arg(QUrl::fromLocalFile(path).toString(), escapeHtml(ref["name"].toString("Image")));
+                } else {
+                    gallery += "<span class='attachment-unavailable'>Attachment unavailable</span>";
+                }
+            } else {
+                gallery += "<span class='attachment-unavailable'>Unsupported attachment</span>";
+            }
+        }
         return QString(
             "<p class='role-user'>&#x1F9D1; You</p>"
-            "<p style='margin:2px 0 10px 0;white-space:pre-wrap;'>%1</p>"
-        ).arg(escapeHtml(msg["content"].toString()));
+            "<div class='attachment-gallery'>%1</div>"
+            "<p style='margin:2px 0 10px 0;white-space:pre-wrap;'>%2</p>"
+        ).arg(gallery, escapeHtml(msg["content"].toString()));
 
     } else if (role == "assistant") {
         QString content = msg["content"].toString();

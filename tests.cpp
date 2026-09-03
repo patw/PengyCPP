@@ -23,6 +23,7 @@
 #include "tools.h"
 #include "llmclient.h"
 #include "web/webserver.h"
+#include "attachments.h"
 #include <QTcpServer>
 #ifdef Q_OS_UNIX
 #include <unistd.h>
@@ -1802,6 +1803,29 @@ private slots:
     }
 
     // ── Web server: startup ──────────────────────────────────────────
+    // ── Attachments: cross-edition fixture safety ───────────────────
+
+    void attachmentIdsAndDerivativesRejectUnsafeValues() {
+        QVERIFY(!attachmentIdIsValid("../../bad"));
+        QVERIFY(attachmentDerivativePath("sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "thumbnail-256-v1.jpg").isEmpty());
+        QVERIFY(attachmentDerivativePath("sha256:" + QString(64, 'a'), "other.bin").isEmpty());
+    }
+
+    void attachmentUnknownFieldsRoundTrip() {
+        QJsonObject ref{{"v",1},{"id","sha256:" + QString(64, 'a')},{"kind","future-widget"},{"name","future.bin"},{"media_type","application/x-future"},{"byte_size",12.0},{"created_at","2026-09-03T14:25:00Z"},{"future",QJsonObject{{"preserve",true}}}};
+        QJsonObject roundTrip = QJsonDocument::fromJson(QJsonDocument(ref).toJson(QJsonDocument::Compact)).object();
+        QCOMPARE(roundTrip, ref);
+    }
+
+    void attachmentInvalidAndCorruptInputsFail() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QString invalid = dir.path() + "/bad.png";
+        { QFile f(invalid); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("not an image"); }
+        QVERIFY(attachmentImportImage(invalid, "bad.png").isEmpty());
+        QVERIFY(attachmentImageDataUrl(QJsonObject{{"kind","image"},{"id","sha256:" + QString(64, 'b')}}, 4096, 4.5, 85).isEmpty());
+    }
+
 
     void webServerBindsPort() {
         WebServer server("127.0.0.1", 0);

@@ -5,13 +5,24 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+if [[ -n "${JOBS:-}" ]]; then
+    BUILD_JOBS="$JOBS"
+elif command -v nproc >/dev/null 2>&1; then
+    BUILD_JOBS="$(nproc)"
+elif command -v sysctl >/dev/null 2>&1; then
+    BUILD_JOBS="$(sysctl -n hw.ncpu)"
+else
+    BUILD_JOBS=4
+fi
+
 cd "$ROOT"
 
 echo "==> Building Pengy (C++/Qt6) for Linux..."
 mkdir -p build
 cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+make -j"$BUILD_JOBS"
 
 echo ""
 echo "==> Done! Binary: build/pengy"

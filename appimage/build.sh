@@ -12,6 +12,16 @@ TOOLS="$APPIMAGE_DIR/tools"
 APPDIR="$APPIMAGE_DIR/Pengy.AppDir"
 PROJECT_ROOT="$(dirname "$ROOT")"
 
+if [[ -n "${JOBS:-}" ]]; then
+    BUILD_JOBS="$JOBS"
+elif command -v nproc >/dev/null 2>&1; then
+    BUILD_JOBS="$(nproc)"
+elif command -v sysctl >/dev/null 2>&1; then
+    BUILD_JOBS="$(sysctl -n hw.ncpu)"
+else
+    BUILD_JOBS=4
+fi
+
 echo "==> Cleaning AppDir..."
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
@@ -23,7 +33,7 @@ echo "==> Building Pengy..."
 cd "$PROJECT_ROOT"
 mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+make -j"$BUILD_JOBS"
 
 # 2. Copy binary + assets to AppDir
 echo "==> Assembling AppDir..."

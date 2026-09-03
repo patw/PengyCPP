@@ -7,6 +7,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
+# macOS does not provide nproc; use an override, getconf, or sysctl.
+if [[ -n "${JOBS:-}" ]]; then
+    BUILD_JOBS="$JOBS"
+elif command -v nproc >/dev/null 2>&1; then
+    BUILD_JOBS="$(nproc)"
+elif command -v sysctl >/dev/null 2>&1; then
+    BUILD_JOBS="$(sysctl -n hw.ncpu)"
+else
+    BUILD_JOBS=4
+fi
+
 # Build (unless --prebuilt): same flow as build_linux.sh
 if [[ "${1:-}" != "--prebuilt" ]]; then
     echo "==> Building Pengy (C++/Qt6) release..."
@@ -14,7 +25,7 @@ if [[ "${1:-}" != "--prebuilt" ]]; then
     mkdir -p build
     cd build
     cmake .. -DCMAKE_BUILD_TYPE=Release
-    make -j"$(nproc)"
+    make -j"$BUILD_JOBS"
 fi
 
 echo ""

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.0 (current)
+
+- Attachment storage and rendering support across the CLI, desktop GUI, and web UI.
+- Provider message handling improvements and expanded attachment tests.
+
 ## v1.7.3 (current)
 
 - **Safer sudo handling.** `run_bash` now requires explicit `elevated=true` before invoking sudo, ignores sudo mentions in quotes/comments/data, and scopes cached sudo credentials to each web worker. Rust and C++ editions flush tool output before the hidden-password prompt for reliable terminal ordering.

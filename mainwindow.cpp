@@ -13,6 +13,8 @@
 #include "chatmanager.h"
 #include "tools.h"
 #include "image_utils.h"
+#include "attachments.h"
+#include "provider_messages.h"
 
 #include <QSplitter>
 #include <QVBoxLayout>
@@ -23,6 +25,7 @@
 #include <QJsonObject>
 #include <QMessageBox>
 #include <QFile>
+#include <QFileInfo>
 #include <QMimeDatabase>
 #include <QMimeType>
 #include <QLabel>
@@ -414,7 +417,10 @@ void MainWindow::renderMessage(ChatView* view, const QJsonObject& msg) {
         QString content = msg["content"].isString()
             ? msg["content"].toString()
             : QJsonDocument(msg["content"].toArray()).toJson(QJsonDocument::Compact);
-        view->appendMessageText("user", content, false);
+        QJsonObject display;
+        display["content"] = content;
+        display["attachments"] = msg["attachments"];
+        view->appendMessage("user", display, false);
 
     } else if (role == "assistant") {
         // Text first, tool cards after: the model wrote its narration *before*
@@ -561,21 +567,30 @@ void MainWindow::sendMessage(const QString& text, const QStringList& images) {
 
     session->yoloThisTurn = false;
 
-    // Build display string with image placeholders
-    QStringList placeholders;
-    for (const QString& img : images)
-        placeholders.append(QString("[Image: %1]").arg(img.section('/', -1)));
-    if (!text.isEmpty()) placeholders.append(text);
-    QString displayContent = placeholders.join("\n");
+    // Import images before persisting: history owns immutable bytes, never temp paths.
+    QJsonArray attachmentRefs;
+    for (const QString& image : images) {
+        QJsonObject ref = attachmentImportImage(image, QFileInfo(image).fileName(),
+            m_config.imageMaxDimension, m_config.imageMaxMb, m_config.imageQuality);
+        if (!ref.isEmpty()) attachmentRefs.append(ref);
+    }
+    QStringList labels;
+    for (const QJsonValue& ref : attachmentRefs) labels.append(attachmentLabel(ref.toObject()));
+    if (!text.isEmpty()) labels.append(text);
+    QString displayContent = labels.join("\n");
 
-    // Append user message to persistent history
+    // Persist text plus generic attachment refs; data URLs are request-only.
     QJsonObject userMsg;
     userMsg["role"]    = "user";
-    userMsg["content"] = displayContent;
+    userMsg["content"] = text;
+    if (!attachmentRefs.isEmpty()) userMsg["attachments"] = attachmentRefs;
     QJsonArray messages = session->chat["messages"].toArray();
     messages.append(userMsg);
     session->chat["messages"] = messages;
-    session->chatView->appendMessageText("user", displayContent);
+    QJsonObject displayMsg;
+    displayMsg["content"] = text;
+    displayMsg["attachments"] = attachmentRefs;
+    session->chatView->appendMessage("user", displayMsg);
 
     // Update chat title from first message
     if (session->chat["title"].toString() == "New Chat") {
@@ -610,43 +625,13 @@ void MainWindow::sendMessage(const QString& text, const QStringList& images) {
     QJsonArray prior;
     for (int i = 0; i < messages.size() - 1; ++i)
         prior.append(messages[i]);
-    QJsonArray cleaned = cleanDanglingToolCalls(prior);
+    QJsonArray cleaned = cleanDanglingToolCalls(messages);
     cleaned = elideOldToolResults(cleaned, m_config.contextKeepTurns);
-    for (const QJsonValue& v : cleaned)
+    const QJsonArray providerMessages = messagesForProvider(
+        cleaned, m_config.attachmentContextKeepTurns,
+        m_config.imageMaxDimension, m_config.imageMaxMb, m_config.imageQuality);
+    for (const QJsonValue& v : providerMessages)
         apiMessages.append(v);
-
-    // Current user message (with real image data if any)
-    if (!images.isEmpty()) {
-        int maxDim = m_config.imageMaxDimension;
-        double maxMb = m_config.imageMaxMb;
-        int quality = m_config.imageQuality;
-
-        QJsonArray parts;
-        for (const QString& imgPath : images) {
-            ImageResult ir = imagePreprocess(imgPath, maxDim, maxMb, quality);
-            if (ir.ok) {
-                QJsonObject imgPart;
-                imgPart["type"] = "image_url";
-                imgPart["image_url"] = QJsonObject{
-                    {"url", QString("data:%1;base64,%2")
-                        .arg(ir.mime, QString::fromUtf8(ir.bytes_base64))}
-                };
-                parts.append(imgPart);
-            }
-        }
-        if (!text.isEmpty())
-            parts.append(QJsonObject{{"type", "text"}, {"text", text}});
-
-        QJsonObject multiMsg;
-        multiMsg["role"]    = "user";
-        multiMsg["content"] = parts;
-        apiMessages.append(multiMsg);
-    } else {
-        QJsonObject textMsg;
-        textMsg["role"]    = "user";
-        textMsg["content"] = displayContent;
-        apiMessages.append(textMsg);
-    }
 
     processResponse(session, apiMessages);
 }

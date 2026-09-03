@@ -39,6 +39,8 @@
   @media (min-width: 576px) { .messages-area { padding: 1.25rem 1rem; } }
   .msg-user { display: flex; justify-content: flex-end; margin-bottom: 0.85rem; }
   .bubble-user { max-width: 85%; background: var(--bs-secondary-bg); border-radius: 18px 18px 4px 18px; padding: 0.6rem 1rem; white-space: pre-wrap; word-break: break-word; font-size: 0.9rem; }
+  .attachment-grid { display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:.45rem; }
+  .attachment-thumb { width:96px; height:96px; object-fit:cover; border-radius:6px; cursor:pointer; }
   @media (max-width: 575px) { .bubble-user { max-width: 92%; } }
   .msg-assistant { display: flex; justify-content: flex-start; margin-bottom: 0.85rem; }
   .bubble-assistant { max-width: 90%; background: var(--bs-tertiary-bg); border-radius: 4px 18px 18px 18px; padding: 0.75rem 1rem; font-size: 0.9rem; word-break: break-word; }
@@ -614,11 +616,12 @@ function renderMd(raw) {
 }
 
 // ── Message DOM helpers ────────────────────────────────────────────
-function appendUserMsg(content) {
+function appendUserMsg(content, attachments = []) {
   hideEmptyState();
   const d = document.createElement('div');
   d.className = 'msg-user';
-  d.innerHTML = '<div class="bubble-user">' + esc(content) + '</div>';
+  const cards = attachments.map(a => a.kind === 'image' && a.id && a.id.startsWith('sha256:') ? '<img class="attachment-thumb" src="/attachments/' + a.id.slice(7) + '/thumbnail" alt="' + esc(a.name || 'Image') + '">' : '<span>Attachment unavailable: ' + esc(a.name || 'Attachment') + '</span>').join('');
+  d.innerHTML = '<div class="bubble-user"><div class="attachment-grid">' + cards + '</div>' + esc(content) + '</div>';
   document.getElementById('messages').appendChild(d);
   scrollBottom();
 }
@@ -708,7 +711,7 @@ function renderInitMessages(messages) {
     const msg = messages[i];
     if (msg.role === 'system') { i++; continue; }
     if (msg.role === 'user') {
-      appendUserMsg(typeof msg.content === 'string' ? msg.content : '');
+      appendUserMsg(typeof msg.content === 'string' ? msg.content : '', msg.attachments || []);
       i++;
     } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
       // Tool turn — render any text content first
@@ -975,7 +978,7 @@ async function sendMessage(content) {
   hideEmptyState();
   const displayContent = content + (pendingFiles.length > 0
     ? ' [attached: ' + pendingFiles.map(f => f.name).join(', ') + ']' : '');
-  appendUserMsg(displayContent);
+  appendUserMsg(displayContent, []);
   setProcessing(true);
   showThinking();
   connectSSE();

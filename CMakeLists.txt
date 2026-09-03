@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Pengy VERSION 1.7.3 LANGUAGES CXX)
+project(Pengy VERSION 1.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,6 +24,8 @@ add_executable(pengy-cli
     tools.cpp
     llmclient.cpp
     image_utils.cpp
+    attachments.cpp
+    provider_messages.cpp
 )
 # Qt6::Gui (not Widgets) for QImage — read_image decodes and rescales in tools.cpp.
 target_link_libraries(pengy-cli PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
@@ -44,6 +46,8 @@ add_executable(pengy-web
     tools.cpp
     llmclient.cpp
     image_utils.cpp
+    attachments.cpp
+    provider_messages.cpp
 )
 target_link_libraries(pengy-web PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
 target_include_directories(pengy-web PRIVATE ${CMAKE_BINARY_DIR})
@@ -57,6 +61,8 @@ add_executable(pengy
     tools.cpp
     llmclient.cpp
     image_utils.cpp
+    attachments.cpp
+    provider_messages.cpp
     chatworker.cpp
     mainwindow.cpp
     chathistory.cpp
@@ -92,6 +98,9 @@ if(Qt6Test_FOUND)
     add_executable(pengy_chatview_test
         test_chatview_scroll.cpp
         chatview.cpp
+        attachments.cpp
+        config.cpp
+        image_utils.cpp
     )
     target_compile_definitions(pengy_chatview_test PRIVATE PENGY_UNIT_TEST)
     target_link_libraries(pengy_chatview_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg)
@@ -119,6 +128,8 @@ if(Qt6Test_FOUND)
         tools.cpp
         llmclient.cpp
         image_utils.cpp
+        attachments.cpp
+        provider_messages.cpp
         web/webserver.cpp
         web/webchatworker.cpp
         web/web_resources.qrc

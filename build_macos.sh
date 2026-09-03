@@ -54,6 +54,36 @@ echo "==> All $PASS binary(s) passed smoke test."
 echo "==> Creating Pengy.app bundle..."
 APP_DIR="$ROOT/Pengy.app"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+
+# Always write a complete application manifest. A stale/minimal plist can make
+# macdeployqt/codesign produce an apparently built but invalid app bundle.
+PROJECT_VERSION=$(sed -n 's/^project(Pengy VERSION \([^ ]*\).*/\1/p' "$ROOT/CMakeLists.txt" | head -1)
+cat > "$APP_DIR/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>pengy</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.pengy.Pengy</string>
+    <key>CFBundleName</key>
+    <string>Pengy</string>
+    <key>CFBundleDisplayName</key>
+    <string>Pengy</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$PROJECT_VERSION</string>
+    <key>CFBundleVersion</key>
+    <string>$PROJECT_VERSION</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+PLIST
 cp pengy "$APP_DIR/Contents/MacOS/"
 cp "$ROOT/pengy.png" "$APP_DIR/Contents/Resources/"
 # Create an icns if the png is available (macOS prefers icns for dock/titlebar)
@@ -71,7 +101,7 @@ if command -v sips &>/dev/null; then
     /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string Pengy" "$APP_DIR/Contents/Info.plist" 2>/dev/null || \
         /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile Pengy" "$APP_DIR/Contents/Info.plist"
 fi
-macdeployqt "$APP_DIR" -verbose=2 || true
+macdeployqt "$APP_DIR" -verbose=2
 echo "==> macdeployqt finished (warnings about unused frameworks are normal)"
 
 # macdeployqt modifies dylib load paths which invalidates existing signatures;

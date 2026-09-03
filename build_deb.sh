@@ -5,7 +5,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${VERSION:-$(grep -oP 'project\(\w+ VERSION \K[\d.]+' CMakeLists.txt | head -1)}"
+
+if [[ -n "${JOBS:-}" ]]; then
+    BUILD_JOBS="$JOBS"
+elif command -v nproc >/dev/null 2>&1; then
+    BUILD_JOBS="$(nproc)"
+elif command -v sysctl >/dev/null 2>&1; then
+    BUILD_JOBS="$(sysctl -n hw.ncpu)"
+else
+    BUILD_JOBS=4
+fi
+
+VERSION="${VERSION:-$(sed -n 's/^project([^ ]* VERSION \([^ ]*\).*/\1/p' CMakeLists.txt | head -1)}"
 # Strip leading 'v' if present (dpkg requires a digit-first version)
 VERSION="${VERSION#v}"
 ARCH="$(dpkg --print-architecture)"
@@ -17,7 +28,7 @@ echo "==> Building Pengy..."
 mkdir -p "$ROOT/build"
 cd "$ROOT/build"
 cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+make -j"$BUILD_JOBS"
 
 # 2. Smoke test binaries before packaging
 echo "==> Smoke testing binaries..."

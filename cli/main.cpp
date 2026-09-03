@@ -13,6 +13,7 @@
 #include <QUuid>
 #include <QTextStream>
 #include <QRegularExpression>
+#include <QSet>
 #include <atomic>
 #include <cstdio>
 #include <functional>
@@ -30,6 +31,8 @@
 #include "../llmclient.h"
 #include "../taskmanager.h"
 #include "../tools.h"
+#include "../attachments.h"
+#include "../provider_messages.h"
 #include "version.h"
 
 // ── Terminal colors ──────────────────────────────────────────────────
@@ -418,13 +421,33 @@ private:
     // ── LLM run ─────────────────────────────────────────────────────
 
     void runLlm(const QString& rawInput, bool noSave = false) {
-        const QString input = expandAttachments(rawInput);
-        if (input.isEmpty()) return;
+        QString input = rawInput;
+        QJsonArray attachmentRefs;
+        QRegularExpression imageToken(R"(@(\\S+))");
+        auto it = imageToken.globalMatch(rawInput);
+        while (it.hasNext()) {
+            auto match = it.next();
+            QString token = match.captured(1).trimmed();
+            while (!token.isEmpty() && QStringLiteral(",;:.!?)]}'\"").contains(token.back())) token.chop(1);
+            QString path = token.startsWith('~') ? QDir::homePath() + token.mid(1) : token;
+            if (QFileInfo::exists(path) && QFileInfo(path).isFile() &&
+                QFileInfo(path).suffix().toLower() != "txt") {
+                QJsonObject ref = attachmentImportImage(path, QFileInfo(path).fileName(), cfg.imageMaxDimension, cfg.imageMaxMb, cfg.imageQuality);
+                if (!ref.isEmpty()) {
+                    attachmentRefs.append(ref);
+                    input.replace(match.captured(0), "");
+                }
+            }
+        }
+        input = expandAttachments(input);
+        if (input.isEmpty() && attachmentRefs.isEmpty()) return;
 
         m_noSave = noSave;
 
         QJsonArray hist = chat["messages"].toArray();
-        hist.append(QJsonObject{{"role","user"},{"content",input}});
+        QJsonObject userMessage{{"role","user"},{"content",input}};
+        if (!attachmentRefs.isEmpty()) userMessage["attachments"] = attachmentRefs;
+        hist.append(userMessage);
         hist = cleanDanglingToolCalls(hist);
         if (cfg.contextKeepTurns > 0)
             hist = elideOldToolResults(hist, cfg.contextKeepTurns);
@@ -435,7 +458,11 @@ private:
                 {"role","system"},
                 {"content", configRenderSystemMessage(cfg.systemMessage)}
             });
-        for (const QJsonValue& v : hist) sendMsgs.append(v);
+        const QJsonArray providerMessages = messagesForProvider(
+            hist, cfg.attachmentContextKeepTurns,
+            cfg.imageMaxDimension, cfg.imageMaxMb, cfg.imageQuality);
+        for (const QJsonValue& v : providerMessages)
+            sendMsgs.append(v);
 
         m_firstEventDone = false;
 
@@ -444,7 +471,9 @@ private:
         // about the turn waits on the turn finishing to reach disk.
         {
             QJsonArray msgs = chat["messages"].toArray();
-            msgs.append(QJsonObject{{"role","user"},{"content",input}});
+            QJsonObject persistedUser{{"role","user"},{"content",input}};
+            if (!attachmentRefs.isEmpty()) persistedUser["attachments"] = attachmentRefs;
+            msgs.append(persistedUser);
             chat["messages"] = msgs;
             if (chat["title"].toString() == "New Chat" && msgs.size() <= 2)
                 chat["title"] = input.left(60).replace('\n', ' ');
@@ -726,6 +755,7 @@ private:
             outln("  model:            " + cfg.model);
             outln("  tool_confirm:     " + cfg.toolConfirmation);
             outln("  context_keep:     " + QString::number(cfg.contextKeepTurns));
+            outln("  image_context:    " + QString::number(cfg.attachmentContextKeepTurns));
             outln("  llm_timeout:     " + QString::number(cfg.llmTimeout) + "s");
             outln("  tool_timeout:     " + QString::number(cfg.toolTimeout) + "s");
             outln("  download_max_mb:  " + QString::number(cfg.downloadMaxMb) + " MB");
@@ -837,6 +867,9 @@ private:
             bool ok; int n = arg.toInt(&ok);
             if (!ok || n < 1) outln("Usage: /delete <n>  (see /list)");
             else deleteChat(n - 1);
+
+        } else if (cmd == "/attachments") {
+            outln(QJsonDocument(attachmentStorageReport(chatsLoad())).toJson(QJsonDocument::Indented));
 
         } else if (cmd == "/attach") {
             outln(bold("File attachment:"));
@@ -952,6 +985,8 @@ private:
 
             if (role == "user") {
                 lines << "### 🧑 You";
+                for (const QJsonValue& av : msg["attachments"].toArray())
+                    lines << attachmentLabel(av.toObject());
                 lines << content;
                 lines << "";
             } else if (role == "assistant") {
@@ -1067,7 +1102,8 @@ private:
         QMap<QString, QString> values;
         for (const QString& name : placeholders) {
             const QByteArray prompt = ("  " + name + ": ").toUtf8();
-            values[name] = readline_qstring(prompt.constData());
+            out(prompt);
+            values[name] = readline_qstring("");
         }
 
         const QString rendered = renderTaskTemplate(templ, values).trimmed();
@@ -1109,7 +1145,8 @@ private:
             {"/list",                "List all chats"},
             {"/load <n>",            "Load chat by number"},
             {"/delete <n>",          "Delete chat by number"},
-            {"/attach",              "Show file attachment help"},
+            {"/attach",              "Show file attachment help (use @path)"},
+            {"/attachments",         "Show durable attachment storage usage (read-only)"},
             {"/quit",                "Exit"},
         };
         outln(bold("Commands:"));

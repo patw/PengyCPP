@@ -84,13 +84,14 @@ private:
     void routeChatStop(const QString& chatId, QTcpSocket* socket);
     void routeChatDelete(const QString& chatId, QTcpSocket* socket);
     void routeChatExport(const QString& chatId, QTcpSocket* socket);
+    void routeChatExportBundle(const QString& chatId, const QString& format, QTcpSocket* socket);
     void routeChatRename(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatRedact(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatCommand(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeTasks(QTcpSocket* socket);
     void routeTasksRender(const HttpRequest& req, QTcpSocket* socket);
     void routeModels(QTcpSocket* socket);
-    void routeFile(const HttpRequest& req, QTcpSocket* socket);
+    void routeFile(const HttpRequest& req, QTcpSocket* socket);    void routeAttachment(const HttpRequest& req, QTcpSocket* socket);
     void routeSettings(const HttpRequest& req, QTcpSocket* socket);
 
     void sendResponse(QTcpSocket* socket, int status,

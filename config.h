@@ -13,6 +13,7 @@ struct Config {
     QString reasoningEffort;
     bool preserveReasoning   = false;
     int  contextKeepTurns    = 0;
+    int  attachmentContextKeepTurns = 4;
     int  uiScale             = 100;
     QString themeMode        = "system"; // "system" | "light" | "dark"
     QString themeAccent      = "default"; // default | blue | teal | green | orange | red | pink | purple

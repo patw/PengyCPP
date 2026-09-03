@@ -1,0 +1,5 @@
+{
+  "id": "legacy-placeholder",
+  "title": "Legacy placeholder",
+  "messages": [{"role": "user", "content": "[Image: old.png]"}]
+}
