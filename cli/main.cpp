@@ -33,6 +33,7 @@
 #include "../tools.h"
 #include "../attachments.h"
 #include "../provider_messages.h"
+#include "../about.h"
 #include "version.h"
 
 // ── Terminal colors ──────────────────────────────────────────────────
@@ -879,6 +880,18 @@ private:
             outln("  Use " + cyan("@path/to/file") + " anywhere in your message to attach a text file.");
             outln("  Example: " + dim("Look at @src/main.cpp and fix the bug"));
 
+        } else if (cmd == "/about") {
+            outln(bold(pengyEditionLine("C++")));
+            outln(kPengyGithubUrl);
+            outln(kPengyWebsiteUrl);
+            outln("");
+            outln(kPengyDescription);
+            outln("");
+            outln(kCatbeeBlurb + " " + kCatbeeUrl);
+            outln("");
+            outln(pengyCopyrightLine());
+            outln(kPengyLicenseName + ": " + kPengyLicenseUrl);
+
         } else {
             outln(red("Unknown command: " + cmd + "  — type /help"));
         }
@@ -1150,6 +1163,7 @@ private:
             {"/delete <n>",          "Delete chat by number"},
             {"/attach",              "Show file attachment help (use @path)"},
             {"/attachments",         "Show durable attachment storage usage (read-only)"},
+            {"/about",               "Show version, repo link, and license info"},
             {"/quit",                "Exit"},
         };
         outln(bold("Commands:"));

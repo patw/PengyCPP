@@ -6,6 +6,7 @@
 #include "../image_utils.h"
 #include "../attachments.h"
 #include "../provider_messages.h"
+#include "../about.h"
 #include <QTcpSocket>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -177,6 +178,8 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
         routeRoot(socket);
     } else if (parts[0] == "settings") {
         routeSettings(req, socket);
+    } else if (parts[0] == "about" && req.method == "GET") {
+        routeAbout(socket);
     } else if (parts[0] == "models" && req.method == "GET") {
         routeModels(socket);
     } else if (parts[0] == "files" && req.method == "GET") {
@@ -1077,6 +1080,10 @@ void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {
     }
 }
 
+void WebServer::routeAbout(QTcpSocket* socket) {
+    sendResponse(socket, 200, "text/html; charset=utf-8", renderAboutPage());
+}
+
 // ── SSE push ─────────────────────────────────────────────────────────
 
 QByteArray WebServer::formatSseEvent(int id, const QJsonObject& event) {
@@ -1222,6 +1229,28 @@ QByteArray WebServer::renderSettingsPage() {
     html.replace("{{REASONING_XHIGH}}",   cfg.reasoningEffort == "xhigh" ? "selected" : "");
     html.replace("{{REASONING_MAX}}",     cfg.reasoningEffort == "max" ? "selected" : "");
     html.replace("{{PRESERVE_REASONING}}", cfg.preserveReasoning ? "checked" : "");
+
+    return html.toUtf8();
+}
+
+QByteArray WebServer::renderAboutPage() {
+    QFile f(":/web/templates/about.html");
+    if (!f.open(QIODevice::ReadOnly)) return "<h1>Template missing</h1>";
+    QString html = QString::fromUtf8(f.readAll());
+
+    QJsonArray chats = chatsLoadIndex();
+
+    html.replace("{{EDITION_LINE}}",  pengyEditionLine("C++").toHtmlEscaped());
+    html.replace("{{GITHUB_URL}}",    kPengyGithubUrl.toHtmlEscaped());
+    html.replace("{{WEBSITE_URL}}",   kPengyWebsiteUrl.toHtmlEscaped());
+    html.replace("{{DESCRIPTION}}",   kPengyDescription.toHtmlEscaped());
+    html.replace("{{CATBEE_BLURB}}",  kCatbeeBlurb.toHtmlEscaped());
+    html.replace("{{CATBEE_URL}}",    kCatbeeUrl.toHtmlEscaped());
+    html.replace("{{COPYRIGHT}}",     pengyCopyrightLine().toHtmlEscaped());
+    html.replace("{{LICENSE_NAME}}",  kPengyLicenseName.toHtmlEscaped());
+    html.replace("{{LICENSE_URL}}",   kPengyLicenseUrl.toHtmlEscaped());
+    html.replace("{{CHATS_JSON}}",
+        safeJs(QJsonDocument(chats).toJson(QJsonDocument::Compact)));
 
     return html.toUtf8();
 }

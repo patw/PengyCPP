@@ -10,6 +10,10 @@
   tool-request, and error-display paths. Display-only: raw bytes to the model are
   unchanged, and emoji (UTF-16 surrogate pairs) pass through untouched. Covered by
   `sanitizeDisplayStripsAnsiAndControl` in `tests.cpp`.
+- **About window & page.** A new `About` tab in the Settings dialog and an `/about`
+  web route — backed by a shared `about.h` — show the edition name + version, a
+  short description, the project repo/website/license links, and a Catbee
+  attribution, consistent across the CLI, GUI, and web.
 
 ## v1.8.0
 

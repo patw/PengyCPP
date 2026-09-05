@@ -2,5 +2,6 @@
     <qresource prefix="/web">
         <file>templates/chat.html</file>
         <file>templates/settings.html</file>
+        <file>templates/about.html</file>
     </qresource>
 </RCC>

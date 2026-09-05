@@ -15,8 +15,10 @@
 #include <QPointer>
 #include <QAbstractItemView>
 #include <QTabWidget>
+#include <QFont>
 #include "themehelper.h"
 #include "iconhelper.h"
+#include "about.h"
 
 /* ComboBox whose dropdown popup is ~50% wider than the combo itself,
    so short-content combos (scale %, theme, accent) feel proportional
@@ -220,6 +222,45 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     toolsForm->addRow(labelWithTip("User Agent:", "HTTP User-Agent header sent with LLM API requests and any HTTP-based tool calls."), m_userAgent);
 
     tabs->addTab(toolsTab, "Tools");
+
+    // ── About tab ───────────────────────────────────────────────
+    auto* aboutTab    = new QWidget;
+    auto* aboutLayout = new QVBoxLayout(aboutTab);
+    aboutLayout->setSpacing(8);
+
+    auto* versionLabel = new QLabel(pengyEditionLine("C++"));
+    QFont versionFont = versionLabel->font();
+    versionFont.setBold(true);
+    versionFont.setPointSize(versionFont.pointSize() + 2);
+    versionLabel->setFont(versionFont);
+    aboutLayout->addWidget(versionLabel);
+
+    auto* repoLabel = new QLabel(QString("<a href=\"%1\">%1</a>").arg(kPengyGithubUrl));
+    repoLabel->setOpenExternalLinks(true);
+    aboutLayout->addWidget(repoLabel);
+
+    auto* websiteLabel = new QLabel(QString("<a href=\"%1\">%1</a>").arg(kPengyWebsiteUrl));
+    websiteLabel->setOpenExternalLinks(true);
+    aboutLayout->addWidget(websiteLabel);
+
+    auto* descriptionLabel = new QLabel(kPengyDescription);
+    descriptionLabel->setWordWrap(true);
+    aboutLayout->addWidget(descriptionLabel);
+
+    auto* catbeeLabel = new QLabel(
+        QString("%1 <a href=\"%2\">%2</a>").arg(kCatbeeBlurb, kCatbeeUrl));
+    catbeeLabel->setWordWrap(true);
+    catbeeLabel->setOpenExternalLinks(true);
+    aboutLayout->addWidget(catbeeLabel);
+
+    auto* copyrightLabel = new QLabel(
+        QString("%1<br><a href=\"%2\">%3</a>")
+            .arg(pengyCopyrightLine(), kPengyLicenseUrl, kPengyLicenseName));
+    copyrightLabel->setOpenExternalLinks(true);
+    aboutLayout->addWidget(copyrightLabel);
+
+    aboutLayout->addStretch();
+    tabs->addTab(aboutTab, "About");
 
     layout->addWidget(tabs);
     layout->addStretch();

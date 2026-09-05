@@ -132,16 +132,35 @@
       <span class="badge bg-secondary small" id="navbar-tc-badge">Confirm</span>
       <span class="text-muted small d-none d-md-inline ms-1" id="navTokens"
             title="Cumulative token usage for this chat" hidden>0 tokens</span>
-      <button class="btn btn-outline-secondary" onclick="openTasks()" title="Run a saved prompt template" aria-label="Tasks">
-        <i class="bi bi-list-task"></i>
-      </button>
-      <button class="btn btn-outline-secondary" onclick="exportChat()" title="Export chat as Markdown" aria-label="Export chat">
-        <i class="bi bi-download"></i>
-      </button>
-      <button class="btn btn-outline-secondary" onclick="redactLast()"
-              title="Redact last message — delete the last message from context (repeatable)" aria-label="Redact last message">
-        <i class="bi bi-eraser"></i>
-      </button>
+      <!-- Desktop: three separate action buttons -->
+      <div class="d-none d-md-flex align-items-center gap-1">
+        <button class="btn btn-outline-secondary" onclick="openTasks()" title="Run a saved prompt template" aria-label="Tasks">
+          <i class="bi bi-list-task"></i>
+        </button>
+        <button class="btn btn-outline-secondary" onclick="exportChat()" title="Export chat as Markdown" aria-label="Export chat">
+          <i class="bi bi-download"></i>
+        </button>
+        <button class="btn btn-outline-secondary" onclick="redactLast()"
+                title="Redact last message — delete the last message from context (repeatable)" aria-label="Redact last message">
+          <i class="bi bi-eraser"></i>
+        </button>
+      </div>
+      <!-- Mobile: collapse the same three actions into one dropdown so the navbar doesn't
+           get crowded with icon buttons on narrow screens. -->
+      <div class="dropdown d-md-none">
+        <button class="btn btn-outline-secondary dropdown-toggle" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false" title="More actions" aria-label="More actions">
+          <i class="bi bi-three-dots-vertical"></i>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li><a class="dropdown-item" href="#" onclick="openTasks(); return false;">
+            <i class="bi bi-list-task me-2"></i>Tasks</a></li>
+          <li><a class="dropdown-item" href="#" onclick="exportChat(); return false;">
+            <i class="bi bi-download me-2"></i>Export</a></li>
+          <li><a class="dropdown-item" href="#" onclick="redactLast(); return false;">
+            <i class="bi bi-eraser me-2"></i>Redact Last</a></li>
+        </ul>
+      </div>
       <a href="/settings" class="btn btn-outline-secondary" aria-label="Settings">
         <i class="bi bi-gear"></i><span class="d-none d-sm-inline ms-1">Settings</span>
       </a>

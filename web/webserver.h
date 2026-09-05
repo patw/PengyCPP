@@ -93,6 +93,7 @@ private:
     void routeModels(QTcpSocket* socket);
     void routeFile(const HttpRequest& req, QTcpSocket* socket);    void routeAttachment(const HttpRequest& req, QTcpSocket* socket);
     void routeSettings(const HttpRequest& req, QTcpSocket* socket);
+    void routeAbout(QTcpSocket* socket);
 
     void sendResponse(QTcpSocket* socket, int status,
                       const QString& contentType, const QByteArray& body);
@@ -105,6 +106,7 @@ private:
 
     QByteArray renderChatPage(const QString& chatId);
     QByteArray renderSettingsPage();
+    QByteArray renderAboutPage();
 
     static HttpRequest parseRequest(const QByteArray& data);
     static QHash<QString, QString> parseForm(const QByteArray& body);
