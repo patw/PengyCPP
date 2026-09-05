@@ -22,6 +22,7 @@
 #include <QImage>
 #include "tools.h"
 #include "llmclient.h"
+#include "sanitize.h"
 #include "web/webserver.h"
 #include "attachments.h"
 #include <QTcpServer>
@@ -273,6 +274,37 @@ private slots:
         QFile(m_xdgDir.path() + "/pengy/chats.json").remove();
         QFile(m_xdgDir.path() + "/pengy/settings.json").remove();
         QFile(m_xdgDir.path() + "/pengy/models_cache.json").remove();
+    }
+
+    // ── CLI display sanitisation ──────────────────────────────────
+
+    void sanitizeDisplayStripsAnsiAndControl() {
+        // CSI color codes are removed.
+        QCOMPARE(sanitizeDisplay(QStringLiteral("\x1b[31mred\x1b[0m")), QStringLiteral("red"));
+        // C0 control (other than \n, \t) and DEL are dropped. Build with QChar
+        // to avoid C++ hex-escape greediness (e.g. "\x00b" would be 0x0b).
+        {
+            QString in;
+            in += QLatin1Char('a'); in += QChar(0x00); in += QLatin1Char('b');
+            in += QChar(0x07); in += QLatin1Char('c'); in += QChar(0x1f); in += QLatin1Char('d');
+            QCOMPARE(sanitizeDisplay(in), QStringLiteral("abcd"));
+        }
+        // \n and \t survive.
+        QCOMPARE(sanitizeDisplay(QStringLiteral("line1\nline2\tend")), QStringLiteral("line1\nline2\tend"));
+        // A bracketed path (the original rich-MarkupError trigger) is untouched.
+        QCOMPARE(sanitizeDisplay(QStringLiteral("FAIL: [tests/test.cpp(9)]")), QStringLiteral("FAIL: [tests/test.cpp(9)]"));
+        // OSC title sequence is dropped (ESC ] ... BEL).
+        {
+            QString in;
+            in += QLatin1Char('a'); in += QChar(0x1b); in += QLatin1Char(']');
+            in += QStringLiteral("0;evil"); in += QChar(0x07); in += QLatin1Char('b');
+            QCOMPARE(sanitizeDisplay(in), QStringLiteral("ab"));
+        }
+        // Consecutive escapes are all removed.
+        QCOMPARE(sanitizeDisplay(QStringLiteral("\x1b[1m\x1b[35mhi\x1b[0m")), QStringLiteral("hi"));
+        // Emoji (a UTF-16 surrogate pair) must pass through untouched.
+        QCOMPARE(sanitizeDisplay(QStringLiteral("🔧 Tool 🐧")), QStringLiteral("🔧 Tool 🐧"));
+        QCOMPARE(sanitizeDisplay(QStringLiteral("line\n☀️ done")), QStringLiteral("line\n☀️ done"));
     }
 
     // ── Config ──────────────────────────────────────────────────────

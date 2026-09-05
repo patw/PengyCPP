@@ -61,6 +61,9 @@ static void out(const QString& s) {
 static void outln(const QString& s = {}) { out(s + '\n'); }
 static void prompt(const QString& p) { out(bold(p)); }
 
+// sanitizeDisplay() lives in ../sanitize.h so CLI + tests share one definition.
+#include "../sanitize.h"
+
 // ── Markdown-to-terminal renderer ────────────────────────────────────
 
 static QString renderInline(const QString& text) {
@@ -538,11 +541,11 @@ private:
 
         } else if (type == "tool_request") {
             outln();
-            outln(cyan(bold("--- Tool: " + ev["name"].toString() + " ---")));
+            outln(cyan(bold("--- Tool: " + sanitizeDisplay(ev["name"].toString()) + " ---")));
             QString argsText = QJsonDocument(ev["args"].toObject())
                         .toJson(QJsonDocument::Indented).trimmed();
             if (argsText.size() > 4000) argsText = argsText.left(4000) + "\n… [truncated]";
-            outln(dim(argsText));
+            outln(dim(sanitizeDisplay(argsText)));
 
         } else if (type == "question_result") {
             // The LLM loop already has this on its own message list; persist it
@@ -566,7 +569,7 @@ private:
                 QString result = ev["content"].toString();
                 if (result.size() > 2000) result = result.left(2000) + "\n… [truncated]";
                 outln(dim("--- Output ---"));
-                outln(dim(result));
+                outln(dim(sanitizeDisplay(result)));
             }
 
         } else if (type == "final_response") {
@@ -1026,7 +1029,7 @@ private:
             f.close();
             outln(green("✓ Exported to: ") + bold(outPath));
         } else {
-            outln(red("Error exporting: ") + f.errorString());
+            outln(red("Error exporting: ") + sanitizeDisplay(f.errorString()));
         }
     }
 
