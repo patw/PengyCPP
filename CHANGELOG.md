@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.8.3
+
+- **Reliable image attachments from every input path.** Content-addressed image
+  objects intentionally have extensionless SHA-256 filenames. Image preprocessing
+  now detects the source format with `QImageReader` from its bytes rather than
+  using the filename suffix, so valid PNG attachments generate display and
+  thumbnail derivatives correctly.
+- **More reliable macOS image paste.** The Qt input accepts both `QPixmap` and
+  `QImage` clipboard payloads, accommodating the native `NSImage` representation
+  commonly supplied by macOS. Extensionless attachment regression coverage was
+  added to the C++ test suite.
+
 ## v1.8.2
 
 - **Fix: AppImage crashed on startup on Wayland-only compositors (niri/sway/Hyprland).**

@@ -59,7 +59,15 @@ void InputEdit::resizeEvent(QResizeEvent* event) {
 void InputEdit::insertFromMimeData(const QMimeData* source) {
     // Check for image first
     if (source->hasImage()) {
-        QImage image = source->imageData().value<QImage>();
+        // macOS commonly supplies an NSImage as a QPixmap QVariant, whereas
+        // Linux normally supplies a QImage.  Asking QVariant directly for a
+        // QImage loses the former, yielding an empty temporary PNG.
+        const QVariant imageData = source->imageData();
+        QImage image;
+        if (imageData.canConvert<QPixmap>())
+            image = imageData.value<QPixmap>().toImage();
+        if (image.isNull() && imageData.canConvert<QImage>())
+            image = imageData.value<QImage>();
         if (!image.isNull()) {
             // Save to temp file
             QString tmpDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);

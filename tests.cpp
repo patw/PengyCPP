@@ -25,6 +25,7 @@
 #include "sanitize.h"
 #include "web/webserver.h"
 #include "attachments.h"
+#include "image_utils.h"
 #include <QTcpServer>
 #ifdef Q_OS_UNIX
 #include <unistd.h>
@@ -1856,6 +1857,28 @@ private slots:
         { QFile f(invalid); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("not an image"); }
         QVERIFY(attachmentImportImage(invalid, "bad.png").isEmpty());
         QVERIFY(attachmentImageDataUrl(QJsonObject{{"kind","image"},{"id","sha256:" + QString(64, 'b')}}, 4096, 4.5, 85).isEmpty());
+    }
+
+    void attachmentExtensionlessPngGeneratesDerivatives() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString source = dir.path() + "/source.png";
+        QImage image(32, 24, QImage::Format_RGB888);
+        image.fill(QColor(20, 30, 40));
+        QVERIFY(image.save(source, "PNG"));
+
+        const QJsonObject ref = attachmentImportImage(source, "source.png", 4096, 4.5, 85);
+        QVERIFY(!ref.isEmpty());
+        const QString id = ref["id"].toString();
+        QVERIFY(QFileInfo::exists(attachmentObjectPath(id)));
+        QVERIFY(QFileInfo::exists(attachmentDerivativePath(id, "image-display-v1.jpg")));
+        QVERIFY(QFileInfo::exists(attachmentDerivativePath(id, "thumbnail-256-v1.jpg")));
+
+        // Reprocessing the extensionless SHA-256 object must retain detected
+        // PNG semantics rather than falling back to suffix-based JPEG input.
+        const ImageResult result = imagePreprocess(attachmentObjectPath(id), 4096, 4.5, 85);
+        QVERIFY(result.ok);
+        QCOMPARE(result.mime, QString("image/jpeg"));
     }
 
 

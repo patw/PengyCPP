@@ -2,20 +2,21 @@
 #include <QImage>
 #include <QBuffer>
 #include <QFile>
-#include <QFileInfo>
+#include <QImageReader>
 #include <QPainter>
 
 static const int    kDefaultMaxDimension = 4096;
 static const double kDefaultMaxMb        = 4.5;
 static const int    kDefaultQuality      = 85;
 
-static QString guessMime(const QString& path) {
-    QString ext = QFileInfo(path).suffix().toLower();
-    if (ext == "jpg" || ext == "jpeg") return "image/jpeg";
-    if (ext == "png")  return "image/png";
-    if (ext == "gif")  return "image/gif";
-    if (ext == "webp") return "image/webp";
-    if (ext == "bmp")  return "image/bmp";
+static QString mimeForFormat(const QByteArray& format) {
+    const QByteArray f = format.toLower();
+    if (f == "jpg" || f == "jpeg") return "image/jpeg";
+    if (f == "png") return "image/png";
+    if (f == "gif") return "image/gif";
+    if (f == "webp") return "image/webp";
+    if (f == "bmp") return "image/bmp";
+    if (f == "tiff") return "image/tiff";
     return "image/jpeg";
 }
 
@@ -33,12 +34,17 @@ ImageResult imagePreprocess(const QString& path, int maxDimension, double maxMb,
     if (maxMb <= 0.0)      maxMb        = kDefaultMaxMb;
     if (quality <= 0)      quality      = kDefaultQuality;
 
-    QImage img(path);
+    // Content-addressed attachment objects deliberately have no filename
+    // extension. QImageReader detects their format from bytes, unlike suffix
+    // based MIME guessing.
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    const QString mime = mimeForFormat(reader.format());
+    QImage img = reader.read();
     if (img.isNull()) return result;
 
     int w = img.width(), h = img.height();
     int maxBytes = static_cast<int>(maxMb * 1048576.0);
-    QString mime = guessMime(path);
 
     // Step 1: dimension cap
     if (w > maxDimension || h > maxDimension) {
