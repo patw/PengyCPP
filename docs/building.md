@@ -12,7 +12,7 @@
 
 ```bash
 # Dependencies
-sudo apt install build-essential cmake qt6-base-dev libgl-dev
+sudo apt install build-essential cmake qt6-base-dev qt6-wayland libgl-dev
 
 # Build everything (GUI + CLI + Web)
 ./build_linux.sh
@@ -34,6 +34,11 @@ sudo apt install build-essential cmake qt6-base-dev libgl-dev
 wget -P appimage/tools https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
 wget -P appimage/tools https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
 chmod +x appimage/tools/*.AppImage
+
+# qt6-wayland is REQUIRED: without it the build FAILS (build.sh deliberately
+# refuses to ship a Wayland-unbootable AppImage). The wayland platform plugin is
+# bundled so the AppImage starts on Wayland-only compositors (niri/sway/Hyprland).
+sudo apt install qt6-wayland
 
 cd appimage && ./build.sh
 # → Pengy-x86_64.AppImage

@@ -79,7 +79,11 @@ if [ -f "$QT6_PLUGINS/platforms/libqwayland.so" ]; then
         cp -a "$QT6_PLUGINS/wayland-decoration-client/"* "$APPDIR/usr/plugins/wayland-decoration-client/"
     fi
 else
-    echo "WARNING: Wayland plugin not found, AppImage will use X11 only"
+    echo "ERROR: Qt6 wayland platform plugin not found ($QT6_PLUGINS/platforms/libqwayland.so)." >&2
+    echo "       The AppImage would ship xcb-only and fail to start on Wayland-only" >&2
+    echo "       compositors (niri/sway/Hyprland). Install the 'qt6-wayland' package" >&2
+    echo "       (on Debian/Ubuntu) or the matching Qt wayland plugin, then rebuild." >&2
+    exit 1
 fi
 
 # 4. Run linuxdeploy with Qt plugin
@@ -93,6 +97,21 @@ export LDAI_OUTPUT="$PROJECT_ROOT/Pengy-x86_64.AppImage"
     --desktop-file "$APPDIR/usr/share/applications/pengy.desktop" \
     --icon-file "$APPDIR/usr/share/icons/hicolor/256x256/apps/pengy.png" \
     --output appimage 2>&1
+
+# 5. Verify the final AppImage bundles the Wayland platform plugin. linuxdeploy
+#    keeps $APPDIR around after --output appimage, so checking it here both
+#    catches a strippage and reminds us the published artifact must ship wayland.
+echo "==> Verifying Wayland plugin made it into the AppImage..."
+if [ ! -f "$APPDIR/usr/plugins/platforms/libqwayland.so" ]; then
+    echo "ERROR: 'libqwayland.so' is missing from $APPDIR/usr/plugins/platforms." >&2
+    echo "       The AppImage would fail to start on Wayland-only compositors." >&2
+    exit 1
+fi
+if [ ! -f "$APPDIR/usr/lib/libQt6WaylandClient.so.6" ]; then
+    echo "ERROR: 'libQt6WaylandClient.so.6' is missing from $APPDIR/usr/lib." >&2
+    echo "       The Wayland plugin would load but fail at runtime." >&2
+    exit 1
+fi
 
 echo ""
 echo "==> Done!"

@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.8.2
+
+- **Fix: AppImage crashed on startup on Wayland-only compositors (niri/sway/Hyprland).**
+  The Linux AppImage shipped with only the `xcb` Qt platform plugin, so on a
+  Wayland-only session Qt selected the `wayland` plugin, found it missing, and
+  aborted (`qFatal` → SIGABRT) before the window opened. `appimage/build.sh` now
+  bundles `libqwayland.so` + `libQt6WaylandClient.so.6` and the wayland
+  shell/graphics/decoration plugins, **fails the build** (instead of silently
+  warning) if the wayland plugin is unavailable, and verifies it landed in the
+  artifact. The release workflow installs `qt6-wayland` on the Linux runner.
+
 ## v1.8.1
 
 - **CLI: sanitize ANSI/control chars in tool & error display.** Untrusted
