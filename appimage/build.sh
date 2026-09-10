@@ -53,15 +53,21 @@ fi
 #    bundles XCB by default; without wayland the AppImage falls back
 #    to XWayland and looks blurry on HiDPI)
 echo "==> Bundling Wayland plugin..."
+# The wayland platform plugin file name differs by Qt build: most packagers
+# ship a single `libqwayland.so`, but Debian/Ubuntu Qt 6.4 (e.g. noble) split
+# it into `libqwayland-egl.so` / `libqwayland-generic.so`. Glob handles both.
 QT6_PLUGINS="/usr/lib/x86_64-linux-gnu/qt6/plugins"
-if [ -f "$QT6_PLUGINS/platforms/libqwayland.so" ]; then
-    cp "$QT6_PLUGINS/platforms/libqwayland.so" "$APPDIR/usr/plugins/platforms/"
-    # dependencies that linuxdeploy may miss
-    for lib in libQt6WaylandClient.so.6 libwayland-client.so.0 \
-               libwayland-cursor.so.0 libxkbcommon.so.0; do
-        if [ -f "/usr/lib/x86_64-linux-gnu/$lib" ]; then
-            cp "/usr/lib/x86_64-linux-gnu/$lib" "$APPDIR/usr/lib/"
-        fi
+mapfile -t WAYLAND_PLUGINS < <(find "$QT6_PLUGINS/platforms" -maxdepth 1 -name 'libqwayland*.so' 2>/dev/null)
+if [ "${#WAYLAND_PLUGINS[@]}" -gt 0 ]; then
+    cp "${WAYLAND_PLUGINS[@]}" "$APPDIR/usr/plugins/platforms/"
+    echo "    bundled: $(basename -a "${WAYLAND_PLUGINS[@]}" | tr '\n' ' ')"
+    # runtime libs linuxdeploy may miss; glob-matched to whichever exist
+    for pattern in libQt6WaylandClient.so.6* libwayland-client.so.0* \
+                   libwayland-cursor.so.0* libxkbcommon.so.0* \
+                   libQt6WlShellIntegration.so.6*; do
+        while IFS= read -r f; do
+            cp "$f" "$APPDIR/usr/lib/"
+        done < <(find /usr/lib/x86_64-linux-gnu -maxdepth 1 -name "$pattern" 2>/dev/null)
     done
     # Copy Wayland shell-integration plugins (xdg-shell etc).
     # Without these, Qt prints "No shell integration named 'xdg-shell' found"
@@ -79,10 +85,10 @@ if [ -f "$QT6_PLUGINS/platforms/libqwayland.so" ]; then
         cp -a "$QT6_PLUGINS/wayland-decoration-client/"* "$APPDIR/usr/plugins/wayland-decoration-client/"
     fi
 else
-    echo "ERROR: Qt6 wayland platform plugin not found ($QT6_PLUGINS/platforms/libqwayland.so)." >&2
+    echo "ERROR: no Qt6 wayland platform plugin found under $QT6_PLUGINS/platforms (libqwayland*.so)." >&2
     echo "       The AppImage would ship xcb-only and fail to start on Wayland-only" >&2
-    echo "       compositors (niri/sway/Hyprland). Install the 'qt6-wayland' package" >&2
-    echo "       (on Debian/Ubuntu) or the matching Qt wayland plugin, then rebuild." >&2
+    echo "       compositors (niri/sway/Hyprland). Install the 'qt6-wayland' + " >&2
+    echo "       'libqt6waylandclient6' packages (on Debian/Ubuntu), then rebuild." >&2
     exit 1
 fi
 
@@ -102,12 +108,12 @@ export LDAI_OUTPUT="$PROJECT_ROOT/Pengy-x86_64.AppImage"
 #    keeps $APPDIR around after --output appimage, so checking it here both
 #    catches a strippage and reminds us the published artifact must ship wayland.
 echo "==> Verifying Wayland plugin made it into the AppImage..."
-if [ ! -f "$APPDIR/usr/plugins/platforms/libqwayland.so" ]; then
-    echo "ERROR: 'libqwayland.so' is missing from $APPDIR/usr/plugins/platforms." >&2
+if ! ls "$APPDIR"/usr/plugins/platforms/libqwayland*.so >/dev/null 2>&1; then
+    echo "ERROR: no 'libqwayland*.so' in $APPDIR/usr/plugins/platforms." >&2
     echo "       The AppImage would fail to start on Wayland-only compositors." >&2
     exit 1
 fi
-if [ ! -f "$APPDIR/usr/lib/libQt6WaylandClient.so.6" ]; then
+if ! ls "$APPDIR"/usr/lib/libQt6WaylandClient.so.6* >/dev/null 2>&1; then
     echo "ERROR: 'libQt6WaylandClient.so.6' is missing from $APPDIR/usr/lib." >&2
     echo "       The Wayland plugin would load but fail at runtime." >&2
     exit 1
