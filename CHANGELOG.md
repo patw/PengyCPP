@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.8.4
+
+- **Fix: `run_bash` `elevated=true` without a `sudo` invocation no longer runs
+  silently unprivileged.** `elevated` was only a guard for a literal `sudo`
+  command word; a command with `elevated=true` and no `sudo` fell through and
+  ran as the ordinary user — no password prompt, no elevation, no error. It now
+  fails loudly with an explicit message, so every elevation stays an explicit,
+  auditable `sudo` call. The `run_bash` tool description no longer implies that
+  `elevated=true` elevates on its own. Regression tests added.
+
 ## v1.8.3
 
 - **Reliable image attachments from every input path.** Content-addressed image

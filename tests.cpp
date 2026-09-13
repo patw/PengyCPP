@@ -1591,6 +1591,36 @@ private slots:
         }
     }
 
+    void runBashRejectsElevatedWithoutSudo() {
+        // Regression: elevated=true on a command with no `sudo` used to be a
+        // silent no-op (ran unprivileged, no prompt, no error). It must fail
+        // loudly, and must NOT run the command.
+        Tools::ToolContext ctx;
+        QString r = Tools::execute("run_bash",
+            QJsonObject{{"command", "echo should-not-run"}, {"elevated", true}},
+            nullptr, &ctx);
+        QVERIFY(r.contains("elevated=true"));
+        QVERIFY(r.contains("does not invoke sudo"));
+        QVERIFY(!r.contains("should-not-run"));
+    }
+
+    void runBashRejectsElevatedWithOnlyQuotedSudo() {
+        // A quoted/comment mention of sudo is data, not an invocation: it must
+        // not satisfy elevated=true.
+        Tools::ToolContext ctx;
+        QString r = Tools::execute("run_bash",
+            QJsonObject{{"command", "echo 'sudo apt update'"}, {"elevated", true}},
+            nullptr, &ctx);
+        QVERIFY(r.contains("does not invoke sudo"));
+        QVERIFY(!r.contains("apt update"));
+    }
+
+    void runBashPlainCommandWithoutElevatedStillRuns() {
+        // Regression guard: ordinary (non-elevated) commands are unaffected.
+        QString r = Tools::execute("run_bash", QJsonObject{{"command", "echo hello-plain"}});
+        QVERIFY(r.contains("hello-plain"));
+    }
+
     void runBashCwd() {
         QTemporaryDir dir;
         QString result = Tools::execute("run_bash",

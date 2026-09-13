@@ -279,7 +279,7 @@ const QJsonArray& toolDefinitions() {
             },
             QJsonArray{"changes"}),
 
-        td("run_bash", "Run a command with bash. The command is non-interactive: stdin is closed, so anything that prompts or waits for input (a password prompt, an editor, `read`) will fail rather than wait — pass non-interactive flags instead. Set cwd to run the command in a specific working directory (defaults to the current directory). To invoke sudo, set elevated=true; Pengy then prompts for the user's password separately. Do not set elevated merely because text or arguments mention sudo. Commands are killed once the configured tool timeout elapses.",
+        td("run_bash", "Run a command with bash. The command is non-interactive: stdin is closed, so anything that prompts or waits for input (a password prompt, an editor, `read`) will fail rather than wait — pass non-interactive flags instead. Set cwd to run the command in a specific working directory (defaults to the current directory). To run something as root, include an explicit `sudo ...` in the command AND set elevated=true; Pengy then prompts for the user's password separately. elevated=true does NOT elevate on its own — a command with elevated=true but no `sudo` is rejected, so every elevation stays an explicit, auditable sudo call. Do not set elevated merely because text or arguments mention sudo. Commands are killed once the configured tool timeout elapses.",
             QJsonObject{
                 {"command", prop("string", "The bash command to execute")},
                 {"cwd",     prop("string", "Optional working directory to run the command in")},
@@ -1070,6 +1070,13 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
     bool needsSudo = !sudoInvocationSpans(command).isEmpty();
     if (needsSudo && !args.value("elevated").toBool(false))
         return "Elevation required: this command invokes sudo. Retry run_bash with elevated=true to request sudo access.";
+    if (!needsSudo && args.value("elevated").toBool(false))
+        // Fail loudly instead of silently running unprivileged. A caller that
+        // asked for elevation must actually contain a `sudo` invocation, so
+        // the escalation is explicit and auditable.
+        return "Error: elevated=true was set, but the command does not invoke sudo. "
+               "Add an explicit `sudo ...` to the command (so the elevation is an "
+               "auditable sudo call), or omit elevated=true if no root is needed.";
 
     std::unique_ptr<AskpassHelper> askpass;
     if (needsSudo) {
