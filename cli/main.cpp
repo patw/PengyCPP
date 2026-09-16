@@ -60,6 +60,24 @@ static void out(const QString& s) {
     fflush(stdout);
 }
 static void outln(const QString& s = {}) { out(s + '\n'); }
+
+// Write a failed turn to stderr.
+//
+// The text is Pengy's own (credential failures are translated to /apikey
+// instructions) or the endpoint's, but never the model's -- so it must not go to
+// stdout, where scripts and `--output json` are reading, and it must not be
+// appended to the chat history the way an assistant message is (see the
+// "error" branch in PengyCliApp::onEvent).  Colour only for a terminal, so a
+// cron log or a captured stream stays readable.
+static void err(const QString& s) {
+    const QByteArray text = s.toUtf8();
+    if (isatty(STDERR_FILENO))
+        fputs((QByteArray("\033[31m") + text + QByteArray("\033[0m")).constData(), stderr);
+    else
+        fputs(text.constData(), stderr);
+    fputc('\n', stderr);
+    fflush(stderr);
+}
 static void prompt(const QString& p) { out(bold(p)); }
 
 // sanitizeDisplay() lives in ../sanitize.h so CLI + tests share one definition.
@@ -572,6 +590,18 @@ private:
                 outln(dim("--- Output ---"));
                 outln(dim(sanitizeDisplay(result)));
             }
+
+        } else if (type == "error") {
+            // The turn failed. This event replaced what used to be a
+            // final_response carrying the endpoint's text: every frontend draws
+            // a final_response inside the assistant's own block AND stores it in
+            // the chat, so a 401 became a permanent "message from the model" in
+            // chats.json, readable later by /show, /export, the GUI and the Web
+            // UI. Report it on stderr instead, and store nothing.
+            const bool credential = ev["kind"].toString() == "credentials";
+            const QString text = ev["message"].toString();
+            err(credential ? QString::fromUtf8("\u274c ") + text
+                           : QString("Error: ") + text);
 
         } else if (type == "final_response") {
             const QString content = ev["content"].toString();

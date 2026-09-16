@@ -676,6 +676,19 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
     if (type == "final_response") {
         handleFinalResponse(session, event);
 
+    } else if (type == "error") {
+        // A failed turn.  The text is Pengy's own (credential failures are
+        // translated to /apikey instructions, because the endpoint's advice --
+        // "provide your API key in an Authorization header" -- is not something
+        // a Pengy user can act on) or the endpoint's, but never the model's.
+        // So it is shown as an error and stored as nothing: this event used to
+        // be a final_response, which meant a 401 was drawn in the assistant's
+        // own block and written into the chat file as a message from the model.
+        const bool credential = event["kind"].toString() == "credentials";
+        showTurnError(session, credential
+                                   ? QString::fromUtf8("\u274c ") + event["message"].toString()
+                                   : QString("Error: ") + event["message"].toString());
+
     } else if (type == "retrying") {
         // 429/529 backoff: surface it instead of hanging silently.
         if (session == tabForChat(m_activeChatId)) {
@@ -888,7 +901,18 @@ void MainWindow::onWorkerError(const QString& msg) {
     TabSession* session = tabForChat(chatId);
     if (!session) return;
 
-    session->chatView->appendMessageText("assistant", "Error: " + msg);
+    showTurnError(session, "Error: " + msg);
+}
+
+// Show a failed turn and leave the chat consistent behind it.
+//
+// Display-only by design: the text is Pengy's or the endpoint's, never the
+// model's, so it must not become an assistant message in session->chat -- which
+// is exactly what happened while a failed request arrived as a final_response.
+// Shares its body with onWorkerError (a worker-level failure) so the two cannot
+// drift apart.
+void MainWindow::showTurnError(TabSession* session, const QString& text) {
+    session->chatView->appendMessageText("assistant", text);
     // The run died mid-turn: the last assistant message may hold tool_calls
     // with no result behind them, which 400s on the next request.
     if (!session->chat.isEmpty()) {

@@ -1,4 +1,5 @@
 #include "llmclient.h"
+#include "config.h"
 #include "tools.h"
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
@@ -16,6 +17,78 @@ static const double BASE_DELAY_SECS   = 1.0;
 static const double MAX_DELAY_SECS    = 60.0;
 static const double JITTER            = 0.25;
 static const QList<int> RETRYABLE_STATUSES = {429, 529};
+
+// ── Failed turns ────────────────────────────────────────────────
+
+/// Phrases OpenAI-compatible endpoints use when a request cannot be
+/// authenticated.  Matched case-insensitively in addition to the status code,
+/// because several compatible servers answer 400 with "api key is required"
+/// rather than a 401 -- the same reason the Python edition matches text as
+/// well as exception types.
+static const QStringList& credentialPhrases() {
+    static const QStringList phrases = {
+        "missing credentials",
+        "no api key",
+        "api key is required",
+        "api_key is required",
+        "api key must be set",
+        "api_key client option must be set",
+        "invalid api key",
+        "invalid_api_key",
+        "incorrect api key",
+        "invalid authentication",
+        "authentication failed",
+        "unauthorized",
+        "credentials not found",
+        "you didn't provide an api key",
+    };
+    return phrases;
+}
+
+bool looksLikeCredentialProblem(int httpStatus, const QString& detail) {
+    if (httpStatus == 401 || httpStatus == 403)
+        return true;
+    const QString text = detail.toLower();
+    for (const QString& phrase : credentialPhrases()) {
+        if (text.contains(phrase))
+            return true;
+    }
+    return false;
+}
+
+QString credentialHelp(const QString& baseUrl) {
+    const QString settings = pengyConfigDirPath() + "/settings.json";
+    return QString(
+               "No API credentials are configured for %1.\n"
+               "\n"
+               "Configure Pengy (the CLI, Web UI and GUI all share %2):\n"
+               "    pengy-cli /apikey <your-key>    set the API key\n"
+               "    pengy-cli /baseurl <url>        change the endpoint (a local Ollama/vLLM needs no key)\n"
+               "    pengy-cli /model <name>         choose a model\n"
+               "    pengy-cli /config               review the current settings\n"
+               "  Or run pengy-web and open Settings (http://127.0.0.1:5000/settings).\n"
+               "\n"
+               "Note: Pengy reads credentials from its own settings file. OPENAI_API_KEY\n"
+               "and similar environment variables are NOT used, whatever the API error says.")
+        .arg(baseUrl, settings);
+}
+
+/// Emit a failed turn instead of a final response.
+///
+/// Credential failures are replaced by credentialHelp(); everything else keeps
+/// the endpoint's detail but still travels as an error, so no frontend can
+/// mistake it for something the model said.
+static void emitTurnError(const LlmClient::EventFn& onEvent,
+                          int httpStatus,
+                          const QString& detail,
+                          const QString& baseUrl) {
+    const bool credential = looksLikeCredentialProblem(httpStatus, detail);
+    onEvent(QJsonObject{
+        {"type",    "error"},
+        {"kind",    credential ? "credentials" : "error"},
+        {"message", credential ? credentialHelp(baseUrl) : detail},
+    });
+}
 
 // ── Graceful image-stripping helpers ────────────────────────────
 
@@ -260,12 +333,13 @@ void LlmClient::run(const LlmParams& params,
             QJsonObject body = QJsonDocument::fromJson(lastResp.body).object();
             QString msg = body["error"].toObject()["message"].toString(
                 QString::fromUtf8(lastResp.body));
-            onEvent(QJsonObject{
-                {"type",    "final_response"},
-                {"content", QString("API error (HTTP %1): %2")
-                    .arg(lastResp.httpStatus).arg(msg)},
-                {"usage",   accUsage}
-            });
+            // httpStatus 0 = the request never reached the endpoint (the
+            // transport failure syncPost() turned into an error body here);
+            // "API error (HTTP 0)" is not something to show a user.
+            const QString detail = lastResp.httpStatus > 0
+                ? QString("API error (HTTP %1): %2").arg(lastResp.httpStatus).arg(msg)
+                : QString("API error: ") + msg;
+            emitTurnError(onEvent, lastResp.httpStatus, detail, params.baseUrl);
             return;
         }
 
@@ -274,21 +348,14 @@ void LlmClient::run(const LlmParams& params,
         // Check for API-level error (shouldn't happen in 2xx, but be safe)
         if (body.contains("error")) {
             QString msg = body["error"].toObject()["message"].toString(lastResp.body);
-            onEvent(QJsonObject{
-                {"type",    "final_response"},
-                {"content", "API error: " + msg},
-                {"usage",   accUsage}
-            });
+            emitTurnError(onEvent, lastResp.httpStatus, "API error: " + msg, params.baseUrl);
             return;
         }
 
         QJsonArray choices = body["choices"].toArray();
         if (choices.isEmpty()) {
-            onEvent(QJsonObject{
-                {"type",    "final_response"},
-                {"content", "No choices in API response."},
-                {"usage",   accUsage}
-            });
+            emitTurnError(onEvent, lastResp.httpStatus,
+                          "No choices in API response.", params.baseUrl);
             return;
         }
 

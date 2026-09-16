@@ -26,6 +26,32 @@ struct LlmResponse {
     QString     retryAfterHeader;  // "retry-after" or "retry-after-ms" value
 };
 
+// ── Failed turns ─────────────────────────────────────────────────────
+//
+// A request that fails is reported as an "error" event, never as a
+// "final_response".  Every frontend treats a final_response's content as the
+// model's answer: it is drawn inside the assistant's own block and appended to
+// the chat history.  So an endpoint error used to become a permanent assistant
+// turn in the chat file -- read back by /show, /export, the GUI and the Web UI
+// as something the model had said.  An "error" event carries:
+//   {type: "error", kind: "credentials"|"error", message: <user-facing text>}
+
+/// Does this failed request look like a credentials problem?
+///
+/// The status code leads (401/403 is unambiguous), then the endpoint's own
+/// wording, because several compatible servers answer 400 with "api key is
+/// required" instead of a 401.
+bool looksLikeCredentialProblem(int httpStatus, const QString& detail);
+
+/// The instructions a user actually needs when credentials are missing.
+///
+/// The endpoint's own text is not actionable here: OpenAI answers a fresh
+/// install with "provide your API key in an Authorization header using Bearer
+/// auth", and the Python SDK's client-side error told users to set
+/// OPENAI_API_KEY -- an environment variable no edition of Pengy reads.
+/// Wording is shared with the Python and Rust editions.
+QString credentialHelp(const QString& baseUrl);
+
 class LlmClient {
 public:
     using EventFn   = std::function<void(const QJsonObject&)>;

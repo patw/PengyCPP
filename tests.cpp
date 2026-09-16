@@ -217,7 +217,8 @@ static QJsonObject questionArgs() {
             QJsonObject{{"label", "Merge"},  {"description", "keeps both parents"}}}}}}}};
 }
 
-static QString runCli(const QStringList& commands, int timeoutMs = 5000) {
+static QString runCli(const QStringList& commands, int timeoutMs = 5000,
+                     QString* stderrOut = nullptr) {
     QProcess proc;
     proc.setProgram(cliBin());
     proc.setProcessEnvironment(QProcessEnvironment::systemEnvironment());
@@ -230,6 +231,7 @@ static QString runCli(const QStringList& commands, int timeoutMs = 5000) {
         proc.kill();
         proc.waitForFinished(1000);
     }
+    if (stderrOut) *stderrOut = QString::fromUtf8(proc.readAllStandardError());
     return QString::fromUtf8(proc.readAllStandardOutput());
 }
 
@@ -3083,7 +3085,11 @@ private slots:
         QVERIFY2(found, "reasoning_content should be preserved in follow-up request");
     }
 
-    void llmHttpErrorProducesApiError() {
+    // Renamed from llmHttpErrorProducesApiError: a non-2xx used to arrive as a
+    // final_response whose "content" was the error, which every frontend then
+    // drew in the assistant's own block and stored as a message from the model.
+    // It is an error event now, and it stays one.
+    void llmHttpErrorProducesErrorEvent() {
         StubLlmServer stub;
         stub.responses << QByteArray(R"({"error": {"message": "boom"}})");
         stub.statuses << 500;
@@ -3102,12 +3108,137 @@ private slots:
             [](const QJsonArray&) { return QStringList(); });
 
         QCOMPARE(events.size(), 1);
-        QCOMPARE(events[0]["type"].toString(), QString("final_response"));
-        QVERIFY(events[0]["content"].toString().contains("API error"));
-        QVERIFY(events[0]["content"].toString().contains("boom"));
+        QCOMPARE(events[0]["type"].toString(), QString("error"));
+        QCOMPARE(events[0]["kind"].toString(), QString("error"));
+        // A genuine server fault keeps the endpoint's detail -- it is the only
+        // thing that helps -- but is never dressed as an answer.
+        const QString msg = events[0]["message"].toString();
+        QVERIFY2(msg.contains("API error"), qPrintable(msg));
+        QVERIFY2(msg.contains("boom"), qPrintable(msg));
+    }
+
+    // A fresh install, no usable credentials: this is the case that started the
+    // change. The endpoint's 401 text cannot be acted on by a Pengy user.
+    //
+    // Note the deliberate "did not": an apostrophe inside a raw string literal
+    // here makes moc 6.10.2's lexer derail (it reads the rest of the file as a
+    // character literal) and silently emit no class at all -- the build then
+    // fails with "undefined reference to vtable for PengyTests".
+    void llmRejectedCredentialsBecomePengyInstructions() {
+        StubLlmServer stub;
+        stub.responses << QByteArray(
+            R"({"error": {"message": "You did not provide an API key. You need to provide your API key in an Authorization header using Bearer auth."}})");
+        stub.statuses << 401;
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hi")};
+        p.toolConfirmation = "none";
+
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        QCOMPARE(events.size(), 1);
+        QCOMPARE(events[0]["type"].toString(), QString("error"));
+        QCOMPARE(events[0]["kind"].toString(), QString("credentials"));
+        const QString msg = events[0]["message"].toString();
+        QVERIFY2(msg.contains("No API credentials are configured"), qPrintable(msg));
+        QVERIFY2(msg.contains(stub.baseUrl()), qPrintable(msg));
+        QVERIFY2(msg.contains("/apikey"), qPrintable(msg));
+        QVERIFY2(msg.contains("/baseurl"), qPrintable(msg));
+        // The endpoint's advice is replaced, not merely prefixed.
+        QVERIFY2(!msg.contains("Authorization header"), qPrintable(msg));
+    }
+
+    void credentialDetectionCoversStatusAndWording() {
+        // 401/403 are unambiguous.
+        QVERIFY(looksLikeCredentialProblem(401, QString()));
+        QVERIFY(looksLikeCredentialProblem(403, "nope"));
+        // Compatible servers answer 400 with their own wording.
+        QVERIFY(looksLikeCredentialProblem(400, "api key is required"));
+        QVERIFY(looksLikeCredentialProblem(0, "Incorrect API key provided: sk-x"));
+        QVERIFY(looksLikeCredentialProblem(200, "Unauthorized"));
+        // Ordinary failures are not credential failures, or every error would
+        // tell a user to configure a key they already have.
+        QVERIFY(!looksLikeCredentialProblem(500, "boom"));
+        QVERIFY(!looksLikeCredentialProblem(404, "model not found"));
+        QVERIFY(!looksLikeCredentialProblem(0, "Connection refused"));
+    }
+
+    void credentialHelpNamesTheRealControls() {
+        const QString help = credentialHelp("https://api.openai.com/v1");
+        QVERIFY2(help.contains("https://api.openai.com/v1"), qPrintable(help));
+        for (const QString& expected : {"/apikey", "/baseurl", "/model", "/config",
+                                        "settings.json", "pengy-web", "NOT used"}) {
+            QVERIFY2(help.contains(expected), qPrintable(expected + " missing from " + help));
+        }
+        // It must name THIS edition's config file, not a hardcoded guess.
+        QVERIFY2(help.contains(pengyConfigDirPath()), qPrintable(help));
     }
 
     // ── CLI tests (subprocess) ───────────────────────────────────────
+
+    // A failed turn must be reported on stderr and must not be stored as a
+    // message. The LLM-level contract is pinned above; this proves the CLI end
+    // of it. base_url is pointed at a closed port instead of a StubLlmServer
+    // because QProcess::waitForFinished() does not reliably pump an in-process
+    // stub's event loop (see CLAUDE.md) -- a transport failure needs no server.
+    void cliFailedTurnGoesToStderrAndIsNotStored() {
+        if (!QFile::exists(cliBin()))
+            QSKIP("pengy-cli not built yet");
+
+        const Config original = configLoad();
+        Config cfg = original;
+        cfg.baseUrl = "http://127.0.0.1:1";   // connection refused, fast
+        cfg.apiKey  = "test";
+        cfg.toolConfirmation = "all";
+        QVERIFY(configSave(cfg));
+
+        QString errOut;
+        const QString out = runCli({"hello there"}, 10000, &errOut);
+
+        // Restore first, so an assertion failure can't leak the dead endpoint
+        // into every later CLI test in this suite.
+        QVERIFY(configSave(original));
+
+        // Reported on stderr, where a script or a cron log is not parsing...
+        QVERIFY2(errOut.contains("API error"), qPrintable(errOut));
+        // ...and never on stdout.
+        QVERIFY2(!out.contains("API error"), qPrintable(out));
+
+        // Now the half that matters: nothing was written down as an answer.
+        // Scan every chat (rather than trusting which one the CLI resumed).
+        QJsonObject probeChat;
+        QString storedFailure;
+        QDir dir(pengyConfigDirPath() + "/chats");
+        for (const QString& f : dir.entryList({"*.json"}, QDir::Files)) {
+            QFile fh(dir.filePath(f));
+            if (!fh.open(QIODevice::ReadOnly)) continue;
+            const QJsonObject c = QJsonDocument::fromJson(fh.readAll()).object();
+            if (c.isEmpty()) continue;              // index.json has no chat
+            bool hasProbe = false;
+            for (const QJsonValue& m : c["messages"].toArray()) {
+                const QString content = m.toObject()["content"].toString();
+                if (content.contains("API error") || content.contains("API credentials"))
+                    storedFailure = f;
+                if (content.contains("hello there")) hasProbe = true;
+            }
+            if (hasProbe) probeChat = c;
+        }
+        QVERIFY2(storedFailure.isEmpty(),
+                 qPrintable("a failed turn was persisted in " + storedFailure));
+        QVERIFY2(!probeChat.isEmpty(), "the user's own message was not stored");
+        for (const QJsonValue& m : probeChat["messages"].toArray()) {
+            QVERIFY2(m.toObject()["role"].toString() != "assistant",
+                     qPrintable(QString::fromUtf8(
+                         QJsonDocument(probeChat["messages"].toArray()).toJson())));
+        }
+    }
 
     void cliHelp() {
         if (!QFile::exists(cliBin()))

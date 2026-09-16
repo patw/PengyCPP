@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+- **A failed API call is no longer shown — or stored — as the model's answer.**
+  A non-2xx response (a fresh install's `401`, a `500`, a transport failure, an
+  empty `choices` array) used to be emitted as `final_response` with the error
+  text as its `content`. Every frontend treats a final response as the
+  assistant's reply, so `pengy-cli` drew it under `--- Pengy ---`, the GUI
+  rendered it as a message from the model, and all three **wrote it into
+  `chats/<id>.json` as an assistant turn** — where `/show`, `/export` and the
+  other editions' UIs read it back later as something the model had said.
+  Failures are now an `{"type":"error","kind":…,"message":…}` event, reported
+  on **stderr** by the CLI, shown as an error (never stored) by the GUI, and
+  already handled by the Web UI's `error` case. Interactive mode still keeps
+  running.
+- **Missing or rejected credentials explain Pengy's own configuration.** The
+  endpoint's message is not actionable for a Pengy user: a fresh install gets
+  "You didn't provide an API key. You need to provide your API key in an
+  Authorization header using Bearer auth". `401`/`403`, or any credential
+  wording in the body, is now translated into instructions naming
+  `pengy-cli /apikey`, `/baseurl`, `/model`, `/config`, the shared
+  `settings.json` and the Web UI Settings page, plus an explicit note that
+  environment variables are not used. The translation lives in `llmclient`, so
+  the CLI, GUI and Web UI all get it. Wording is shared with the Python and Rust
+  editions. A transport failure (HTTP status 0) now reports `API error: …`
+  instead of the meaningless `API error (HTTP 0)`, and an error event carries no
+  usage — matching the Python edition, which records none for a failed turn.
+
+Tests: `pengy_tests` — 194 passing (4 new: the credential contract at the
+`LlmClient` level, credential detection and help wording, and a black-box CLI
+case proving a failed turn goes to stderr and is never stored), plus the three
+`ctest` suites.
+
 ## v1.8.4
 
 - **Fix: `run_bash` `elevated=true` without a `sudo` invocation no longer runs
