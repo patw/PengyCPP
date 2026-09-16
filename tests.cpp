@@ -2023,29 +2023,6 @@ private slots:
         QCOMPARE(chatsLoad().size(), 0);
     }
 
-    void webStreamPrimesSseBufferBeforeEvents() {
-        QJsonObject chat = chatCreate("SSE buffer prime");
-
-        WebServer server("127.0.0.1", 0);
-        QVERIFY(server.start());
-        QTcpSocket socket;
-        socket.connectToHost("127.0.0.1", server.port());
-        QVERIFY(socket.waitForConnected(4000));
-        socket.write("GET /chat/" + chat["id"].toString().toUtf8() +
-                     "/stream HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
-        QEventLoop loop;
-        QTimer::singleShot(4000, &loop, &QEventLoop::quit);
-        QObject::connect(&socket, &QTcpSocket::readyRead, &loop, &QEventLoop::quit);
-        loop.exec();
-        QVERIFY(socket.bytesAvailable() > 0);
-        const QByteArray response = socket.readAll();
-        QVERIFY(response.contains("Content-Type: text/event-stream"));
-        const int body = response.indexOf("\r\n\r\n");
-        QVERIFY(body >= 0);
-        QVERIFY(response.mid(body + 4).startsWith(": "));
-        QVERIFY(response.mid(body + 4).size() >= 2048);
-    }
-
     void webStreamReturnsSSEHeaders() {
         QJsonObject chat = chatCreate("Stream Test");
 

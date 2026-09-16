@@ -2,9 +2,11 @@
 
 ## Unreleased
 
+- **Removed the v1.8.7 SSE padding and blocking writes.** They fixed nothing: the C++ web server already delivered `sudo_request` promptly (verified with `curl` and headless Chrome against 7bbc8a2), because the sudo wait blocks the LLM worker `QThread`, not the event loop. The hang was Rust-only (a blocked Tokio worker; see PengyR's changelog). `waitForBytesWritten(1000)` in `pushSse` could also stall the whole server's event loop for up to a second per slow client, per event.
+
 ## v1.8.7
 
-- **Fixed native-web sudo password prompts.** The C++ SSE server now primes and flushes its stream before interactive events, so Chrome and Firefox immediately receive `sudo_request` rather than leaving the web UI spinning. Regression coverage verifies the primed SSE response.
+- **Attempted fix for web sudo password prompts; not needed in C++.** Added a 2KB SSE comment prelude, plus `waitForBytesWritten` after every SSE write, on the theory that browsers buffered the first small event. The C++ edition never had this bug, and the change was removed in the next release (see Unreleased).
 - **Fixed a macOS build false failure.** The release smoke test now captures CLI `--version` and `--help` output instead of piping it into `grep -q` under `pipefail`, which could mislabel a healthy `pengy-cli` as broken after `SIGPIPE`.
 
 ## v1.8.6
