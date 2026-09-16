@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-## v1.8.5
+## v1.8.6
 
+- **Fixed the Windows release build.** The C++ CLI's stderr colour helper now guards POSIX-only `isatty()` / `STDERR_FILENO` calls, restoring Windows compilation and the Windows ZIP release.
 - **Clean machine-readable CLI output.** Complex UTF-8 emoji is preserved across all CLI editions, and C++ `--output raw`, `json`, and `silent` modes no longer write the Thinking spinner or ANSI erase controls to stdout.
 - **Confirmed resilient web replay.** C++ already appends SSE events to its per-chat replay log before broadcasting them, so a turn completed before the browser subscribes remains available. New regressions pin this behavior and the wake-lock helper definitions used by the chat page.
 - **Skills and specs are current.** README and skills documentation now direct users to [BotSkills](https://skills.catbee.ca) for inspectable reusable skill packages. Cross-edition specs now document durable attachment storage, per-chat files/index, current Tasks surfaces, and SSE replay requirements.

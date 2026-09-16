@@ -71,7 +71,15 @@ static void outln(const QString& s = {}) { out(s + '\n'); }
 // cron log or a captured stream stays readable.
 static void err(const QString& s) {
     const QByteArray text = s.toUtf8();
-    if (isatty(STDERR_FILENO))
+#ifdef Q_OS_UNIX
+    const bool stderrIsTerminal = isatty(STDERR_FILENO);
+#else
+    // Windows builds deliberately keep stderr uncoloured. The CLI's colour
+    // escape sequences are optional display polish, never a dependency on
+    // POSIX isatty()/STDERR_FILENO being available.
+    const bool stderrIsTerminal = false;
+#endif
+    if (stderrIsTerminal)
         fputs((QByteArray("\033[31m") + text + QByteArray("\033[0m")).constData(), stderr);
     else
         fputs(text.constData(), stderr);
