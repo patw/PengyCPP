@@ -33,8 +33,15 @@ smoke() {
         echo -e "  \033[31m✗\033[0m $name not found"
         FAIL=$((FAIL+1)); return
     fi
-    if "$bin" --version 2>/dev/null | grep -q "^Pengy v" && \
-       "$bin" --help    2>/dev/null | grep -qiE "usage|options"; then
+    # Do not pipe either command into `grep -q`: with `set -o pipefail`, a
+    # verbose --help writer can receive SIGPIPE after grep finds its match,
+    # making a healthy binary look broken. Capture each complete response first.
+    local version_output help_output
+    if version_output=$("$bin" --version 2>/dev/null) && \
+       help_output=$("$bin" --help 2>/dev/null) && \
+       [[ "$version_output" == Pengy\ v* ]] && \
+       [[ "$help_output" == *Usage* || "$help_output" == *usage* || \
+          "$help_output" == *Options* || "$help_output" == *options* ]]; then
         echo -e "  \033[32m✓\033[0m $name --version + --help"
         PASS=$((PASS+1))
     else

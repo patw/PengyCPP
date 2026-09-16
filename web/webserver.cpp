@@ -503,7 +503,14 @@ void WebServer::routeChatStream(const QString& chatId,
         "X-Accel-Buffering: no\r\n"
         "\r\n";
     socket->write(headers);
+    // Native browser clients can buffer the tiny initial SSE response until a
+    // later event arrives. The Python implementation's WSGI stream naturally
+    // sends a larger first body, so it did not exhibit this. Prime the stream
+    // with an SSE comment above the buffering threshold before an interactive
+    // event (such as sudo_request) is pushed.
+    socket->write(": " + QByteArray(2048, ' ') + "\n\n");
     socket->flush();
+    socket->waitForBytesWritten(1000);
 
     m_sseSockets.insert(socket);
     m_sse[chatId].append(socket);
@@ -1157,6 +1164,7 @@ void WebServer::pushSse(const QString& chatId, const QJsonObject& event) {
             }
             sock->write(data);
             sock->flush();
+            sock->waitForBytesWritten(1000);
         }
     }
 }

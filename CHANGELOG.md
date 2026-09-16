@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.8.7
+
+- **Fixed native-web sudo password prompts.** The C++ SSE server now primes and flushes its stream before interactive events, so Chrome and Firefox immediately receive `sudo_request` rather than leaving the web UI spinning. Regression coverage verifies the primed SSE response.
+- **Fixed a macOS build false failure.** The release smoke test now captures CLI `--version` and `--help` output instead of piping it into `grep -q` under `pipefail`, which could mislabel a healthy `pengy-cli` as broken after `SIGPIPE`.
+
 ## v1.8.6
 
 - **Fixed the Windows release build.** The C++ CLI's stderr colour helper now guards POSIX-only `isatty()` / `STDERR_FILENO` calls, restoring Windows compilation and the Windows ZIP release.
