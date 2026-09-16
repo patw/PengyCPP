@@ -504,7 +504,11 @@ private:
 
         Tools::setSudoPasswordProvider([](){ return readPassword("Sudo password: "); });
 
-        out(dim("Thinking..."));
+        // Raw/JSON/silent output is consumed by programs. Keep progress
+        // controls out of it so a model response containing emoji (or any
+        // other Unicode) is the complete, intact payload with no leading ANSI.
+        if (m_outputMode == "pretty")
+            out(dim("Thinking..."));
 
         LlmClient client;
         client.run(
@@ -543,7 +547,10 @@ private:
 
         if (!m_firstEventDone) {
             m_firstEventDone = true;
-            out("\r\033[K");
+            // Only clear a visible pretty-mode spinner. In raw/JSON/silent
+            // modes this escape sequence would corrupt machine-readable output.
+            if (m_outputMode == "pretty")
+                out("\r\033[K");
         }
 
         if (type == "assistant_tool_calls") {

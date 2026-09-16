@@ -9,7 +9,7 @@
 
 ## What is PengyCPP?
 
-PengyCPP is an LLM agent that runs on your own machine. It defaults to a **local server** — Ollama's OpenAI-compatible port — and also speaks to llama.cpp, vLLM, LM Studio, or any hosted OpenAI-compatible API (OpenAI, Groq, OpenRouter). It gives the model 15 built-in tools to operate on your filesystem, run code, search the web, and more — all with your approval.
+PengyCPP is an LLM agent that runs on your own machine. It defaults to a **local server** — Ollama's OpenAI-compatible port — and also speaks to llama.cpp, vLLM, LM Studio, or any hosted OpenAI-compatible API (OpenAI, Groq, OpenRouter). It gives the model 16 built-in tools to operate on your filesystem, inspect images, run code, search the web, and more — all with your approval.
 
 Three interfaces, one agent:
 
@@ -60,7 +60,7 @@ The web UI is for single-user personal use. For remote access, put it behind ngi
 ## Features
 
 - **Local-first** — Defaults to a local Ollama endpoint (no API key, no account). Also works with llama.cpp, vLLM, LM Studio, OpenRouter, Groq, OpenAI, or any OpenAI-compatible endpoint
-- **15 built-in tools** — Read, write, and edit files; run bash and Python; search the web; explore and glob your filesystem; track multi-step ops with structured to-do lists; ask clarifying questions
+- **16 built-in tools** — Read files and inspect images; write and edit files transactionally; run bash and Python; search the web; explore and glob your filesystem; track multi-step ops with structured to-do lists; ask clarifying questions
 - **Agentic workflow** — The LLM chains multiple tool calls per turn to accomplish complex tasks
 - **Tool confirmation** — Three modes: auto-approve everything, auto-approve read-only tools only, or confirm every call
 - **Theme system** — System/light/dark modes plus 8 accent colours; fonts scale with the UI
@@ -143,11 +143,13 @@ When you hit **▶ Play**, PengyCPP collects each placeholder once, renders the 
 
 ## Tools
 
-PengyCPP gives the LLM these tools to operate on your machine:
+PengyCPP gives the LLM these 16 tools to operate on your machine:
 
 | Tool | Description |
 |------|-------------|
 | `read_file` / `read_multiple_files` | Read one or more files at once |
+| `read_image` | Inspect a local image, screenshot, photo, diagram, or chart |
+| `apply_changes` | Transactional multi-file exact-text edits with a dry-run diff |
 | `write_file` | Write or overwrite a file |
 | `replace_in_file` | Targeted text replacement (safer than full rewrites) |
 | `run_bash` | Execute shell commands (configurable timeout; sudo support) |
@@ -165,9 +167,9 @@ PengyCPP gives the LLM these tools to operate on your machine:
 
 ## Skills
 
-The 15 built-in tools cover the basics, but PengyCPP is designed to be extended with **skills** — your own custom instructions and scripts stored as plain markdown files.
+The 16 built-in tools cover the basics, but PengyCPP is designed to be extended with **skills** — local instruction files with optional helper scripts.
 
-A skill is just a `skillname/skillname_skill.md` file with instructions PengyCPP can read, optionally backed by a bash or Python script. No SDK, no manifest, no packaging — point PengyCPP at a directory and it figures out the rest.
+A local skill normally has a `skillname/skillname_skill.md` instruction file, optionally backed by a bash or Python helper. Put installed skills under `~/skills/` and list them in `skill_index.md`; Pengy's system instructions tell it to consult that index and read the selected skill before acting. For reusable packages, [BotSkills](https://skills.catbee.ca) lets you inspect a skill, download its ZIP, and review its manifest and helper scripts before installing it.
 
 This means your PengyCPP can do whatever you need it to:
 - Fetch weather from an API
@@ -180,7 +182,7 @@ This means your PengyCPP can do whatever you need it to:
 
 Skills are also self-authoring — ask PengyCPP to create one for you, and it writes the markdown, writes the script, and updates the index, all in one conversation.
 
-**📖 Read the full guide:** [`skills/README.md`](https://github.com/patw/Pengy/blob/main/skills/README.md) — covers the philosophy, how skills work, 4 complete examples, and how to make your own.
+**📖 Start with [BotSkills](https://skills.catbee.ca) or read the full guide:** [`skills/README.md`](https://github.com/patw/Pengy/blob/main/skills/README.md) — covers the philosophy, how skills work, 4 complete examples, and how to make your own.
 
 ---
 
@@ -209,7 +211,7 @@ PengyCPP is a **single CMake project** — no Rust, no Python, no FFI. All logic
 | `chatmanager` | Chat CRUD, message cleaning, context elision |
 | `taskmanager` | Task template CRUD, `%placeholder%` extraction/rendering |
 | `themehelper` | System/light/dark mode, accent palette, UI-scale helpers |
-| `tools` | 15 tools using QFile, QProcess, QNetworkAccessManager |
+| `tools` | 16 tools using QFile, QProcess, QNetworkAccessManager |
 | `llmclient` | Blocking OpenAI-compatible chat loop |
 | `chatworker` | QThread worker with QWaitCondition for tool confirmation |
 | `webserver` | QTcpServer HTTP server with SSE push; Bootstrap 5 UI |
@@ -276,7 +278,7 @@ PengyCPP shares `~/.config/pengy/` with Python Pengy and PengyR:
 | [**PengyR**](https://github.com/patw/PengyR) | Rust + Qt6 | High-performance native binary, statically-linked core |
 | [**PengyCPP**](https://github.com/patw/PengyCPP) | C++17 + Qt6 | Highest performance, smallest memory footprint, zero external dependencies |
 
-All three offer the same 15 tools, desktop theme controls, reusable task templates, three interfaces (GUI/CLI/Web), and full chat/task interop.
+All three offer the same 16 tools, durable image attachments, desktop theme controls, reusable task templates, three interfaces (GUI/CLI/Web), and full chat/task interop.
 
 ---
 

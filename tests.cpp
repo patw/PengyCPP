@@ -2095,6 +2095,19 @@ private slots:
         QVERIFY(server.testReplay(chatId, -1).isEmpty());
     }
 
+    void webSseEventsBeforeFirstSubscriberAreRetained() {
+        // The worker can finish before the browser constructs EventSource.
+        // Event storage must be append-only rather than dependent on a live
+        // socket/subscriber notification.
+        WebServer server("127.0.0.1", 0);
+        const QString chatId = "sse-fast-complete";
+        server.testPushSse(chatId, QJsonObject{{"type", "final_response"}, {"content", "fast done"}});
+        server.testMarkCompleted(chatId);
+        const QByteArray replay = server.testReplay(chatId, -1);
+        QVERIFY(replay.contains("final_response"));
+        QVERIFY(replay.contains("fast done"));
+    }
+
     void webChatTemplateUsesCursorSafeReconnectAndStandardScrollBehavior() {
         QJsonObject chat = chatCreate("Template SSE test");
         WebServer server("127.0.0.1", 0);
@@ -2107,6 +2120,23 @@ private slots:
         QVERIFY(r.body.contains("behavior: 'auto'"));
         QVERIFY(!r.body.contains("readyState !== EventSource.OPEN"));
         QVERIFY(!r.body.contains("behavior: 'instant'"));
+    }
+
+    void webChatTemplateDefinesWakeLockHelpersBeforeProcessingUsesThem() {
+        QJsonObject chat = chatCreate("Template wake lock test");
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(), "/chat/" + chat["id"].toString());
+        QCOMPARE(r.status, 200);
+        const QByteArray page = r.body;
+        const int acquire = page.indexOf("async function acquireWakeLock()");
+        const int release = page.indexOf("function releaseWakeLock()");
+        const int processing = page.indexOf("function setProcessing(on)");
+        QVERIFY(acquire >= 0);
+        QVERIFY(release >= 0);
+        QVERIFY(processing >= 0);
+        QVERIFY(acquire < processing);
+        QVERIFY(release < processing);
     }
 
     void webChatTemplateToolSummaryPresent() {

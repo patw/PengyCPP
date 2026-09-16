@@ -110,7 +110,7 @@ All three binaries share these modules — no code duplication, no FFI:
 | Module | Files | Responsibility |
 |--------|-------|---------------|
 | `Config` | `config.cpp/h` | Load/save `~/.config/pengy/settings.json` with default merging; `configRenderSystemMessage()` fills `{date}`, `{username}`, `{hostname}`, `{osinfo}` at send time |
-| `ChatManager` | `chatmanager.cpp/h` | CRUD for `~/.config/pengy/chats.json`; `cleanDanglingToolCalls()` removes orphaned tool_calls; `elideOldToolResults()` replaces old tool content with `[elided]` |
+| `ChatManager` | `chatmanager.cpp/h` | Per-chat CRUD under `~/.config/pengy/chats/`, derived history index, legacy import, dangling-call repair, and context elision |
 | `Tools` | `tools.cpp/h` | 16 OpenAI function-calling tool schemas and execution via Qt APIs; `isReadOnly()` classification; sudo password provider callback |
 | `LlmClient` | `llmclient.cpp/h` | Blocking chat loop via `QNetworkAccessManager` + local `QEventLoop`; emits events via `std::function` callbacks |
 
@@ -218,7 +218,7 @@ Flags (shared with the Python and Rust CLIs): `--no-save`, `--model NAME`, `--sy
 ### Interactive Mode
 
 On startup:
-1. Loads the most recent chat from `chats.json` (or creates a new one if none exist)
+1. Loads the most recent per-chat record from `chats/` (or creates a new one if none exist)
 2. Shows a welcome banner with model name and tool confirmation status
 3. Enters the REPL loop: prompt → send → LlmClient::run() → loop
 
@@ -357,7 +357,7 @@ Browser shows Bootstrap modal (tool name + args JSON)
 
 ### WebChatWorker
 
-`WebChatWorker` mirrors `ChatWorker`'s pattern. It runs `LlmClient::run()` on a `QThread` and emits events via Qt signals (`eventReady`, `sudoRequired`). It enriches `tool_request` events with `auto_approved` by replicating LlmClient's skip-confirm logic. Events are appended to `WebServer::m_eventQueue` (an append-only log per chat) and broadcast to any currently connected SSE sockets. Each SSE data event carries a monotonic `id:` so a reconnecting browser can resume from `Last-Event-ID` without losing or duplicating messages.
+`WebChatWorker` mirrors `ChatWorker`'s pattern. It runs `LlmClient::run()` on a `QThread` and emits events via Qt signals (`eventReady`, `sudoRequired`). It enriches `tool_request` events with `auto_approved` by replicating LlmClient's skip-confirm logic. Events are appended to `WebServer::m_eventQueue` (an append-only log per chat) **before** broadcast to any connected SSE sockets. Each SSE data event carries a monotonic `id:` so a reconnecting browser can resume from `Last-Event-ID` without losing or duplicating messages. Retain the event log independently of live clients: a fast turn may complete before the browser creates its first EventSource, and a fresh page for a completed chat replays only the terminal event because its persisted history already renders the earlier state.
 
 HTML templates (`chat.html`, `settings.html`) are embedded in the binary via `web/web_resources.qrc` — no external files needed at runtime.
 
@@ -523,6 +523,7 @@ Shared with Python Pengy and PengyR at `~/.config/pengy/`.
   "reasoning_effort": "",
   "preserve_reasoning": false,
   "context_keep_turns": 0,
+  "attachment_context_keep_turns": 4,
   "ui_scale": 100,
   "theme_mode": "system",
   "theme_accent": "default",
@@ -547,6 +548,7 @@ Shared with Python Pengy and PengyR at `~/.config/pengy/`.
 | `reasoning_effort` | string | `""` | Passed as `reasoning_effort` on API calls when set (`none`…`max`; `""` = provider default) |
 | `preserve_reasoning` | bool | `false` | Keep reasoning fields on assistant messages sent back to the API |
 | `context_keep_turns` | int | `0` | Recent turns whose tool results are kept; older ones elided. 0 = keep all |
+| `attachment_context_keep_turns` | int | `4` | Recent turns whose durable image attachments are resolved into provider requests; `0` sends no historical attachments |
 | `ui_scale` | int | `100` | Sets `QT_SCALE_FACTOR` on next launch (75/100/125/200); CLI ignores |
 | `theme_mode` | string | `"system"` | Desktop theme: `"system"`, `"light"`, or `"dark"` |
 | `theme_accent` | string | `"default"` | Desktop accent color (`default`/`blue`/`teal`/`green`/`orange`/`red`/`pink`/`purple`) |
@@ -570,9 +572,20 @@ Shared with Python Pengy and PengyR at `~/.config/pengy/`.
 | `{hostname}` | `QSysInfo::machineHostName()` |
 | `{osinfo}` | `QSysInfo::prettyProductName()` |
 
-### Chats File: `~/.config/pengy/chats.json`
+### Chat and attachment storage
 
-Array of chat session objects with `user`, `assistant` (including `tool_calls`), and `tool` messages. Format is identical to Python Pengy and PengyR.
+**Conformance: required.** The current shared layout is defined in the canonical Python spec's
+**Data Storage** section and is not the old single `chats.json` layout: authoritative chats live
+one-per-file at `~/.config/pengy/chats/<uuid>.json`; `chats/index.json` is a rebuildable summary
+cache. Legacy `~/.config/pengy/chats.json` is imported as a compatibility seed only, and deletion
+must also remove its old entry so it cannot resurrect. Chat messages retain `user`, `assistant`
+(including `tool_calls`), and `tool` roles; optional `chat.usage` is cumulative token usage.
+
+Image attachments are durable content-addressed references in `message.attachments`, with source
+objects and display/thumbnail derivatives under `~/.config/pengy/attachments/`. Never persist
+base64 image payloads in chat JSON. Preserve unknown reference fields, validate `sha256:<digest>`
+paths before loading/serving, and resolve only bounded recent image turns into provider content
+parts. See the canonical attachment schema and path contract in `Pengy/spec.md`.
 
 ---
 

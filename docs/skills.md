@@ -4,6 +4,8 @@ Skills are how you teach Pengy to do things its built-in tools don't cover. A sk
 
 *New to skills? Start with the [skills/README.md](../skills/README.md) tutorial first.*
 
+> **Quick start alternative — [BotSkills](https://skills.catbee.ca):** Instead of working through this full tutorial, visit BotSkills to learn the skills model and browse reusable, complete skill packages for agents and humans. Search for a skill, inspect its metadata and instructions, download its ZIP, and review the manifest plus every helper script before installing it under `~/skills/`; then add it to `skill_index.md`. Downloading alone does not activate a skill: Pengy's system instructions must tell it to consult the index, read the selected `_skill.md`, and follow its documented helper or workflow when appropriate.
+
 ---
 
 ## Skill patterns

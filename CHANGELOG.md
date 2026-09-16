@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.8.5
+
+- **Clean machine-readable CLI output.** Complex UTF-8 emoji is preserved across all CLI editions, and C++ `--output raw`, `json`, and `silent` modes no longer write the Thinking spinner or ANSI erase controls to stdout.
+- **Confirmed resilient web replay.** C++ already appends SSE events to its per-chat replay log before broadcasting them, so a turn completed before the browser subscribes remains available. New regressions pin this behavior and the wake-lock helper definitions used by the chat page.
+- **Skills and specs are current.** README and skills documentation now direct users to [BotSkills](https://skills.catbee.ca) for inspectable reusable skill packages. Cross-edition specs now document durable attachment storage, per-chat files/index, current Tasks surfaces, and SSE replay requirements.
+
 - **The defaults are local now, not OpenAI.** `baseUrl` is
   `http://127.0.0.1:11434/v1` — Ollama's OpenAI-compatible port, which needs no
   API key — and `model` is **empty**, because a local server ships no model of
