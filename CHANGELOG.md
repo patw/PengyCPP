@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **The defaults are local now, not OpenAI.** `baseUrl` is
+  `http://127.0.0.1:11434/v1` — Ollama's OpenAI-compatible port, which needs no
+  API key — and `model` is **empty**, because a local server ships no model of
+  its own (a fresh `ollama list` is empty, so naming one would just fail on the
+  user's first message). This is the audience the app is for: people running
+  Ollama or llama.cpp on their own machine, not people with an OpenAI account.
+  Existing `settings.json` files are untouched — anything already configured
+  wins, and nothing is rewritten.
+- **An unset model explains itself instead of being sent.** Until a model is
+  chosen, `LlmClient::run` emits an `error` event with `kind: "config"` carrying
+  `noModelHelp()`: `/models` to list what the endpoint offers, `/model <name>` to
+  pick one, `ollama pull <name>` if the list is empty, or Fetch Models in the
+  GUI/Web UI. No request is made, so the endpoint never sees `model: ""`. The
+  GUI sidebar and Web UI fall back to the first model the endpoint last
+  advertised, so what they show is what a send will use.
+- **An endpoint that never answers says so usefully.** With a local default, a
+  connection failure is the likeliest first-run mistake, and Qt's bare
+  "Connection refused" is not an instruction. Local endpoints now get "Nothing
+  answered at <url> — is your local model server running?" plus `ollama serve`
+  and `/baseurl`; remote endpoints get "Could not reach <url>". A transport
+  failure (HTTP status 0) no longer reports the meaningless `API error (HTTP 0)`.
+- `credentialHelp` now says the default local endpoint needs no key.
+
 - **A failed API call is no longer shown — or stored — as the model's answer.**
   A non-2xx response (a fresh install's `401`, a `500`, a transport failure, an
   empty `choices` array) used to be emitted as `final_response` with the error

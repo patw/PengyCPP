@@ -9,7 +9,7 @@
 
 ## What is PengyCPP?
 
-PengyCPP is an LLM agent that runs on your own machine. It connects to OpenAI, Ollama, vLLM, Groq, OpenRouter, or any local endpoint, and gives the model 15 built-in tools to operate on your filesystem, run code, search the web, and more — all with your approval.
+PengyCPP is an LLM agent that runs on your own machine. It defaults to a **local server** — Ollama's OpenAI-compatible port — and also speaks to llama.cpp, vLLM, LM Studio, or any hosted OpenAI-compatible API (OpenAI, Groq, OpenRouter). It gives the model 15 built-in tools to operate on your filesystem, run code, search the web, and more — all with your approval.
 
 Three interfaces, one agent:
 
@@ -59,7 +59,7 @@ The web UI is for single-user personal use. For remote access, put it behind ngi
 
 ## Features
 
-- **OpenAI-compatible** — Works with OpenAI, Ollama, vLLM, LM Studio, OpenRouter, Groq, or any local endpoint
+- **Local-first** — Defaults to a local Ollama endpoint (no API key, no account). Also works with llama.cpp, vLLM, LM Studio, OpenRouter, Groq, OpenAI, or any OpenAI-compatible endpoint
 - **15 built-in tools** — Read, write, and edit files; run bash and Python; search the web; explore and glob your filesystem; track multi-step ops with structured to-do lists; ask clarifying questions
 - **Agentic workflow** — The LLM chains multiple tool calls per turn to accomplish complex tasks
 - **Tool confirmation** — Three modes: auto-approve everything, auto-approve read-only tools only, or confirm every call
@@ -89,11 +89,35 @@ The web UI is for single-user personal use. For remote access, put it behind ngi
 **CLI:** Run `/config` to view, `/model <name>` to switch models.  
 **Web:** Click ⚙ in the top-right navbar.
 
+**The default endpoint is local:** `http://127.0.0.1:11434/v1` — Ollama's
+OpenAI-compatible port, which needs **no API key**. There is deliberately **no
+default model**, because a local server ships none of its own (a fresh
+`ollama list` is empty); naming one would just fail on your first message.
+
+```bash
+ollama serve                  # if it is not already running
+ollama pull llama3.2          # any model you like
+/models                       # list what the endpoint offers
+/model llama3.2               # select one
+```
+
+Until a model is selected, Pengy says so and tells you how — it never sends an
+empty model name to the endpoint. Using a different server or a hosted API? Point
+Pengy at it once and it is remembered:
+
+```bash
+/baseurl http://127.0.0.1:8080/v1     # llama.cpp, vLLM, LM Studio, …
+/baseurl https://api.openai.com/v1    # or a hosted API…
+/apikey sk-...                        # …which needs a key
+```
+
+The same settings live in Settings in the GUI and the Web UI.
+
 | Setting | Description |
 |---------|-------------|
-| Base URL | API endpoint (e.g. `http://localhost:11434/v1` for Ollama) |
+| Base URL | API endpoint — defaults to `http://127.0.0.1:11434/v1` (Ollama) |
 | API Key | Your API key (or anything for local endpoints) |
-| Model | Model name, e.g. `gpt-4o`, `llama3`, `gemma` |
+| Model | Model name, e.g. `llama3.2`, `qwen3:8b`, `gemma3` — **no default**, see below |
 | System Message | Supports `{date}`, `{username}`, `{hostname}`, `{osinfo}` placeholders |
 | Tool Confirmation | All / Safe / None — which tools require approval |
 | Theme Mode (GUI) | System / Light / Dark — follows OS palette |
@@ -165,7 +189,7 @@ Skills are also self-authoring — ask PengyCPP to create one for you, and it wr
 | Service | Base URL |
 |---------|----------|
 | OpenAI | `https://api.openai.com/v1` |
-| Ollama | `http://localhost:11434/v1` |
+| Ollama | `http://127.0.0.1:11434/v1` |
 | LM Studio | `http://localhost:1234/v1` |
 | vLLM | `http://localhost:8000/v1` |
 | OpenRouter | `https://openrouter.ai/api/v1` |

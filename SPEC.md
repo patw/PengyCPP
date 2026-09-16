@@ -130,7 +130,7 @@ All three binaries share these modules — no code duplication, no FFI:
 │                    │  │ ▶ Tool: run_bash [command='ls /tmp']       │    │
 │  ─────────────     │  └────────────────────────────────────────────┘   │
 │  Status ● Idle     │                                                    │
-│  Model: gpt-4o     │  🤖 Assistant                                      │
+│  Model: llama3.2   │  🤖 Assistant                                      │
 │  Tool Confirm: None│  Here are the files in /tmp: ...                   │
 │  Tokens: — in/out  │                                                    │
 │                    │  ──────────────────────────────────────────────    │
@@ -243,7 +243,7 @@ The `PengyCliApp` class drives `LlmClient::run()` on the main thread. Tool confi
 | `/export [path]` | Export the current chat as Markdown |
 | `/yolo [all\|safe\|none]` | Set tool confirmation: all (YOLO), safe (read-only), none — cycles if no arg |
 | `/config` | Show current configuration (base URL, model, timeout, etc.) |
-| `/model <name>` | Switch models (e.g. `/model gpt-4o`) |
+| `/model <name>` | Switch models (e.g. `/model llama3.2`) |
 | `/models` | Fetch available models from the endpoint's `GET /v1/models` |
 | `/baseurl <url>` | Change the API base URL |
 | `/apikey <key>` | Set the API key |
@@ -515,9 +515,9 @@ Shared with Python Pengy and PengyR at `~/.config/pengy/`.
 
 ```json
 {
-  "base_url": "https://api.openai.com/v1",
+  "base_url": "http://127.0.0.1:11434/v1",
   "api_key": "",
-  "model": "gpt-4o",
+  "model": "",
   "system_message": "You are a helpful assistant named Pengy. The current date is {date} and the user is {username} on host {hostname} which is {osinfo}.",
   "tool_confirmation": "none",
   "reasoning_effort": "",
@@ -539,9 +539,9 @@ Shared with Python Pengy and PengyR at `~/.config/pengy/`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `base_url` | string | `https://api.openai.com/v1` | OpenAI-compatible API endpoint |
-| `api_key` | string | (empty) | API key |
-| `model` | string | `gpt-4o` | Model name |
+| `base_url` | string | `http://127.0.0.1:11434/v1` | OpenAI-compatible API endpoint — a local Ollama server by default |
+| `api_key` | string | (empty) | API key; a local server needs none |
+| `model` | string | (empty) | Model name. No default on purpose: a local server ships no model, so an unset model makes Pengy print "pick a model" instructions (`/models`, `/model <name>`) instead of sending `model: ""` |
 | `system_message` | string | (see above) | Template; `{date}`, `{username}`, `{hostname}`, `{osinfo}` filled at send time |
 | `tool_confirmation` | string | `"none"` | `"all"` (YOLO), `"safe"` (read-only auto), `"none"` (prompt all) |
 | `reasoning_effort` | string | `""` | Passed as `reasoning_effort` on API calls when set (`none`…`max`; `""` = provider default) |

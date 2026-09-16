@@ -3,9 +3,16 @@
 #include <QJsonObject>
 
 struct Config {
-    QString baseUrl          = "https://api.openai.com/v1";
+    // A local server, not a hosted API: Pengy's audience runs Ollama or llama.cpp
+    // on their own machine, so the default endpoint is Ollama's OpenAI-compatible
+    // port, which needs no API key.
+    QString baseUrl          = "http://127.0.0.1:11434/v1";
     QString apiKey;
-    QString model            = "gpt-4o";
+    // Deliberately empty: a local server ships no model of its own (a fresh
+    // `ollama list` is empty), so naming one would be a lie that fails on the
+    // user's first message.  An empty model produces Pengy's own "pick a model"
+    // instructions instead -- see noModelHelp() in llmclient.h.
+    QString model            = "";
     QString systemMessage    =
         "You are a helpful assistant named Pengy. "
         "The current date is {date} and the user is {username} on host {hostname} which is {osinfo}.";

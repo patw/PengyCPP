@@ -6,9 +6,9 @@ PengyCPP stores its settings in `~/.config/pengy/settings.json`. This file is sh
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `base_url` | string | `https://api.openai.com/v1` | API endpoint for your LLM provider |
-| `api_key` | string | `""` | API key (stored in plaintext — protect your config dir) |
-| `model` | string | `gpt-4o` | Model name to use |
+| `base_url` | string | `http://127.0.0.1:11434/v1` | API endpoint for your LLM provider (a local Ollama server by default) |
+| `api_key` | string | `""` | API key (stored in plaintext). A local server needs none |
+| `model` | string | `""` | Model name to use. Deliberately empty by default: a local server ships no model of its own, and Pengy asks you to choose one instead of sending an empty name |
 | `system_message` | string | *(see below)* | System prompt with `{date}`, `{username}`, `{hostname}`, `{osinfo}` placeholders |
 | `tool_confirmation` | string | `none` | `all` (auto-approve everything), `safe` (auto-approve read-only tools), `none` (confirm every call) |
 

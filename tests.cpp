@@ -314,8 +314,12 @@ private slots:
 
     void configDefaultValues() {
         Config c;
-        QCOMPARE(c.baseUrl, "https://api.openai.com/v1");
-        QCOMPARE(c.model, "gpt-4o");
+        // Local-first on purpose: Ollama's port, no key, and no model (a local
+        // server ships none of its own).
+        QCOMPARE(c.baseUrl, "http://127.0.0.1:11434/v1");
+        QVERIFY(!c.baseUrl.contains("openai"));
+        QCOMPARE(c.apiKey, "");
+        QCOMPARE(c.model, "");
         QCOMPARE(c.toolConfirmation, "none");
         QCOMPARE(c.uiScale, 100);
         QCOMPARE(c.toolTimeout, 300);
@@ -353,7 +357,7 @@ private slots:
         Config c = Config::fromJson(json);
         QCOMPARE(c.apiKey, "sk-test");
         QCOMPARE(c.model, "custom-model");
-        QCOMPARE(c.baseUrl, "https://api.openai.com/v1");
+        QCOMPARE(c.baseUrl, "http://127.0.0.1:11434/v1");
         QCOMPARE(c.toolConfirmation, "none");
         QCOMPARE(c.uiScale, 100);
         QCOMPARE(c.toolTimeout, 300);
@@ -2396,6 +2400,10 @@ private slots:
         Config cfg = configLoad();
         cfg.baseUrl = llm.baseUrl();
         cfg.apiKey = "test";
+        // A model must be set: the shipped default has none (a local server
+        // ships no model of its own), so a turn would otherwise be answered by
+        // Pengy's own guard before it ever reached this stub.
+        cfg.model    = "stub-model";
         configSave(cfg);
 
         QJsonObject chat = chatCreate("Attach Test");
@@ -2434,6 +2442,10 @@ private slots:
         llm.responses << llmCompletion("got it");
         Config cfg = configLoad();
         cfg.baseUrl = llm.baseUrl();
+        // A model must be set: the shipped default has none (a local server ships
+        // no model of its own), so the turn would be answered by Pengy's guard
+        // before it ever reached this stub.
+        cfg.model   = "stub-model";
         configSave(cfg);
 
         QJsonObject chat = chatCreate("Files Only");
@@ -2473,6 +2485,10 @@ private slots:
         Config cfg = configLoad();
         cfg.baseUrl = llm.baseUrl();
         cfg.apiKey = "test";
+        // A model must be set: the shipped default has none (a local server
+        // ships no model of its own), so a turn would otherwise be answered by
+        // Pengy's own guard before it ever reached this stub.
+        cfg.model    = "stub-model";
         cfg.toolConfirmation = "none";   // the run stalls awaiting confirmation
         configSave(cfg);
 
@@ -2519,6 +2535,10 @@ private slots:
         Config cfg = configLoad();
         cfg.baseUrl = llm.baseUrl();
         cfg.apiKey = "test";
+        // A model must be set: the shipped default has none (a local server
+        // ships no model of its own), so a turn would otherwise be answered by
+        // Pengy's own guard before it ever reached this stub.
+        cfg.model    = "stub-model";
         cfg.toolConfirmation = "all";
         configSave(cfg);
 
@@ -2558,6 +2578,10 @@ private slots:
         Config cfg = configLoad();
         cfg.baseUrl = llm.baseUrl();
         cfg.apiKey = "test";
+        // A model must be set: the shipped default has none (a local server
+        // ships no model of its own), so a turn would otherwise be answered by
+        // Pengy's own guard before it ever reached this stub.
+        cfg.model    = "stub-model";
         cfg.toolConfirmation = "all";   // YOLO must not skip the question
         configSave(cfg);
 
@@ -2604,6 +2628,10 @@ private slots:
         Config cfg = configLoad();
         cfg.baseUrl = llm.baseUrl();
         cfg.apiKey = "test";
+        // A model must be set: the shipped default has none (a local server
+        // ships no model of its own), so a turn would otherwise be answered by
+        // Pengy's own guard before it ever reached this stub.
+        cfg.model    = "stub-model";
         cfg.toolConfirmation = "all";
         configSave(cfg);
 
@@ -3183,6 +3211,114 @@ private slots:
 
     // ── CLI tests (subprocess) ───────────────────────────────────────
 
+    void localEndpointDetection() {
+        for (const QString& url : {"http://127.0.0.1:11434/v1", "http://127.0.0.1:8080/v1",
+                                 "http://localhost:11434/v1", "http://0.0.0.0:11434/v1",
+                                 "http://[::1]:11434/v1"}) {
+            QVERIFY2(isLocalEndpoint(url), qPrintable(url));
+        }
+        for (const QString& url : {"https://api.openai.com/v1", "https://api.groq.com/openai/v1",
+                                  "http://192.168.1.50:11434/v1", ""}) {
+            QVERIFY2(!isLocalEndpoint(url), qPrintable(url));
+        }
+    }
+
+    void helpTextsNameTheRealControls() {
+        const QString noModel = noModelHelp("http://127.0.0.1:11434/v1");
+        for (const QString& expected : {"No model is selected", "http://127.0.0.1:11434/v1",
+                                        "/models", "/model ", "ollama pull", "Fetch Models"}) {
+            QVERIFY2(noModel.contains(expected), qPrintable(expected + " missing from " + noModel));
+        }
+
+        const QString local = unreachableHelp("http://127.0.0.1:11434/v1", "Connection refused");
+        QVERIFY2(local.contains("Nothing answered at http://127.0.0.1:11434/v1"), qPrintable(local));
+        QVERIFY2(local.contains("Connection refused"), qPrintable(local));
+        QVERIFY2(local.contains("ollama serve"), qPrintable(local));
+        QVERIFY2(local.contains("/baseurl"), qPrintable(local));
+
+        // A remote endpoint is not told to start Ollama.
+        const QString remote = unreachableHelp("https://api.example.com/v1", "timed out");
+        QVERIFY2(remote.contains("Could not reach https://api.example.com/v1"), qPrintable(remote));
+        QVERIFY2(!remote.toLower().contains("ollama"), qPrintable(remote));
+    }
+
+    // The shipped default: a local endpoint and no model, because a local server
+    // ships none of its own (a fresh `ollama list` is empty).  The turn must not
+    // become a request that asks the endpoint what it thinks of an empty model.
+    void llmNoModelIsReportedWithoutTouchingTheEndpoint() {
+        StubLlmServer stub;
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "   ";
+        p.messages = QJsonArray{userMsg("hi")};
+        p.toolConfirmation = "none";
+
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        QCOMPARE(events.size(), 1);
+        QCOMPARE(events[0]["type"].toString(), QString("error"));
+        QCOMPARE(events[0]["kind"].toString(), QString("config"));
+        const QString msg = events[0]["message"].toString();
+        QVERIFY2(msg.contains("No model is selected"), qPrintable(msg));
+        QVERIFY2(msg.contains("/models"), qPrintable(msg));
+        QVERIFY2(stub.requests.isEmpty(), "no request may reach the endpoint");
+    }
+
+    // Loopback port 1: nothing listens.  With a local default this is the
+    // likeliest first-run failure, so it must name the URL and point at the
+    // server the user has to start, not just relay Qt's error text.
+    void llmUnreachableEndpointExplainsItself() {
+        LlmParams p;
+        p.baseUrl = "http://127.0.0.1:1";
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hi")};
+        p.toolConfirmation = "none";
+
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        QCOMPARE(events.size(), 1);
+        QCOMPARE(events[0]["type"].toString(), QString("error"));
+        QCOMPARE(events[0]["kind"].toString(), QString("error"));
+        const QString msg = events[0]["message"].toString();
+        QVERIFY2(msg.contains("Nothing answered at http://127.0.0.1:1"), qPrintable(msg));
+        QVERIFY2(msg.contains("ollama serve"), qPrintable(msg));
+    }
+
+    // A fresh install with the shipped defaults: local endpoint, no key, no model.
+    // The CLI must say how to choose one rather than sending an empty model name.
+    void cliFreshInstallAsksForAModel() {
+        if (!QFile::exists(cliBin()))
+            QSKIP("pengy-cli not built yet");
+
+        const Config original = configLoad();
+        Config cfg = original;
+        cfg.baseUrl = "http://127.0.0.1:11434/v1";
+        cfg.apiKey  = "";
+        cfg.model   = "";   // the shipped default
+        QVERIFY(configSave(cfg));
+
+        QString errOut;
+        const QString out = runCli({"hello there"}, 10000, &errOut);
+        QVERIFY(configSave(original));   // before asserting, so nothing leaks
+
+        QVERIFY2(errOut.contains("No model is selected"), qPrintable(errOut));
+        QVERIFY2(errOut.contains("/models"), qPrintable(errOut));
+        QVERIFY2(errOut.contains("ollama pull"), qPrintable(errOut));
+        QVERIFY2(!errOut.contains("api.openai.com"), qPrintable(errOut));
+        QVERIFY2(!out.contains("No model is selected"), qPrintable(out));
+    }
+
     // A failed turn must be reported on stderr and must not be stored as a
     // message. The LLM-level contract is pinned above; this proves the CLI end
     // of it. base_url is pointed at a closed port instead of a StubLlmServer
@@ -3196,6 +3332,7 @@ private slots:
         Config cfg = original;
         cfg.baseUrl = "http://127.0.0.1:1";   // connection refused, fast
         cfg.apiKey  = "test";
+        cfg.model   = "stub-model";           // or the no-model guard answers instead
         cfg.toolConfirmation = "all";
         QVERIFY(configSave(cfg));
 
@@ -3207,9 +3344,12 @@ private slots:
         QVERIFY(configSave(original));
 
         // Reported on stderr, where a script or a cron log is not parsing...
-        QVERIFY2(errOut.contains("API error"), qPrintable(errOut));
+        // A dead local port is also the likeliest first-run failure with a local
+        // default, so the text names the URL and points at the server to start.
+        QVERIFY2(errOut.contains("Nothing answered at http://127.0.0.1:1"), qPrintable(errOut));
+        QVERIFY2(errOut.contains("ollama serve"), qPrintable(errOut));
         // ...and never on stdout.
-        QVERIFY2(!out.contains("API error"), qPrintable(out));
+        QVERIFY2(!out.contains("Nothing answered at"), qPrintable(out));
 
         // Now the half that matters: nothing was written down as an answer.
         // Scan every chat (rather than trusting which one the CLI resumed).

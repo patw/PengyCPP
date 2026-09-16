@@ -480,7 +480,16 @@ void WebServer::routeChatSend(const QString& chatId,
         worker->deleteLater();
     });
 
-    worker->start(cfg.baseUrl, cfg.apiKey, cfg.model, sendMsgs, cfg.toolConfirmation, cfg.reasoningEffort, cfg.preserveReasoning, cfg.llmTimeout);
+    // No model configured (a local endpoint ships none of its own): fall back to the
+    // first one this endpoint last offered, so a chat whose navbar shows a model
+    // can actually be sent.  With no cache either, llmclient's guard explains how
+    // to choose one.
+    QString sendModel = cfg.model;
+    if (sendModel.trimmed().isEmpty()) {
+        const QStringList cachedModels = modelCacheForBaseUrl(cfg.baseUrl);
+        if (!cachedModels.isEmpty()) sendModel = cachedModels.first();
+    }
+    worker->start(cfg.baseUrl, cfg.apiKey, sendModel, sendMsgs, cfg.toolConfirmation, cfg.reasoningEffort, cfg.preserveReasoning, cfg.llmTimeout);
     sendJson(socket, 200, {{"status","started"}});
 }
 

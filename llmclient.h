@@ -52,6 +52,24 @@ bool looksLikeCredentialProblem(int httpStatus, const QString& detail);
 /// Wording is shared with the Python and Rust editions.
 QString credentialHelp(const QString& baseUrl);
 
+/// Does `baseUrl` point at a server on this machine?
+bool isLocalEndpoint(const QString& baseUrl);
+
+/// The instructions a user needs when no model is selected.
+///
+/// A local endpoint ships no model of its own (a fresh Ollama has an empty model
+/// list), so the useful answer is how to choose one -- not the endpoint's
+/// complaint about an empty model field.  Wording is shared with the Python and
+/// Rust editions.
+QString noModelHelp(const QString& baseUrl);
+
+/// What to say when the endpoint did not answer at all.
+///
+/// With a local default this is the likeliest first-run failure, and Qt's own
+/// error text ("Connection refused") does not tell a new user that the fix is to
+/// start their own server.  Wording is shared with the Python and Rust editions.
+QString unreachableHelp(const QString& baseUrl, const QString& detail);
+
 class LlmClient {
 public:
     using EventFn   = std::function<void(const QJsonObject&)>;

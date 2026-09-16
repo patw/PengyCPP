@@ -63,7 +63,7 @@ QString credentialHelp(const QString& baseUrl) {
                "\n"
                "Configure Pengy (the CLI, Web UI and GUI all share %2):\n"
                "    pengy-cli /apikey <your-key>    set the API key\n"
-               "    pengy-cli /baseurl <url>        change the endpoint (a local Ollama/vLLM needs no key)\n"
+               "    pengy-cli /baseurl <url>        change the endpoint (a local Ollama/vLLM, the default, needs no key)\n"
                "    pengy-cli /model <name>         choose a model\n"
                "    pengy-cli /config               review the current settings\n"
                "  Or run pengy-web and open Settings (http://127.0.0.1:5000/settings).\n"
@@ -71,6 +71,40 @@ QString credentialHelp(const QString& baseUrl) {
                "Note: Pengy reads credentials from its own settings file. OPENAI_API_KEY\n"
                "and similar environment variables are NOT used, whatever the API error says.")
         .arg(baseUrl, settings);
+}
+
+bool isLocalEndpoint(const QString& baseUrl) {
+    const QString host = QUrl(baseUrl).host().toLower();
+    return host == "localhost" || host == "::1" || host == "0.0.0.0" || host.startsWith("127.");
+}
+
+QString noModelHelp(const QString& baseUrl) {
+    return QString(
+               "No model is selected for %1.\n"
+               "\n"
+               "Pengy's default endpoint is a local server, which has no model of its own:\n"
+               "    pengy-cli /models               list the models this endpoint offers\n"
+               "    pengy-cli /model <name>         select one\n"
+               "    ollama pull <name>              (Ollama) download one first, if the list is empty\n"
+               "  Or open Settings in the GUI / Web UI and use Fetch Models.")
+        .arg(baseUrl);
+}
+
+QString unreachableHelp(const QString& baseUrl, const QString& detail) {
+    const QString suffix = detail.isEmpty() ? QString() : " (" + detail + ")";
+    if (isLocalEndpoint(baseUrl)) {
+        return QString(
+                   "Nothing answered at %1%2.\n"
+                   "\n"
+                   "Is your local model server running?\n"
+                   "    ollama serve                    (Ollama) start the server, then: ollama pull <name>\n"
+                   "    pengy-cli /models               list the models it offers\n"
+                   "    pengy-cli /baseurl <url>        point Pengy at a different endpoint\n"
+                   "    pengy-cli /config               review the current settings")
+            .arg(baseUrl, suffix);
+    }
+    return QString("Could not reach %1%2. Check the endpoint with pengy-cli /baseurl <url>.")
+        .arg(baseUrl, suffix);
 }
 
 /// Emit a failed turn instead of a final response.
@@ -87,6 +121,15 @@ static void emitTurnError(const LlmClient::EventFn& onEvent,
         {"type",    "error"},
         {"kind",    credential ? "credentials" : "error"},
         {"message", credential ? credentialHelp(baseUrl) : detail},
+    });
+}
+
+/// Emit a turn that could not even be attempted (see noModelHelp).
+static void emitConfigError(const LlmClient::EventFn& onEvent, const QString& message) {
+    onEvent(QJsonObject{
+        {"type",    "error"},
+        {"kind",    "config"},
+        {"message", message},
     });
 }
 
@@ -234,6 +277,15 @@ void LlmClient::run(const LlmParams& params,
                     CancelFn  isCancelled,
                     QuestionFn onQuestion) {
 
+    // Checked here rather than in each frontend so the CLI, GUI and Web UI cannot
+    // disagree -- and because an empty model name would otherwise be sent to the
+    // endpoint, whose complaint about it is not an instruction.  No request is
+    // made, so nothing is charged or logged anywhere.
+    if (params.model.trimmed().isEmpty()) {
+        emitConfigError(onEvent, noModelHelp(params.baseUrl));
+        return;
+    }
+
     enum class TcMode { All, Safe, None };
     TcMode tcMode = TcMode::None;
     if (params.toolConfirmation == "all")  tcMode = TcMode::All;
@@ -333,13 +385,29 @@ void LlmClient::run(const LlmParams& params,
             QJsonObject body = QJsonDocument::fromJson(lastResp.body).object();
             QString msg = body["error"].toObject()["message"].toString(
                 QString::fromUtf8(lastResp.body));
-            // httpStatus 0 = the request never reached the endpoint (the
-            // transport failure syncPost() turned into an error body here);
-            // "API error (HTTP 0)" is not something to show a user.
-            const QString detail = lastResp.httpStatus > 0
-                ? QString("API error (HTTP %1): %2").arg(lastResp.httpStatus).arg(msg)
-                : QString("API error: ") + msg;
-            emitTurnError(onEvent, lastResp.httpStatus, detail, params.baseUrl);
+            if (lastResp.httpStatus <= 0) {
+                // The request never reached the endpoint -- syncPost() wrote the
+                // transport failure into an error body for us.  With a local
+                // default (and no key) this is the likeliest first-run failure, so
+                // name the URL and the server to start instead of relaying Qt's
+                // text.  A credential-looking transport failure stays classified
+                // as one, because a proxy or tunnel can fail while still talking
+                // about credentials.
+                if (looksLikeCredentialProblem(0, msg))
+                    emitTurnError(onEvent, 0, "API error: " + msg, params.baseUrl);
+                else
+                    onEvent(QJsonObject{
+                        {"type",    "error"},
+                        {"kind",    "error"},
+                        {"message", unreachableHelp(params.baseUrl, msg)},
+                    });
+                return;
+            }
+            emitTurnError(
+                onEvent,
+                lastResp.httpStatus,
+                QString("API error (HTTP %1): %2").arg(lastResp.httpStatus).arg(msg),
+                params.baseUrl);
             return;
         }
 

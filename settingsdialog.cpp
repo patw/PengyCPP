@@ -94,8 +94,9 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     llmForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
 
     m_baseUrl = new QLineEdit(cfg.baseUrl);
-    m_baseUrl->setToolTip("OpenAI-compatible API endpoint, e.g. https://api.openai.com/v1 or a local llama.cpp server.");
-    llmForm->addRow(labelWithTip("Base URL:", "OpenAI-compatible API endpoint, e.g. https://api.openai.com/v1 or a local llama.cpp server."), m_baseUrl);
+    const QString baseUrlTip = QString::fromUtf8("OpenAI-compatible API endpoint. The default is a local Ollama server, which needs no API key \u2014 e.g. http://127.0.0.1:11434/v1 (Ollama) or http://127.0.0.1:8080/v1 (llama.cpp).");
+    m_baseUrl->setToolTip(baseUrlTip);
+    llmForm->addRow(labelWithTip("Base URL:", baseUrlTip), m_baseUrl);
 
     m_apiKey  = new QLineEdit(cfg.apiKey);
     m_apiKey->setEchoMode(QLineEdit::Password);
@@ -106,8 +107,14 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     m_model = new QComboBox;
     m_model->setEditable(true);
     m_model->setInsertPolicy(QComboBox::NoInsert);
-    m_model->addItem(cfg.model);
-    m_model->setCurrentText(cfg.model);
+    // The default model is deliberately empty (a local endpoint ships no model of
+    // its own), so on a fresh install there is nothing to pre-select -- say what
+    // to do about it rather than showing a blank entry in the list.
+    if (!cfg.model.isEmpty()) {
+        m_model->addItem(cfg.model);
+        m_model->setCurrentText(cfg.model);
+    }
+    m_model->setPlaceholderText(QString::fromUtf8("Pick a model \u2014 press Fetch"));
     // Pre-populate from the persistent model cache (possibly stale, but populated).
     {
         QStringList toAdd;
@@ -115,7 +122,8 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
             if (m != cfg.model) toAdd << m;
         if (!toAdd.isEmpty()) {
             m_model->addItems(toAdd);
-            m_model->setCurrentText(cfg.model);
+            // With no model configured, offer the first fetched one.
+            m_model->setCurrentText(cfg.model.isEmpty() ? toAdd.first() : cfg.model);
         }
     }
     m_model->setToolTip("Model name sent in chat completion requests. Use Fetch to list available models from the endpoint.");

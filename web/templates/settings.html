@@ -89,8 +89,8 @@
       <form method="POST" action="/settings">
         <div class="mb-3">
           <label class="form-label fw-semibold">Base URL</label>
-          <input name="base_url" type="url" class="form-control" value="{{BASE_URL}}" placeholder="https://api.openai.com/v1">
-          <div class="form-text">OpenAI-compatible API endpoint</div>
+          <input name="base_url" type="url" class="form-control" value="{{BASE_URL}}" placeholder="http://127.0.0.1:11434/v1">
+          <div class="form-text">OpenAI-compatible API endpoint — the default is a local Ollama server (no API key needed)</div>
         </div>
         <div class="mb-3">
           <label class="form-label fw-semibold">API Key</label>
@@ -102,7 +102,7 @@
         <div class="mb-3">
           <label class="form-label fw-semibold">Model</label>
           <div class="input-group">
-            <input name="model" type="text" id="modelInput" class="form-control" value="{{MODEL}}" placeholder="gpt-4o">
+            <input name="model" type="text" id="modelInput" class="form-control" value="{{MODEL}}" placeholder="llama3.2">
             <button type="button" id="fetchModelsBtn" class="btn btn-outline-secondary"
                     onclick="fetchModels()">
               <i class="bi bi-cloud-download me-1"></i>Fetch

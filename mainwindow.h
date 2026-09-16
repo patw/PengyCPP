@@ -80,6 +80,10 @@ private:
 
     int m_runtimeUiScale = 100;
 
+    // Cached model list for the configured endpoint, kept so modelForSession can
+    // fall back to a real model name when none is configured.
+    QStringList m_cachedModels;
+
     Config     m_config;
     QJsonArray m_chats;
     QString    m_activeChatId;
