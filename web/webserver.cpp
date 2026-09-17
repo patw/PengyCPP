@@ -455,8 +455,10 @@ void WebServer::routeChatSend(const QString& chatId,
     });
 
     connect(worker, &WebChatWorker::sudoRequired, this,
-            [this, chatId]() {
-        pushSse(chatId, QJsonObject{{"type","sudo_request"}});
+            [this, chatId](const QString& host) {
+        // host is null for the local machine; the modal names a remote host.
+        pushSse(chatId, QJsonObject{{"type","sudo_request"},
+                                    {"host", host.isEmpty() ? QJsonValue() : QJsonValue(host)}});
     });
 
     connect(worker, &WebChatWorker::progress, this,

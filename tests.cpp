@@ -27,6 +27,12 @@
 #include "attachments.h"
 #include "image_utils.h"
 #include <QTcpServer>
+#include <QCryptographicHash>
+#include <QElapsedTimer>
+#include <QThread>
+#include <thread>
+#include <atomic>
+#include <signal.h>
 #ifdef Q_OS_UNIX
 #include <unistd.h>
 #endif
@@ -236,6 +242,67 @@ static QString runCli(const QStringList& commands, int timeoutMs = 5000,
 }
 
 // ── Test class ──────────────────────────────────────────────────────
+
+// run_bash host= test fixtures (see the remote* tests in PengyTests).
+#ifdef Q_OS_UNIX
+struct RemoteStub {
+    QTemporaryDir dir;
+    QString argvLog, runtime, bin;
+    QByteArray oldPath;
+    RemoteStub() {
+        bin = dir.path() + "/bin";
+        argvLog = dir.path() + "/ssh-argv";
+        runtime = dir.path() + "/runtime";
+        QDir().mkpath(bin);
+        QDir().mkpath(runtime);
+        QFile::setPermissions(runtime, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        writeExec(bin + "/ssh", QString(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$@\" > '%1'\n"
+            "export XDG_RUNTIME_DIR='%2'\n"
+            "while [ \"$1\" != \"--\" ]; do shift; done\n"
+            "shift 2\n"
+            // Background jobs get /dev/null stdin; pass the channel via fd 3.
+            "exec 3<&0\n"
+            "setsid \"$@\" <&3 3<&- &\n"
+            "exec 3<&-\n"
+            "wait \"$!\"\n").arg(argvLog, runtime));
+        // Stub sudo: succeeds only via -A with a working askpass; a
+        // password of "wrong" reproduces classic sudo's failed-auth output.
+        writeExec(bin + "/sudo",
+            "#!/bin/bash\n"
+            "if [ \"$1\" != \"-A\" ]; then echo \"sudo: a terminal is required\" >&2; exit 1; fi\n"
+            "shift\n"
+            "pw=\"$(\"$SUDO_ASKPASS\")\"\n"
+            "if [ \"$pw\" = wrong ]; then echo \"Sorry, try again.\" >&2; "
+            "echo \"sudo: 3 incorrect password attempts\" >&2; exit 1; fi\n"
+            "echo \"pw=$pw\"\n"
+            "exec \"$@\"\n");
+        oldPath = qgetenv("PATH");
+        qputenv("PATH", bin.toUtf8() + ":" + oldPath);
+    }
+    ~RemoteStub() { qputenv("PATH", oldPath); }
+    static void writeExec(const QString& path, const QString& body) {
+        QFile f(path);
+        if (f.open(QIODevice::WriteOnly)) f.write(body.toUtf8());
+        f.close();
+        QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    }
+    int runtimeEntries() const {
+        return QDir(runtime).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden).size();
+    }
+};
+
+// Provider that records each prompt's host and answers from *passwords*
+// (default "s3cret").
+static void recordingProvider(Tools::ToolContext& ctx, QStringList* prompts,
+                              const QHash<QString, QString>& passwords = {}) {
+    ctx.setSudoProvider([prompts, passwords](const QString& host) {
+        prompts->append(host);
+        return passwords.value(host, "s3cret");
+    });
+}
+#endif
 
 class PengyTests : public QObject {
     Q_OBJECT
@@ -1556,10 +1623,10 @@ private slots:
 
     void toolContextSudoProviderPerContext() {
         Tools::ToolContext a, b;
-        a.setSudoProvider([] { return QString("pw-a"); });
-        b.setSudoProvider([] { return QString("pw-b"); });
-        QCOMPARE(a.sudoProvider()(), QString("pw-a"));
-        QCOMPARE(b.sudoProvider()(), QString("pw-b"));
+        a.setSudoProvider([](const QString&) { return QString("pw-a"); });
+        b.setSudoProvider([](const QString&) { return QString("pw-b"); });
+        QCOMPARE(a.sudoProvider()(QString()), QString("pw-a"));
+        QCOMPARE(b.sudoProvider()(QString()), QString("pw-b"));
     }
 
     void toolContextCachedPasswordNotShared() {
@@ -1581,7 +1648,7 @@ private slots:
 
     void runBashSudoRequiresExplicitElevation() {
         Tools::ToolContext ctx; bool prompted = false;
-        ctx.setSudoProvider([&prompted] { prompted = true; return QString("secret"); });
+        ctx.setSudoProvider([&prompted](const QString&) { prompted = true; return QString("secret"); });
         QString r = Tools::execute("run_bash", QJsonObject{{"command", "sudo true"}}, nullptr, &ctx);
         QVERIFY(r.contains("Elevation required"));
         QVERIFY(!prompted);
@@ -1590,7 +1657,7 @@ private slots:
     void runBashSudoMentionsDoNotPrompt() {
         for (const QString& command : {QString("echo sudo"), QString("echo 'sudo apt update'"), QString("# sudo\\necho ok")}) {
             Tools::ToolContext ctx; bool prompted = false;
-            ctx.setSudoProvider([&prompted] { prompted = true; return QString("secret"); });
+            ctx.setSudoProvider([&prompted](const QString&) { prompted = true; return QString("secret"); });
             QString r = Tools::execute("run_bash", QJsonObject{{"command", command}}, nullptr, &ctx);
             QVERIFY(!r.contains("Elevation required"));
             QVERIFY(!prompted);
@@ -1823,7 +1890,7 @@ private slots:
         qputenv("PATH", dir.path().toUtf8() + ":" + oldPath);
 
         Tools::ToolContext ctx;
-        ctx.setSudoProvider([] { return QString("s3cret"); });
+        ctx.setSudoProvider([](const QString&) { return QString("s3cret"); });
 
         // Shapes the old stdin-piped `sudo -S` broke on.
         const QStringList commands = {
@@ -1849,6 +1916,285 @@ private slots:
 
         qputenv("PATH", oldPath);
 #endif
+    }
+
+    // ── Tools: run_bash host= (remote execution + remote sudo) ─────
+    //
+    // A stub `ssh` on PATH stands in for the real client: it records its argv
+    // and runs the `sh -s` wrapper locally in a separate session.  That mirrors
+    // the real process topology — killing the local "ssh" (Stop/timeout) does
+    // not signal the "remote" shell directly; only the closed stdin channel
+    // reaches it — so the wrapper's cleanup and kill paths are exercised
+    // honestly.  Mirrors Python's TestRemoteRunBash — keep in sync.
+
+
+    void remoteHostValidationRejectsInjection() {
+#ifdef Q_OS_UNIX
+        RemoteStub stub;
+        Tools::ToolContext ctx; QStringList prompts;
+        recordingProvider(ctx, &prompts);
+        for (const QString& host : {QString("-oProxyCommand=touch /tmp/x"), QString("a b"), QString("a;b"),
+                                    QString("`id`"), QString("$(id)"), QString("a/b"), QString("'q'")}) {
+            QString r = Tools::execute("run_bash", QJsonObject{{"command", "sudo true"}, {"elevated", true}, {"host", host}},
+                                       nullptr, &ctx);
+            QVERIFY2(r.startsWith("Error: invalid host"), qPrintable(host + " -> " + r));
+        }
+        QVERIFY(prompts.isEmpty());
+        QVERIFY(!QFile::exists(stub.argvLog));
+#endif
+    }
+
+    void remoteHostValidationAcceptsSshDestinations() {
+        for (const QString& host : {QString("web1"), QString("pat@web1.lan"), QString("web-1.example.com"),
+                                    QString("::1"), QString("fe80::1%eth0")})
+            QVERIFY2(Tools::validateHost(host).isEmpty(), qPrintable(host));
+    }
+
+    void remoteSshArgv() {
+#ifdef Q_OS_UNIX
+        RemoteStub stub;
+        Tools::execute("run_bash", QJsonObject{{"command", "true"}, {"host", "web1"}});
+        QFile f(stub.argvLog);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QStringList argv = QString::fromUtf8(f.readAll()).split('\n', Qt::SkipEmptyParts);
+        QVERIFY(argv.size() >= 4);
+        QCOMPARE(argv.mid(argv.size() - 4), QStringList({"--", "web1", "sh", "-s"}));
+        QVERIFY(argv.contains("-T") && argv.contains("BatchMode=yes"));
+#endif
+    }
+
+    void remoteUnelevatedCommand() {
+#ifdef Q_OS_UNIX
+        RemoteStub stub;
+        QString r = Tools::execute("run_bash", QJsonObject{
+            {"command", "pwd; echo \"askpass=${SUDO_ASKPASS:-none}\"; cat; echo stdin-closed; exit 7"},
+            {"cwd", stub.dir.path()}, {"host", "web1"}});
+        QVERIFY2(r.contains(stub.dir.path()), qPrintable(r));
+        QVERIFY2(r.contains("askpass=none"), qPrintable(r));
+        QVERIFY2(r.contains("stdin-closed"), qPrintable(r));
+        QVERIFY2(r.contains("[Exit code: 7]"), qPrintable(r));
+        QCOMPARE(stub.runtimeEntries(), 0);
+#endif
+    }
+
+    void remoteCwdFailure() {
+#ifdef Q_OS_UNIX
+        RemoteStub stub;
+        QString r = Tools::execute("run_bash", QJsonObject{
+            {"command", "pwd"}, {"cwd", "/nonexistent_dir_xyz"}, {"host", "web1"}});
+        QVERIFY2(r.contains("[Exit code: 126]"), qPrintable(r));
+#endif
+    }
+
+    void remoteElevationRulesApply() {
+#ifdef Q_OS_UNIX
+        RemoteStub stub;
+        Tools::ToolContext ctx; QStringList prompts;
+        recordingProvider(ctx, &prompts);
+        QVERIFY(Tools::execute("run_bash", QJsonObject{{"command", "sudo true"}, {"host", "web1"}},
+                               nullptr, &ctx).contains("Elevation required"));
+        QVERIFY(Tools::execute("run_bash", QJsonObject{{"command", "echo 'sudo true'"}, {"elevated", true}, {"host", "web1"}},
+                               nullptr, &ctx).contains("does not invoke sudo"));
+        QVERIFY(Tools::execute("run_bash", QJsonObject{{"command", "ssh web1 sudo true"}, {"elevated", true}},
+                               nullptr, &ctx).contains("does not invoke sudo"));
+        QVERIFY(prompts.isEmpty());
+#endif
+    }
+
+    void remoteSudoDeliversPasswordWithoutLeaking() {
+#ifdef Q_OS_UNIX
+        RemoteStub stub;
+        const QString password = "p'a$s w\"d\\x";
+        Tools::ToolContext ctx; QStringList prompts;
+        recordingProvider(ctx, &prompts, {{"web1", password}});
+        for (const QString& c : {QString("sudo echo hi"), QString("echo a; cat > /dev/null; sudo echo hi"),
+                                 QString("sudo echo one; sudo echo two"), QString("echo x | sudo cat"),
+                                 QString("sudo -S echo hi")}) {
+            QString r = Tools::execute("run_bash", QJsonObject{{"command", c}, {"elevated", true}, {"host", "web1"}},
+                                       nullptr, &ctx);
+            QVERIFY2(r.contains("pw=" + password), qPrintable(c + " -> " + r));
+            QVERIFY2(!r.contains("terminal is required"), qPrintable(c + " -> " + r));
+        }
+        QString r = Tools::execute("run_bash", QJsonObject{{"command", "sudo env"}, {"elevated", true}, {"host", "web1"}},
+                                   nullptr, &ctx);
+        QCOMPARE(r.count(password), 1);  // only the stub's pw= line, never env
+        QCOMPARE(prompts, QStringList({"web1"}));  // cached for the rest of the run
+        QCOMPARE(stub.runtimeEntries(), 0);
+        QFile f(stub.argvLog);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QVERIFY(!QString::fromUtf8(f.readAll()).contains(password));
+#endif
+    }
+
+    void remotePasswordsCachedPerHost() {
+#ifdef Q_OS_UNIX
+        RemoteStub stub;
+        Tools::ToolContext ctx; QStringList prompts;
+        recordingProvider(ctx, &prompts, {{"web1", "pw-web1"}, {"db2", "pw-db2"}});
+        auto run = [&ctx](const QString& host) {
+            return Tools::execute("run_bash", QJsonObject{{"command", "sudo true"}, {"elevated", true}, {"host", host}},
+                                  nullptr, &ctx);
+        };
+        QString r1 = run("web1"), r2 = run("db2"), r3 = run("web1");
+        QVERIFY(r1.contains("pw=pw-web1") && r2.contains("pw=pw-db2") && r3.contains("pw=pw-web1"));
+        QCOMPARE(prompts, QStringList({"web1", "db2"}));
+        ctx.clearSudo();
+        QVERIFY(!ctx.hasCachedSudoPassword("web1") && !ctx.hasCachedSudoPassword("db2"));
+#endif
+    }
+
+    void remoteLocalPromptKeyedSeparately() {
+#ifdef Q_OS_UNIX
+        RemoteStub stub;
+        Tools::ToolContext ctx; QStringList prompts;
+        recordingProvider(ctx, &prompts, {{"", "local-pw"}, {"web1", "remote-pw"}});
+        QVERIFY(Tools::execute("run_bash", QJsonObject{{"command", "sudo true"}, {"elevated", true}},
+                               nullptr, &ctx).contains("pw=local-pw"));
+        QVERIFY(Tools::execute("run_bash", QJsonObject{{"command", "sudo true"}, {"elevated", true}, {"host", "web1"}},
+                               nullptr, &ctx).contains("pw=remote-pw"));
+        QCOMPARE(prompts, QStringList({"", "web1"}));
+#endif
+    }
+
+    void remoteAuthFailureEvictsOnlyThatHost_data() {
+        QTest::addColumn<QString>("host");
+        QTest::newRow("local") << QString();
+        QTest::newRow("remote") << QString("web1");
+    }
+
+    void remoteAuthFailureEvictsOnlyThatHost() {
+#ifdef Q_OS_UNIX
+        QFETCH(QString, host);
+        RemoteStub stub;
+        Tools::ToolContext ctx; QStringList prompts;
+        recordingProvider(ctx, &prompts, {{host, "wrong"}});
+        ctx.setCachedSudoPassword("fine", "other");
+        QJsonObject args{{"command", "sudo true"}, {"elevated", true}};
+        if (!host.isEmpty()) args["host"] = host;
+        QString r = Tools::execute("run_bash", args, nullptr, &ctx);
+        QVERIFY2(r.contains("sudo authentication failed"), qPrintable(r));
+        QVERIFY(!ctx.hasCachedSudoPassword(host));
+        QCOMPARE(ctx.cachedSudoPassword("other"), QString("fine"));
+        Tools::execute("run_bash", args, nullptr, &ctx);
+        QCOMPARE(prompts, QStringList({host, host}));  // re-prompted, not replayed
+#endif
+    }
+
+    void remoteStopKillsCommandAndCleansUp() {
+#ifdef Q_OS_UNIX
+        RemoteStub stub;
+        Tools::ToolContext ctx; QStringList prompts;
+        recordingProvider(ctx, &prompts);
+        const QString marker = stub.dir.path() + "/remote-pid";
+        std::atomic<bool> done{false};
+        QElapsedTimer timer; timer.start();
+        std::thread t([&] {
+            Tools::execute("run_bash", QJsonObject{
+                {"command", QString("sudo sh -c 'echo $$ > %1; exec sleep 30'").arg(marker)},
+                {"elevated", true}, {"host", "web1"}}, nullptr, &ctx);
+            done = true;
+        });
+        auto markerPid = [&marker]() -> qint64 {
+            QFile f(marker);
+            if (!f.open(QIODevice::ReadOnly)) return 0;
+            return QString::fromUtf8(f.readAll()).trimmed().toLongLong();
+        };
+        for (int i = 0; i < 100 && markerPid() == 0; ++i) QThread::msleep(50);
+        bool askpassExisted = stub.runtimeEntries() > 0;
+        ctx.killAll();
+        for (int i = 0; i < 200 && !done; ++i) QThread::msleep(50);
+        bool returned = done.load();
+        if (returned) t.join(); else t.detach();
+        QVERIFY2(askpassExisted, "askpass dir should exist mid-run");
+        QVERIFY2(returned, "run_bash did not return after Stop");
+        QVERIFY(timer.elapsed() < 10000);
+        qint64 pid = markerPid();
+        QVERIFY(pid > 0);
+        bool alive = true;
+        for (int i = 0; i < 100; ++i) {
+            if (::kill(pid, 0) != 0) { alive = false; break; }
+            QThread::msleep(50);
+        }
+        if (alive) {
+            ::kill(pid, SIGKILL);
+            QFAIL("remote command survived Stop");
+        }
+        for (int i = 0; i < 100 && stub.runtimeEntries() > 0; ++i) QThread::msleep(50);
+        QVERIFY2(stub.runtimeEntries() == 0, "askpass dir leaked after Stop");
+#endif
+    }
+
+    void remoteMissingSshClient() {
+#ifdef Q_OS_UNIX
+        QTemporaryDir empty;
+        QByteArray oldPath = qgetenv("PATH");
+        qputenv("PATH", empty.path().toUtf8());
+        QString r = Tools::execute("run_bash", QJsonObject{{"command", "true"}, {"host", "web1"}});
+        qputenv("PATH", oldPath);
+        QVERIFY2(r.startsWith("Error") && r.contains("ssh"), qPrintable(r));
+#endif
+    }
+
+    void remoteSshConnectionFailureHint() {
+#ifdef Q_OS_UNIX
+        RemoteStub stub;
+        RemoteStub::writeExec(stub.bin + "/ssh",
+            "#!/bin/sh\necho 'user@web1: Permission denied (publickey).' >&2\nexit 255\n");
+        QString r = Tools::execute("run_bash", QJsonObject{{"command", "true"}, {"host", "web1"}});
+        QVERIFY2(r.contains("ssh to web1 failed"), qPrintable(r));
+#endif
+    }
+
+    void remoteLargeCommandDoesNotDeadlock() {
+#ifdef Q_OS_UNIX
+        RemoteStub stub;
+        QString payload(100000, 'x');
+        QString r = Tools::execute("run_bash", QJsonObject{
+            {"command", "printf %s " + payload + " | wc -c"}, {"host", "web1"}});
+        QVERIFY2(r.contains("100000"), qPrintable(r.left(500)));
+#endif
+    }
+
+    void remoteWrapperParsesUnderSh() {
+#ifdef Q_OS_UNIX
+        QString script = Tools::buildRemoteScript("echo 'hi'\nsudo -A true", true, "a'b\"c$d\\e\nf", "/tmp");
+        QProcess sh;
+        sh.start("sh", {"-n"});
+        QVERIFY(sh.waitForStarted());
+        sh.write(script.toUtf8());
+        sh.closeWriteChannel();
+        QVERIFY(sh.waitForFinished());
+        QCOMPARE(sh.exitCode(), 0);
+#endif
+    }
+
+    void remotePlaceholderTextInValuesIsNotSubstituted() {
+        QString script = Tools::buildRemoteScript("echo __CWD__", true, "__COMMAND__ x", "/a b");
+        QVERIFY2(script.contains("\npw='__COMMAND__ x'\n"), qPrintable(script));
+        QVERIFY2(script.contains("\ncmd='echo __CWD__'\n"), qPrintable(script));
+        QVERIFY2(script.contains("\ncwd='/a b'\n"), qPrintable(script));
+    }
+
+    void remoteShellQuoteMatchesShlex() {
+        QCOMPARE(Tools::shellQuote(""), QString("''"));
+        QCOMPARE(Tools::shellQuote("/tmp/a-b_c.d"), QString("/tmp/a-b_c.d"));
+        QCOMPARE(Tools::shellQuote("a b"), QString("'a b'"));
+        QCOMPARE(Tools::shellQuote("it's"), QString("'it'\"'\"'s'"));
+    }
+
+    void remoteWrapperMatchesOtherEditions() {
+        // The wrapper must stay byte-identical across the Python, Rust and C++
+        // editions; this is the SHA-256 of Python's `_REMOTE_WRAPPER`.
+        QCOMPARE(QCryptographicHash::hash(Tools::remoteWrapper().toUtf8(), QCryptographicHash::Sha256).toHex(),
+                 QByteArray("75d7e71ce303efd968769a96b9eb433eb9841ba446a363b718b33d54b6ac0fca"));
+    }
+
+    void remoteRealSshHost() {
+        const QString host = qEnvironmentVariable("PENGY_TEST_SSH_HOST");
+        if (host.isEmpty()) QSKIP("set PENGY_TEST_SSH_HOST to a key-auth ssh host");
+        QString r = Tools::execute("run_bash", QJsonObject{
+            {"command", "echo remote-ok; echo \"${SUDO_ASKPASS:-none}\"; yes | head -1"}, {"host", host}});
+        QVERIFY2(r.contains("remote-ok") && r.contains("none"), qPrintable(r));
     }
 
     void toolContextKillAllOnlyAffectsOwn() {

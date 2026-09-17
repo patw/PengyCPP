@@ -28,12 +28,12 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
         m_sudoPassword.clear();
     }
 
-    Tools::setSudoPasswordProvider([this]() -> QString {
+    Tools::setSudoPasswordProvider([this](const QString& host) -> QString {
         {
             QMutexLocker lk(&m_sudoMutex);
             m_sudoPending = true;
         }
-        emit sudoRequired();
+        emit sudoRequired(host);
         QMutexLocker lk(&m_sudoMutex);
         while (m_sudoPending && !m_cancelled)
             m_sudoCond.wait(&m_sudoMutex);

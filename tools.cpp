@@ -55,23 +55,31 @@ static void terminateProcessGroup(qint64 pid);   // fwd decl
 void ToolContext::setSudoProvider(SudoPasswordFn fn) {
     QMutexLocker lock(&m_mutex);
     m_sudoProvider = std::move(fn);
-    m_cachedSudoPassword.clear();
+    m_cachedSudoPasswords.clear();
 }
 SudoPasswordFn ToolContext::sudoProvider() {
     QMutexLocker lock(&m_mutex);
     return m_sudoProvider;
 }
-QString ToolContext::cachedSudoPassword() {
+QString ToolContext::cachedSudoPassword(const QString& host) {
     QMutexLocker lock(&m_mutex);
-    return m_cachedSudoPassword;
+    return m_cachedSudoPasswords.value(host);
 }
-void ToolContext::setCachedSudoPassword(const QString& pw) {
+bool ToolContext::hasCachedSudoPassword(const QString& host) {
     QMutexLocker lock(&m_mutex);
-    m_cachedSudoPassword = pw;
+    return m_cachedSudoPasswords.contains(host);
+}
+void ToolContext::setCachedSudoPassword(const QString& pw, const QString& host) {
+    QMutexLocker lock(&m_mutex);
+    m_cachedSudoPasswords.insert(host, pw);
+}
+void ToolContext::forgetSudoPassword(const QString& host) {
+    QMutexLocker lock(&m_mutex);
+    m_cachedSudoPasswords.remove(host);
 }
 void ToolContext::clearSudo() {
     QMutexLocker lock(&m_mutex);
-    m_cachedSudoPassword.clear();
+    m_cachedSudoPasswords.clear();
 }
 void ToolContext::registerProcess(qint64 pid) {
     QMutexLocker lock(&m_mutex);
@@ -279,10 +287,11 @@ const QJsonArray& toolDefinitions() {
             },
             QJsonArray{"changes"}),
 
-        td("run_bash", "Run a command with bash. The command is non-interactive: stdin is closed, so anything that prompts or waits for input (a password prompt, an editor, `read`) will fail rather than wait — pass non-interactive flags instead. Set cwd to run the command in a specific working directory (defaults to the current directory). To run something as root, include an explicit `sudo ...` in the command AND set elevated=true; Pengy then prompts for the user's password separately. elevated=true does NOT elevate on its own — a command with elevated=true but no `sudo` is rejected, so every elevation stays an explicit, auditable sudo call. Do not set elevated merely because text or arguments mention sudo. Commands are killed once the configured tool timeout elapses.",
+        td("run_bash", "Run a command with bash. The command is non-interactive: stdin is closed, so anything that prompts or waits for input (a password prompt, an editor, `read`) will fail rather than wait — pass non-interactive flags instead. Set cwd to run the command in a specific working directory (defaults to the current directory). To run something as root, include an explicit `sudo ...` in the command AND set elevated=true; Pengy then prompts for the user's password separately. elevated=true does NOT elevate on its own — a command with elevated=true but no `sudo` is rejected, so every elevation stays an explicit, auditable sudo call. Do not set elevated merely because text or arguments mention sudo. To run on a remote machine, set host instead of writing `ssh host ...` yourself; only commands run via host can use sudo with a password prompt on that machine. Commands are killed once the configured tool timeout elapses.",
             QJsonObject{
                 {"command", prop("string", "The bash command to execute")},
                 {"cwd",     prop("string", "Optional working directory to run the command in")},
+                {"host",    prop("string", "Run the command on this remote host over ssh instead of locally. Use the ssh destination the user uses (an ~/.ssh/config alias, host, or user@host); key-based login must already work. cwd, if given, is a path on the remote host. For root on the remote host, include `sudo ...` in the command and set elevated=true exactly as for a local command; Pengy prompts for that host's sudo password. Do NOT wrap the command in ssh yourself.")},
                 {"elevated", prop("boolean", "Set true only when this command intentionally invokes sudo.")}},
             QJsonArray{"command"}),
 
@@ -1053,89 +1062,148 @@ QString rewriteSudoForAskpass(QString command) {
     return out + command.mid(last);
 }
 
+// ── Remote execution (run_bash host=) ───────────────────────────────
+
+// Remote-execution wrapper for run_bash(host=...).  Sent over ssh's stdin to
+// `sh -s`, so the only thing on the ssh command line is `sh -s` (independent of
+// the remote login shell) and the password never touches an argv.  The whole
+// script is one `{ ... }` compound command so the shell reads all of it before
+// running any of it; after that, stdin holds only the still-open channel.
+//
+//   - The askpass helper mirrors AskpassHelper: a 0600 password file in a 0700
+//     mktemp dir, read by a 0700 script.  `pw` is never exported and is unset
+//     before the command starts, so `env` inside the command can't leak it.
+//     The dir must be executable (sudo execs the helper), hence the candidate
+//     list — $XDG_RUNTIME_DIR is tmpfs, /tmp is often noexec.
+//   - Stop: the Pengy side holds ssh's stdin open for the whole run.  Killing
+//     the local ssh closes the channel; the watcher's `cat` sees EOF and
+//     SIGTERMs the command's process group (setsid).  `sudo` relays SIGTERM to
+//     its root child.  No pty, so there is no SIGHUP to rely on.
+//   - `exec 3<&0`: background jobs get /dev/null as stdin when job control is
+//     off, so the watcher must read the channel through a saved fd.
+//   - `trap ... PIPE`: after the client disconnects, dash writes a "Terminated"
+//     notice to the dead channel; without a handler it dies of SIGPIPE before
+//     the EXIT trap removes the password dir.  Handler traps (unlike ignored
+//     signals) reset to default in the child, so the command's own SIGPIPE
+//     semantics are unchanged.
+//
+// Keep byte-identical with the Python and Rust editions.
+static const char* const kRemoteWrapper = R"PENGYWRAP({
+umask 077
+use_sudo=__USE_SUDO__
+pw=__PASSWORD__
+cmd=__COMMAND__
+cwd=__CWD__
+d=
+if [ "$use_sudo" = 1 ]; then
+  for base in "${XDG_RUNTIME_DIR:-}" "${HOME:-}/.cache" /tmp; do
+    [ -n "$base" ] && [ -d "$base" ] && [ -w "$base" ] || continue
+    t=$(mktemp -d "$base/pengy-askpass.XXXXXX" 2>/dev/null) || continue
+    printf '#!/bin/sh\ncat "%s/pw"\n' "$t" > "$t/askpass"
+    chmod 700 "$t/askpass"
+    : > "$t/pw"
+    if "$t/askpass" >/dev/null 2>&1; then d=$t; break; fi
+    rm -rf "$t"
+  done
+  if [ -z "$d" ]; then
+    unset pw
+    echo "pengy: no writable, executable private directory for SUDO_ASKPASS on the remote host" >&2
+    exit 125
+  fi
+  trap 'rm -rf "$d"' EXIT
+  printf '%s\n' "$pw" > "$d/pw"
+fi
+unset pw
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 141' PIPE
+if [ -n "$cwd" ]; then cd "$cwd" || exit 126; fi
+if command -v bash >/dev/null 2>&1; then run=bash; else run=sh; fi
+exec 3<&0
+if [ -n "$d" ]; then
+  SUDO_ASKPASS="$d/askpass" setsid "$run" -c "$cmd" </dev/null 3<&- &
+else
+  setsid "$run" -c "$cmd" </dev/null 3<&- &
+fi
+child=$!
+( cat >/dev/null; kill -TERM -"$child" 2>/dev/null ) <&3 >/dev/null 2>&1 &
+watcher=$!
+exec 3<&-
+wait "$child"; rc=$?
+kill "$watcher" 2>/dev/null
+exit "$rc"
+}
+)PENGYWRAP";
+
+QString remoteWrapper() { return QString::fromUtf8(kRemoteWrapper); }
+
+QString validateHost(const QString& host) {
+    // ssh destinations: hostnames, ~/.ssh/config aliases, user@host, IPv6
+    // literals.  No leading '-' (ssh option injection such as
+    // -oProxyCommand=...), no whitespace/quotes/shell metacharacters/slashes.
+    static const QRegularExpression hostRx("^[A-Za-z0-9._@:%-]+$");
+    if (host.isEmpty() || host.startsWith('-') || !hostRx.match(host).hasMatch())
+        return QString("Error: invalid host '%1'. Use an ssh destination such as "
+                       "`web1`, `user@web1.example.com`, or an ~/.ssh/config alias.").arg(host);
+    return {};
+}
+
+QString shellQuote(const QString& s) {
+    if (s.isEmpty()) return "''";
+    static const QString safe = "_@%+=:,./-";
+    bool plain = true;
+    for (QChar c : s) {
+        if (!(c.unicode() < 128 && (c.isLetterOrNumber() || safe.contains(c)))) { plain = false; break; }
+    }
+    if (plain) return s;
+    QString body = s;
+    body.replace("'", "'\"'\"'");
+    return "'" + body + "'";
+}
+
+QString buildRemoteScript(const QString& command, bool useSudo,
+                          const QString& password, const QString& cwd) {
+    // One pass over the template: substituting placeholders one after another
+    // would also rewrite placeholder text inside an already-inserted value (a
+    // password containing `__COMMAND__`), breaking out of its quoting.
+    static const QRegularExpression placeholderRx("__(USE_SUDO|PASSWORD|COMMAND|CWD)__");
+    const QString tmpl = remoteWrapper();
+    QString out;
+    int last = 0;
+    auto it = placeholderRx.globalMatch(tmpl);
+    while (it.hasNext()) {
+        auto m = it.next();
+        out += tmpl.mid(last, m.capturedStart() - last);
+        const QString name = m.captured(1);
+        if (name == "USE_SUDO")      out += useSudo ? "1" : "0";
+        else if (name == "PASSWORD") out += shellQuote(useSudo ? password : QString());
+        else if (name == "COMMAND")  out += shellQuote(command);
+        else                         out += shellQuote(cwd);
+        last = m.capturedEnd();
+    }
+    return out + tmpl.mid(last);
+}
+
+// Failed-authentication messages from classic sudo and sudo-rs.  On a match the
+// cached password for that host is discarded so the next elevated call prompts
+// again instead of replaying a bad password until the account locks.
+static QString sudoAuthFailureNote(ToolContext* ctx, const QString& host, const QString& err) {
+    static const QRegularExpression authFailRx(
+        "Sorry, try again\\.|incorrect password attempt|"
+        "Authentication failed, try again\\.|incorrect authentication attempt",
+        QRegularExpression::CaseInsensitiveOption);
+    if (!authFailRx.match(err).hasMatch()) return {};
+    ctx->forgetSudoPassword(host);
+    QString where = host.isEmpty() ? QString() : " on " + host;
+    return QString("\n[sudo authentication failed%1; the cached password was discarded]").arg(where);
+}
+
 // ── Bash (with temp file output & process groups) ────────────────────
 
-static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
-                           ToolContext* ctx) {
-    QString command = aStr(args, "command");
-    if (command.isEmpty()) return "Error: command is required.";
-
-    QString cwd = expandHome(aStr(args, "cwd"));
-    if (!cwd.isEmpty() && !QFileInfo(cwd).isDir())
-        return "Error: cwd not found or not a directory: " + cwd;
-
-    int timeoutSecs = toolTimeout();
-
-    // ── sudo detection ──────────────────────────────────────────────
-    bool needsSudo = !sudoInvocationSpans(command).isEmpty();
-    if (needsSudo && !args.value("elevated").toBool(false))
-        return "Elevation required: this command invokes sudo. Retry run_bash with elevated=true to request sudo access.";
-    if (!needsSudo && args.value("elevated").toBool(false))
-        // Fail loudly instead of silently running unprivileged. A caller that
-        // asked for elevation must actually contain a `sudo` invocation, so
-        // the escalation is explicit and auditable.
-        return "Error: elevated=true was set, but the command does not invoke sudo. "
-               "Add an explicit `sudo ...` to the command (so the elevation is an "
-               "auditable sudo call), or omit elevated=true if no root is needed.";
-
-    std::unique_ptr<AskpassHelper> askpass;
-    if (needsSudo) {
-        if (ctx->cachedSudoPassword().isEmpty()) {
-            auto provider = ctx->sudoProvider();
-            if (!provider) {
-                return "Error: sudo requested but no password provider is configured.";
-            }
-            QString pw = provider();
-            if (pw.isEmpty()) {
-                return "Cancelled: sudo password not provided.";
-            }
-            ctx->setCachedSudoPassword(pw);
-        }
-        askpass = std::make_unique<AskpassHelper>(ctx->cachedSudoPassword());
-        if (!askpass->valid()) {
-            return "Error: Could not create sudo askpass helper.";
-        }
-        command = rewriteSudoForAskpass(command);
-    }
-
-    // Create temp files for stdout/stderr to avoid pipe buffer deadlock
-    auto tmpFiles = createOutputFiles("bash");
-    if (!tmpFiles.valid) {
-        return "Error: Could not create temp output files.";
-    }
-
-    QProcess proc;
-    proc.setProgram("bash");
-    proc.setArguments({"-c", command});
-    proc.setStandardOutputFile(tmpFiles.stdoutPath);
-    proc.setStandardErrorFile(tmpFiles.stderrPath);
-    // The command never inherits our stdin: the password goes via askpass, and
-    // a child reading the terminal would hang the GUI/CLI.
-    proc.setStandardInputFile(QProcess::nullDevice());
-    if (!cwd.isEmpty()) proc.setWorkingDirectory(cwd);
-
-    if (askpass) {
-        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        env.insert("SUDO_ASKPASS", askpass->path());
-        proc.setProcessEnvironment(env);
-    }
-
-#ifdef Q_OS_UNIX
-    proc.setChildProcessModifier([]() {
-        setsid();
-    });
-#endif
-
-    proc.start();
-    if (!proc.waitForStarted(5000)) {
-        removeOutputFiles(tmpFiles);
-        return "Error running command: " + proc.errorString();
-    }
-
-    qint64 pid = proc.processId();
-    ctx->registerProcess(pid);
-
-
+// Wait for a command started in its own process group.  Returns an empty
+// string when it finished; otherwise the tool result for a timeout or cancel
+// (the process group has been killed and the output files consumed).
+static QString waitForCommand(QProcess& proc, qint64 pid, int timeoutSecs,
+                              std::atomic<bool>* cancel, ToolContext* ctx,
+                              const TempOutputFiles& tmpFiles) {
     int waitMs = timeoutSecs > 0 ? timeoutSecs * 1000 : -1;
 
     if (cancel) {
@@ -1178,21 +1246,205 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
     }
 
     ctx->unregisterProcess(pid);
+    return {};
+}
 
-    QString out = readAndRemove(tmpFiles.stdoutPath);
-    QString err = readAndRemove(tmpFiles.stderrPath);
-
-    // Strip sudo password prompt lines from stderr only
+// Strip sudo password prompt lines from stderr only.
+static QString stripSudoPrompts(QString err) {
     static QRegularExpression sudoPromptRx("^\\[sudo[^\\]]*\\].*\\n?", QRegularExpression::MultilineOption);
     err.remove(sudoPromptRx);
-    err = err.trimmed();
+    return err.trimmed();
+}
 
+static QString joinCommandOutput(QString out, const QString& err, int exitCode) {
     if (!err.isEmpty()) {
         out += "\n" + err;
     }
+    if (exitCode != 0)
+        out += QString("\n[Exit code: %1]").arg(exitCode);
+    return out;
+}
 
-    if (proc.exitCode() != 0)
-        out += QString("\n[Exit code: %1]").arg(proc.exitCode());
+// Run *command* on *host* through the remote wrapper over ssh.
+static QString runBashRemote(const QString& command, const QString& cwd,
+                             bool useSudo, const QString& password,
+                             const QString& host, std::atomic<bool>* cancel,
+                             ToolContext* ctx) {
+    const QString ssh = QStandardPaths::findExecutable("ssh");
+    if (ssh.isEmpty())
+        return "Error: run_bash host= requires the `ssh` client, which was not found on PATH.";
+
+    auto tmpFiles = createOutputFiles("bash");
+    if (!tmpFiles.valid) {
+        return "Error: Could not create temp output files.";
+    }
+
+    QProcess proc;
+    proc.setProgram(ssh);
+    // -T: no pty (separate stdout/stderr, no echo, and the stdin-EOF watcher
+    // works).  BatchMode: never block on a login/passphrase/host-key prompt.
+    // `--` before the host as a second guard against option injection.
+    proc.setArguments({"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+                       "-o", "ServerAliveInterval=15", "--", host, "sh", "-s"});
+    // Output goes to files and we wait on ssh itself rather than on output
+    // EOF: if some other process inherited the output (a ProxyCommand helper),
+    // EOF never comes while the channel stays open — a deadlock on Stop.
+    proc.setStandardOutputFile(tmpFiles.stdoutPath);
+    proc.setStandardErrorFile(tmpFiles.stderrPath);
+
+#ifdef Q_OS_UNIX
+    proc.setChildProcessModifier([]() {
+        setsid();
+    });
+#endif
+
+    // stdin stays a pipe for the whole run: its EOF is what tells the remote
+    // watcher to kill the command, and QProcess closes it only once ssh has
+    // exited.  The script is buffered here and flushed by the waitFor* calls,
+    // so a command larger than the pipe buffer cannot deadlock.
+    proc.start(QIODevice::ReadWrite);
+    if (!proc.waitForStarted(5000)) {
+        removeOutputFiles(tmpFiles);
+        return QString("Error running command on %1: %2").arg(host, proc.errorString());
+    }
+
+    qint64 pid = proc.processId();
+    ctx->registerProcess(pid);
+    proc.write(buildRemoteScript(command, useSudo, password, cwd).toUtf8());
+
+    QString early = waitForCommand(proc, pid, toolTimeout(), cancel, ctx, tmpFiles);
+    // Close the channel now (not at QProcess destruction) so the remote
+    // watcher kills anything still running as soon as ssh is gone.
+    proc.closeWriteChannel();
+    if (!early.isEmpty()) return early;
+
+    QString out = readAndRemove(tmpFiles.stdoutPath);
+    QString err = stripSudoPrompts(readAndRemove(tmpFiles.stderrPath));
+    out = joinCommandOutput(out, err, proc.exitCode());
+
+    // stderr shapes that mean ssh itself failed (exit 255 is ambiguous: a
+    // remote command can exit 255 too).
+    static const QRegularExpression sshFailRx(
+        "^ssh: |Permission denied \\(|Host key verification failed",
+        QRegularExpression::MultilineOption);
+    if (proc.exitCode() == 255 && sshFailRx.match(err).hasMatch())
+        out += QString("\n[ssh to %1 failed. run_bash host= requires key-based "
+                       "login and an existing known_hosts entry]").arg(host);
+    if (useSudo)
+        out += sudoAuthFailureNote(ctx, host, err);
+
+    return out.trimmed().isEmpty() ? "(No output)" : snipMiddle(out);
+}
+
+static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
+                           ToolContext* ctx) {
+    QString command = aStr(args, "command");
+    if (command.isEmpty()) return "Error: command is required.";
+
+    // Remote run: cwd is a path on the remote host; the wrapper cds into it.
+    const QString host = aStr(args, "host");
+    QString cwd;
+    if (!host.isEmpty()) {
+        QString hostErr = validateHost(host);
+        if (!hostErr.isEmpty()) return hostErr;
+        cwd = aStr(args, "cwd");
+    } else {
+        cwd = expandHome(aStr(args, "cwd"));
+        if (!cwd.isEmpty() && !QFileInfo(cwd).isDir())
+            return "Error: cwd not found or not a directory: " + cwd;
+    }
+
+    int timeoutSecs = toolTimeout();
+
+    // ── sudo detection ──────────────────────────────────────────────
+    bool needsSudo = !sudoInvocationSpans(command).isEmpty();
+    if (needsSudo && !args.value("elevated").toBool(false))
+        return "Elevation required: this command invokes sudo. Retry run_bash with elevated=true to request sudo access.";
+    if (!needsSudo && args.value("elevated").toBool(false))
+        // Fail loudly instead of silently running unprivileged. A caller that
+        // asked for elevation must actually contain a `sudo` invocation, so
+        // the escalation is explicit and auditable.
+        return "Error: elevated=true was set, but the command does not invoke sudo. "
+               "Add an explicit `sudo ...` to the command (so the elevation is an "
+               "auditable sudo call), or omit elevated=true if no root is needed.";
+
+    // Passwords are cached per host (empty = local) and never offered to a
+    // host they weren't entered for.
+    QString password;
+    if (needsSudo) {
+        if (!ctx->hasCachedSudoPassword(host)) {
+            auto provider = ctx->sudoProvider();
+            if (!provider) {
+                return "Error: sudo requested but no password provider is configured.";
+            }
+            QString pw = provider(host);
+            if (pw.isEmpty()) {
+                return "Cancelled: sudo password not provided.";
+            }
+            ctx->setCachedSudoPassword(pw, host);
+        }
+        password = ctx->cachedSudoPassword(host);
+        // Only parsed command words get -A — never a mention in data, a
+        // comment, or a quoted string.
+        command = rewriteSudoForAskpass(command);
+    }
+
+    if (!host.isEmpty())
+        return runBashRemote(command, cwd, needsSudo, password, host, cancel, ctx);
+
+    std::unique_ptr<AskpassHelper> askpass;
+    if (needsSudo) {
+        askpass = std::make_unique<AskpassHelper>(password);
+        if (!askpass->valid()) {
+            return "Error: Could not create sudo askpass helper.";
+        }
+    }
+
+    // Create temp files for stdout/stderr to avoid pipe buffer deadlock
+    auto tmpFiles = createOutputFiles("bash");
+    if (!tmpFiles.valid) {
+        return "Error: Could not create temp output files.";
+    }
+
+    QProcess proc;
+    proc.setProgram("bash");
+    proc.setArguments({"-c", command});
+    proc.setStandardOutputFile(tmpFiles.stdoutPath);
+    proc.setStandardErrorFile(tmpFiles.stderrPath);
+    // The command never inherits our stdin: the password goes via askpass, and
+    // a child reading the terminal would hang the GUI/CLI.
+    proc.setStandardInputFile(QProcess::nullDevice());
+    if (!cwd.isEmpty()) proc.setWorkingDirectory(cwd);
+
+    if (askpass) {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert("SUDO_ASKPASS", askpass->path());
+        proc.setProcessEnvironment(env);
+    }
+
+#ifdef Q_OS_UNIX
+    proc.setChildProcessModifier([]() {
+        setsid();
+    });
+#endif
+
+    proc.start();
+    if (!proc.waitForStarted(5000)) {
+        removeOutputFiles(tmpFiles);
+        return "Error running command: " + proc.errorString();
+    }
+
+    qint64 pid = proc.processId();
+    ctx->registerProcess(pid);
+
+    QString early = waitForCommand(proc, pid, timeoutSecs, cancel, ctx, tmpFiles);
+    if (!early.isEmpty()) return early;
+
+    QString out = readAndRemove(tmpFiles.stdoutPath);
+    QString err = stripSudoPrompts(readAndRemove(tmpFiles.stderrPath));
+    out = joinCommandOutput(out, err, proc.exitCode());
+    if (needsSudo)
+        out += sudoAuthFailureNote(ctx, QString(), err);
 
     return out.trimmed().isEmpty() ? "(No output)" : snipMiddle(out);
 }

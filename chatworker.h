@@ -25,6 +25,8 @@ public:
     void sendConfirmation(bool confirmed, bool yoloTurn);
 
     bool isSudoPending() const;
+    /// Host the pending sudo prompt is for; empty for the local machine.
+    QString sudoHost() const;
     void sendSudoPassword(const QString& password);
     void cancelSudo();
     void sendQuestionAnswers(const QStringList& answers);
@@ -57,6 +59,7 @@ private:
     QWaitCondition  m_sudoCond;
     bool            m_sudoPending   = false;
     QString         m_sudoPassword;
+    QString         m_sudoHost;
 
     QString    m_baseUrl, m_apiKey, m_model, m_toolConfirmation, m_reasoningEffort;
     bool       m_preserveReasoning = false;

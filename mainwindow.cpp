@@ -1042,9 +1042,13 @@ void MainWindow::pollToolConfirmation() {
 
     m_sudoDialogOpen = true;
 
+    // Name the remote machine so the user knows whose password is asked for.
+    const QString host = session->worker->sudoHost();
     bool ok = false;
     QString password = QInputDialog::getText(
-        this, "sudo Password", "Enter sudo password:",
+        this,
+        host.isEmpty() ? QString("sudo Password") : QString("sudo Password — %1").arg(host),
+        host.isEmpty() ? QString("Enter sudo password:") : QString("Enter sudo password for %1:").arg(host),
         QLineEdit::Password, QString(), &ok);
 
     m_sudoDialogOpen = false;

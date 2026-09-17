@@ -152,7 +152,7 @@ PengyCPP gives the LLM these 16 tools to operate on your machine:
 | `apply_changes` | Transactional multi-file exact-text edits with a dry-run diff |
 | `write_file` | Write or overwrite a file |
 | `replace_in_file` | Targeted text replacement (safer than full rewrites) |
-| `run_bash` | Execute shell commands (configurable timeout; sudo support) |
+| `run_bash` | Execute shell commands locally or on a remote host over ssh (configurable timeout; sudo support, including remote sudo) |
 | `run_python` | Execute Python code |
 | `web_search` | DuckDuckGo web search |
 | `download_file` | Download a URL to `~/Downloads/` |

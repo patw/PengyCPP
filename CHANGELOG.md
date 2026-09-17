@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Remote sudo over ssh (ported from Python Pengy).** `run_bash` takes an optional `host`: the command runs on that machine over ssh (key-based login required), and `sudo` there works exactly like local sudo — explicit `sudo` plus `elevated=true`, a password prompt that names the host in the GUI, Web, and CLI, and delivery through a single-use `SUDO_ASKPASS` helper on the remote side, so the password is never on an argv or in the command's environment. Passwords are cached per host for the run and never offered to another host; a failed sudo authentication (local or remote) now discards the cached password instead of replaying it. Stop kills the remote command and cleans up its askpass directory. The wrapper script is byte-identical to Python's (a test pins its hash); placeholder substitution is single-pass, so a password or command containing placeholder text can't break the quoting.
 - **Removed the v1.8.7 SSE padding and blocking writes.** They fixed nothing: the C++ web server already delivered `sudo_request` promptly (verified with `curl` and headless Chrome against 7bbc8a2), because the sudo wait blocks the LLM worker `QThread`, not the event loop. The hang was Rust-only (a blocked Tokio worker; see PengyR's changelog). `waitForBytesWritten(1000)` in `pushSse` could also stall the whole server's event loop for up to a second per slow client, per event.
 
 ## v1.8.7

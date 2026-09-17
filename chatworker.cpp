@@ -32,8 +32,9 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
     // Install a per-run sudo password provider that blocks on QWaitCondition.
     // Scoped to this worker's ToolContext so concurrent tabs never clobber
     // one another's provider or cached password.
-    m_toolContext.setSudoProvider([this]() -> QString {
+    m_toolContext.setSudoProvider([this](const QString& host) -> QString {
         QMutexLocker lock(&m_sudoMutex);
+        m_sudoHost    = host;
         m_sudoPending = true;
         // Wait for main thread to provide password or cancel
         while (m_sudoPending && !m_cancelled) {
@@ -131,6 +132,11 @@ void ChatWorker::sendConfirmation(bool confirmed, bool yoloTurn) {
 bool ChatWorker::isSudoPending() const {
     QMutexLocker lock(&m_sudoMutex);
     return m_sudoPending;
+}
+
+QString ChatWorker::sudoHost() const {
+    QMutexLocker lock(&m_sudoMutex);
+    return m_sudoHost;
 }
 
 void ChatWorker::sendSudoPassword(const QString& password) {

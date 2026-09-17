@@ -26,7 +26,8 @@ public:
 
 signals:
     void eventReady(const QJsonObject& event);
-    void sudoRequired();
+    // *host* is the remote machine the command runs on; empty = local.
+    void sudoRequired(const QString& host);
     // Emitted whenever a message is added to the turn, so the server can
     // persist mid-run: a crash must not take the turn's tool calls with it.
     void progress(const QJsonArray& newMessages);

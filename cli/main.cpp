@@ -510,7 +510,12 @@ private:
             saveProgress();
         }
 
-        Tools::setSudoPasswordProvider([](){ return readPassword("Sudo password: "); });
+        Tools::setSudoPasswordProvider([](const QString& host) {
+            // A remote run (run_bash host=) needs that machine's password.
+            return readPassword(host.isEmpty()
+                ? QString("Sudo password: ")
+                : QString("Sudo password for %1: ").arg(sanitizeDisplay(host)));
+        });
 
         // Raw/JSON/silent output is consumed by programs. Keep progress
         // controls out of it so a model response containing emoji (or any
@@ -575,7 +580,11 @@ private:
 
         } else if (type == "tool_request") {
             outln();
-            outln(cyan(bold("--- Tool: " + sanitizeDisplay(ev["name"].toString()) + " ---")));
+            // Lead with a remote target so it is visible before the argument dump.
+            QString target;
+            if (ev["name"].toString() == "run_bash" && !ev["args"].toObject()["host"].toString().isEmpty())
+                target = " on " + sanitizeDisplay(ev["args"].toObject()["host"].toString());
+            outln(cyan(bold("--- Tool: " + sanitizeDisplay(ev["name"].toString()) + target + " ---")));
             QString argsText = QJsonDocument(ev["args"].toObject())
                         .toJson(QJsonDocument::Indented).trimmed();
             if (argsText.size() > 4000) argsText = argsText.left(4000) + "\n… [truncated]";

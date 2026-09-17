@@ -335,7 +335,7 @@ The server prints its URL on startup; it does not auto-open a browser.
 | `tool_request` | `name`, `args`, `auto_approved` | Append tool card; if not auto-approved, show confirmation modal |
 | `tool_result` | `content`, `declined` | Update tool card body and badge |
 | `final_response` | `html`, `usage`, `cumulative_usage` | Append assistant bubble; `cumulative_usage` (running total across the chat, via `chatAddUsage()`) updates the navbar token badge |
-| `sudo_request` | — | Show sudo password modal |
+| `sudo_request` | `host` (string, or null for local) | Show sudo password modal naming the host |
 | `error` | `message` | Append error alert, re-enable input |
 | `keepalive` | — | SSE comment (`: keepalive`); browser ignores |
 
@@ -470,7 +470,7 @@ Tool execution reaches run_bash
 ```
 
 The password is:
-1. Cached for the duration of the LLM run
+1. Cached per host (empty = local) for the duration of the LLM run; a failed sudo authentication evicts that host's entry
 2. Supplied via `SUDO_ASKPASS` after rewriting every `sudo` → `sudo -A`
 3. Cleared when the LLM run completes
 
@@ -485,6 +485,8 @@ anything else in the command touched stdin — a pipeline (`echo x | sudo tee f`
 a redirect (`sudo cmd < /dev/null`), an earlier command that reads stdin, or a
 second `sudo` after the single piped password had been consumed. The command's
 stdin is now `/dev/null` in all cases.
+
+**Remote sudo (`run_bash` `host`):** Ported from Python Pengy (see its spec, "Remote sudo", for the full rationale). With `host` set, the command runs over `ssh -T -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -- <host> sh -s`, and the remote wrapper script (`REMOTE_WRAPPER` / `kRemoteWrapper`, byte-identical across editions — a test pins its SHA-256) is written to ssh's stdin with the password, command and cwd substituted as POSIX single-quoted literals in a single pass. Nothing sensitive is on any argv; the wrapper recreates the askpass helper on the remote side and removes it on exit. Pengy never infers a host from `ssh …` text; hosts must match `[A-Za-z0-9._@:%-]+` without a leading `-`. The elevation rules and `sudo -A` rewrite are unchanged. The sudo provider receives the host (a `QString`, empty = local; `ChatWorker::sudoHost()` / `WebChatWorker::sudoRequired(host)`) so every frontend's prompt names the machine; passwords are cached per host and a failed sudo authentication (classic sudo or sudo-rs wording, local or remote) evicts that host's entry. Stop: ssh runs in its own session (setsid) registered with the `ToolContext`, with output redirected to temp files, and `run_bash` waits on the ssh process rather than on output EOF. The script is written to the `QProcess` stdin pipe (flushed by the `waitFor*` calls, so a large command cannot deadlock) and the write channel is closed only after ssh exits, which is what closes the remote channel and fires the wrapper's watcher. Exit 255 with ssh's own error text gets a key-auth/known_hosts hint appended.
 
 ### Process-Group Kill
 
@@ -601,7 +603,7 @@ All 16 tools implemented in `tools.cpp` using Qt APIs:
 | `write_file` | ❌ | `QFile` + `QDir::mkpath` |
 | `replace_in_file` | ❌ | Read→exact-match→replace→write (single-match enforcement) |
 | `apply_changes` | ❌ | Transactional multi-file exact-text edits; validated in memory, all-or-nothing |
-| `run_bash` | ❌ | `QProcess` with optional `cwd` (sudo via `SUDO_ASKPASS`, process-group kill on timeout) |
+| `run_bash` | ❌ | `QProcess` with optional `cwd` and optional `host` (runs over ssh); sudo via `SUDO_ASKPASS` with passwords cached per host; process-group kill on timeout |
 | `run_python` | ❌ | Write to temp + `QProcess python3`, with optional `cwd` |
 | `web_search` | ✅ | DuckDuckGo HTML scrape via `QNetworkAccessManager` + `QRegularExpression` |
 | `download_file` | ❌ | Streaming `QNetworkAccessManager` download to configurable directory with size/stall limits |

@@ -3,6 +3,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QSet>
+#include <QHash>
 #include <QMutex>
 #include <atomic>
 #include <functional>
@@ -10,20 +11,27 @@
 namespace Tools {
 
 /// Blocking callback that prompts the user for a sudo password.
-/// Returns the password, or an empty string if the user cancels.
-using SudoPasswordFn = std::function<QString()>;
+/// Called with the target host (empty for the local machine) so the prompt
+/// can name it.  Returns the password, or an empty string if the user cancels.
+using SudoPasswordFn = std::function<QString(const QString& host)>;
 
-/// Per-run tool state: sudo provider, cached sudo password, and the set of
-/// active subprocess groups.  Each concurrent run (e.g. one per GUI tab) gets
-/// its own context so a sudo prompt is routed to the right run and pressing
-/// Stop on one run kills only that run's subprocesses — never another tab's.
-/// Callers that don't supply a context (CLI, Web) use the default context.
+/// Per-run tool state: sudo provider, cached sudo passwords (keyed by host,
+/// empty = local), and the set of active subprocess groups.  Each concurrent
+/// run (e.g. one per GUI tab) gets its own context so a sudo prompt is routed
+/// to the right run and pressing Stop on one run kills only that run's
+/// subprocesses — never another tab's.  A password is never offered to a host
+/// it wasn't entered for.  Callers that don't supply a context (CLI, Web) use
+/// the default context.
 class ToolContext {
 public:
     void           setSudoProvider(SudoPasswordFn fn);
     SudoPasswordFn sudoProvider();
-    QString        cachedSudoPassword();
-    void           setCachedSudoPassword(const QString& pw);
+    /// Cached password for *host* (empty host = local); empty if none.
+    QString        cachedSudoPassword(const QString& host = {});
+    bool           hasCachedSudoPassword(const QString& host = {});
+    void           setCachedSudoPassword(const QString& pw, const QString& host = {});
+    /// Discard *host*'s cached password (after a failed sudo authentication).
+    void           forgetSudoPassword(const QString& host = {});
     void           clearSudo();
 
     /// Queue an image for attachment to the conversation.
@@ -44,7 +52,7 @@ public:
 private:
     QMutex         m_mutex;
     SudoPasswordFn m_sudoProvider;
-    QString        m_cachedSudoPassword;
+    QHash<QString, QString> m_cachedSudoPasswords;
     QSet<qint64>   m_procs;
     QJsonArray     m_pendingImages;
 };
@@ -74,5 +82,16 @@ void clearSudoPasswordProvider();
 
 /// Rewrite every `sudo` in *command* to `sudo -A` (askpass). Exposed for tests.
 QString rewriteSudoForAskpass(QString command);
+
+// run_bash host= helpers, exposed for tests.
+/// Error message if *host* is not a safe ssh destination; empty if it is.
+QString validateHost(const QString& host);
+/// POSIX single-quote *s* (same rules as Python's shlex.quote).
+QString shellQuote(const QString& s);
+/// Fill the remote wrapper's placeholders; *useSudo* selects the askpass path.
+QString buildRemoteScript(const QString& command, bool useSudo,
+                          const QString& password, const QString& cwd);
+/// The remote wrapper template (byte-identical across editions).
+QString remoteWrapper();
 
 } // namespace Tools
