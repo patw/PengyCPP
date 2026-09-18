@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: AppImage Wayland plugins now use only the bundled Qt runtime.** Manually
+  bundled Wayland plugins did not receive the AppImage-local RPATH that
+  `linuxdeploy` gives its auto-discovered XCB plugin. On rolling-release hosts
+  with a newer system Qt (such as CachyOS/Arch Qt 6.11), the loader mixed the
+  host `libQt6WaylandClient` with Pengy's Qt 6.4 runtime and native Wayland
+  startup aborted. The package now patches the Wayland plugin RPATHs, bundles
+  the complete Qt Wayland library family (including EGL hardware integration),
+  and verifies both conditions during the build.
+
 ## v1.9.0
 
 - **Remote sudo over ssh (ported from Python Pengy).** `run_bash` takes an optional `host`: the command runs on that machine over ssh (key-based login required), and `sudo` there works exactly like local sudo — explicit `sudo` plus `elevated=true`, a password prompt that names the host in the GUI, Web, and CLI, and delivery through a single-use `SUDO_ASKPASS` helper on the remote side, so the password is never on an argv or in the command's environment. Passwords are cached per host for the run and never offered to another host; a failed sudo authentication (local or remote) now discards the cached password instead of replaying it. Stop kills the remote command and cleans up its askpass directory. The wrapper script is byte-identical to Python's (a test pins its hash); placeholder substitution is single-pass, so a password or command containing placeholder text can't break the quoting.

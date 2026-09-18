@@ -61,10 +61,11 @@ mapfile -t WAYLAND_PLUGINS < <(find "$QT6_PLUGINS/platforms" -maxdepth 1 -name '
 if [ "${#WAYLAND_PLUGINS[@]}" -gt 0 ]; then
     cp "${WAYLAND_PLUGINS[@]}" "$APPDIR/usr/plugins/platforms/"
     echo "    bundled: $(basename -a "${WAYLAND_PLUGINS[@]}" | tr '\n' ' ')"
-    # runtime libs linuxdeploy may miss; glob-matched to whichever exist
-    for pattern in libQt6WaylandClient.so.6* libwayland-client.so.0* \
-                   libwayland-cursor.so.0* libxkbcommon.so.0* \
-                   libQt6WlShellIntegration.so.6*; do
+    # Bundle the complete Qt Wayland runtime family.  The EGL platform plugin
+    # needs libQt6WaylandEglClientHwIntegration.so.6 in addition to the client
+    # library.  AppImages must never resolve these Qt libraries from the host.
+    for pattern in libQt6Wayland*.so.6* libwayland-client.so.0* \
+                   libwayland-cursor.so.0* libxkbcommon.so.0*; do
         while IFS= read -r f; do
             cp "$f" "$APPDIR/usr/lib/"
         done < <(find /usr/lib/x86_64-linux-gnu -maxdepth 1 -name "$pattern" 2>/dev/null)
@@ -92,6 +93,19 @@ else
     exit 1
 fi
 
+# linuxdeploy fixes RPATHs for plugins it discovers itself (such as XCB), but
+# not the Wayland plugins copied above.  Patch them before linuxdeploy packages
+# the AppDir, otherwise an Arch host can load its newer libQt6WaylandClient
+# against this AppImage's bundled Qt Core (e.g. Qt_6.11 vs Qt 6.4).
+if ! command -v patchelf >/dev/null 2>&1; then
+    echo "ERROR: patchelf is required to make bundled Wayland plugins self-contained." >&2
+    exit 1
+fi
+echo "==> Setting AppImage-local RPATHs for Wayland plugins..."
+while IFS= read -r -d '' plugin; do
+    patchelf --set-rpath '$ORIGIN/../../lib:$ORIGIN' "$plugin"
+done < <(find "$APPDIR/usr/plugins" -type f -name '*.so' \( -path '*/platforms/libqwayland*.so' -o -path '*/wayland-shell-integration/*' -o -path '*/wayland-graphics-integration-client/*' -o -path '*/wayland-decoration-client/*' \) -print0)
+
 # 4. Run linuxdeploy with Qt plugin
 echo "==> Bundling with linuxdeploy..."
 export QML_SOURCES_PATHS="$PROJECT_ROOT"
@@ -118,6 +132,17 @@ if ! ls "$APPDIR"/usr/lib/libQt6WaylandClient.so.6* >/dev/null 2>&1; then
     echo "       The Wayland plugin would load but fail at runtime." >&2
     exit 1
 fi
+if ! ls "$APPDIR"/usr/lib/libQt6WaylandEglClientHwIntegration.so.6* >/dev/null 2>&1; then
+    echo "ERROR: 'libQt6WaylandEglClientHwIntegration.so.6' is missing from $APPDIR/usr/lib." >&2
+    echo "       The EGL Wayland plugin would load a host Qt library at runtime." >&2
+    exit 1
+fi
+while IFS= read -r -d '' plugin; do
+    if [[ "$(patchelf --print-rpath "$plugin")" != *'$ORIGIN/../../lib'* ]]; then
+        echo "ERROR: Wayland plugin lacks an AppImage-local RPATH: $plugin" >&2
+        exit 1
+    fi
+done < <(find "$APPDIR/usr/plugins" -type f -name '*.so' \( -path '*/platforms/libqwayland*.so' -o -path '*/wayland-shell-integration/*' -o -path '*/wayland-graphics-integration-client/*' -o -path '*/wayland-decoration-client/*' \) -print0)
 
 echo ""
 echo "==> Done!"
