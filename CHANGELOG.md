@@ -3,6 +3,7 @@
 ## v1.9.1
 
 - **Recover from aggregate context-limit errors without rerunning tools.** Explicit provider context-overflow responses (HTTP 400/413/422 with recognized code or message) trigger at most four request-only tool-result reductions: retain head/tail previews first, then stub older results, protecting the latest tool result until necessary. Full tool events and saved history stay intact, including assistant calls and matching tool IDs. The CLI, GUI, and web surface `context_compacted` progress. Stub-server tests cover successful recovery, original history, no repeated tools, unrelated 400s, and failures with no eligible tool output. The per-tool output cap remains a separate safety limit; proactive aggregate budgeting is not part of this release.
+- **Linux AppImage packaging:** install Qt's `qmlimportscanner` on the release runner; the Qt linuxdeploy plugin requires it after deploying the Wayland runtime.
 - **Fix: AppImage Wayland plugins now use only the bundled Qt runtime.** Manually
   bundled Wayland plugins did not receive the AppImage-local RPATH that
   `linuxdeploy` gives its auto-discovered XCB plugin. On rolling-release hosts
