@@ -44,10 +44,13 @@ public:
     int testCacheSize() const { return m_htmlCache.size(); }
     bool testAutoScroll() const { return m_autoScroll; }
     QVariant testLoadImage(const QUrl& url) { return loadResource(QTextDocument::ImageResource, url); }
+    void testOpenImagePreview(const QString& source) { openImagePreview(source); }
+    QString testImageAt(const QPoint& pos) const { return imageAt(pos); }
 #endif
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
+    void contextMenuEvent(QContextMenuEvent* event) override;
     QVariant loadResource(int type, const QUrl& url) override;
 
 private slots:
@@ -71,6 +74,9 @@ private:
     QString paragraphize(const QString& html) const;
     QString escapeHtml(const QString& text) const;
     void fetchImage(const QString& url);
+    QString imageAt(const QPoint& pos) const;
+    void openImagePreview(const QString& source);
+    QDialog* m_preview = nullptr;
 
     Theme m_theme;
     int m_scale = 100;

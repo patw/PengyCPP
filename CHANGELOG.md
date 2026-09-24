@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.9.3
+
+- **Image previews and save controls.** Drag and drop image files into the chat input, preview attached images before sending, remove individual images, and save images shown in chat to disk. Includes regression tests for drag-and-drop and image preview.
+- Coordinated v1.9.3 release across the Python, Rust, and C++ editions.
+
 ## v1.9.2
 
 - **Restore Linux downloads.** The v1.9.1 Linux release job built the .deb but failed before uploading either Linux asset because linuxdeploy-plugin-qt could not find `qmlimportscanner`. Install `qt6-declarative-dev-tools` on the release runner, then rebuild and upload the AppImage and .deb together. The v1.9.1 tag remains unchanged.

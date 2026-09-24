@@ -1,4 +1,8 @@
 #include "chatview.h"
+#include "imagepreview.h"
+#include "imagesave.h"
+#include <QMenu>
+#include <QTextImageFormat>
 #include "attachments.h"
 #include <QScrollBar>
 #include <QDesktopServices>
@@ -15,6 +19,7 @@
 #include <QEventLoop>
 #include <QTimer>
 #include <QFontDatabase>
+#include <QFileInfo>
 
 ChatView::ChatView(QWidget* parent) : QTextBrowser(parent) {
     setOpenLinks(false);
@@ -138,6 +143,11 @@ void ChatView::renderNow() {
 }
 
 void ChatView::clear() {
+    if (m_preview) {
+        m_preview->close();
+        m_preview->deleteLater();
+        m_preview = nullptr;
+    }
     m_messages = QJsonArray();
     m_htmlCache.clear();
     m_expandedTools.clear();
@@ -146,8 +156,61 @@ void ChatView::clear() {
     QTextBrowser::clear();
 }
 
+QString ChatView::imageAt(const QPoint& pos) const {
+    QTextCursor cursor = cursorForPosition(pos);
+    for (int offset : {0, -1}) {
+        int position = cursor.position() + offset;
+        if (position < 0) continue;
+        QTextCursor candidate(document());
+        candidate.setPosition(position);
+        QTextCharFormat format = candidate.charFormat();
+        if (!format.isImageFormat()) continue;
+        if (position + 1 >= document()->characterCount()) continue;
+        const QRect start = cursorRect(candidate);
+        QTextCursor after(document());
+        after.setPosition(position + 1);
+        const QRect end = cursorRect(after);
+        if (pos.y() >= start.y() && pos.y() < start.y() + start.height()
+            && pos.x() >= start.x() && pos.x() < end.x())
+            return format.toImageFormat().name();
+    }
+    return {};
+}
+
+void ChatView::openImagePreview(const QString& source) {
+    QUrl url(source);
+    QImage image;
+    if (url.isLocalFile() || QDir::isAbsolutePath(source)) {
+        QString path = url.isLocalFile() ? url.toLocalFile() : source;
+        if (path.endsWith("/thumbnail-256-v1.jpg")) {
+            QString display = QFileInfo(path).dir().filePath("image-display-v1.jpg");
+            if (QFile::exists(display)) path = display;
+        }
+        image.load(path);
+    } else if (source.startsWith("http://") || source.startsWith("https://")) {
+        QByteArray data;
+        { QMutexLocker lock(&m_imageMutex); data = m_imageCache.value(source); }
+        if (!data.isEmpty()) image.loadFromData(data);
+    } else if (source.startsWith("data:")) {
+        QVariant resource = loadResource(QTextDocument::ImageResource, url);
+        if (resource.canConvert<QImage>()) image = resource.value<QImage>();
+    }
+    if (image.isNull()) return;
+    if (m_preview) {
+        m_preview->close();
+        m_preview->deleteLater();
+    }
+    m_preview = new ImagePreview(image, this, source, m_imageCache);
+    m_preview->show();
+}
+
 void ChatView::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
+        const QString source = imageAt(event->pos());
+        if (!source.isEmpty()) {
+            openImagePreview(source);
+            return;
+        }
         QString anchor = anchorAt(event->pos());
         if (anchor.startsWith("toggle://")) {
             QString toolId = anchor.mid(9);  // strlen("toggle://")
@@ -180,6 +243,21 @@ void ChatView::mousePressEvent(QMouseEvent* event) {
         }
     }
     QTextBrowser::mousePressEvent(event);
+}
+
+void ChatView::contextMenuEvent(QContextMenuEvent* event) {
+    const QString source = imageAt(event->pos());
+    if (source.isEmpty()) {
+        QTextBrowser::contextMenuEvent(event);
+        return;
+    }
+    QMenu menu(this);
+    QAction* save = menu.addAction("Save Image As…");
+    if (menu.exec(event->globalPos()) == save) {
+        QMap<QString, QByteArray> cached;
+        { QMutexLocker lock(&m_imageMutex); cached = m_imageCache; }
+        saveImageAs(source, cached, this);
+    }
 }
 
 void ChatView::onScrollChanged(int value) {

@@ -13,6 +13,13 @@
 #include <QTemporaryFile>
 #include <QStandardPaths>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDragLeaveEvent>
+#include <QStyle>
+#include <QDropEvent>
+#include <QFileInfo>
+#include <QUrl>
 
 // ── InputEdit (subclassed QTextEdit with image paste) ──────────────
 
@@ -21,6 +28,7 @@ InputEdit::InputEdit(QWidget* parent) : QTextEdit(parent) {
     font.setPointSize(10);
     setFont(font);
     setPlaceholderText("Type a message... (Enter to send, Shift+Enter for new line)");
+    setAcceptDrops(true);
     applyTheme(makeTheme("system", "default"), 100);
     installEventFilter(this);
 }
@@ -36,7 +44,8 @@ void InputEdit::applyTheme(const Theme& theme, int scale) {
     setStyleSheet(QString(R"(
 QTextEdit { background-color:%1; color:%2; border:1px solid %3; border-radius:8px; padding:6px 10px; }
 QTextEdit:focus { border-color:%4; }
-)" ).arg(theme["input_bg"], theme["input_fg"], theme["border"], theme["focus"]));
+QTextEdit[fileDragActive="true"] { border:2px dashed %4; background-color:%5; }
+)" ).arg(theme["input_bg"], theme["input_fg"], theme["border"], theme["focus"], theme["selection"]));
     connect(this, &QTextEdit::textChanged, this, &InputEdit::autoSize);
     autoSize();
 }
@@ -87,6 +96,56 @@ void InputEdit::insertFromMimeData(const QMimeData* source) {
     QTextEdit::insertFromMimeData(source);
 }
 
+void InputEdit::setFileDragging(bool active) {
+    if (m_fileDragging == active) return;
+    m_fileDragging = active;
+    emit fileDragActive(active);
+}
+
+void InputEdit::dragEnterEvent(QDragEnterEvent* event) {
+    for (const QUrl& url : event->mimeData()->urls()) {
+        if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isFile()) {
+            setFileDragging(true);
+            event->acceptProposedAction();
+            return;
+        }
+    }
+    setFileDragging(false);
+    event->ignore();
+}
+
+void InputEdit::dragMoveEvent(QDragMoveEvent* event) {
+    for (const QUrl& url : event->mimeData()->urls()) {
+        if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isFile()) {
+            setFileDragging(true);
+            event->acceptProposedAction();
+            return;
+        }
+    }
+    setFileDragging(false);
+    event->ignore();
+}
+
+void InputEdit::dragLeaveEvent(QDragLeaveEvent* event) {
+    setFileDragging(false);
+    event->accept();
+}
+
+void InputEdit::dropEvent(QDropEvent* event) {
+    setFileDragging(false);
+    QStringList paths;
+    for (const QUrl& url : event->mimeData()->urls()) {
+        if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isFile())
+            paths.append(url.toLocalFile());
+    }
+    if (paths.isEmpty()) {
+        event->ignore();
+        return;
+    }
+    emit filesDropped(paths);
+    event->acceptProposedAction();
+}
+
 bool InputEdit::eventFilter(QObject* obj, QEvent* event) {
     if (obj == this && event->type() == QEvent::KeyPress) {
         auto* ke = static_cast<QKeyEvent*>(event);
@@ -132,15 +191,34 @@ ChatInputWidget::ChatInputWidget(QWidget* parent) : QWidget(parent) {
     m_edit = new InputEdit;
     connect(m_edit, &InputEdit::submitPressed, this, &ChatInputWidget::onSubmit);
     connect(m_edit, &InputEdit::imagePasted, this, &ChatInputWidget::onImagePasted);
+    connect(m_edit, &InputEdit::filesDropped, this, &ChatInputWidget::attachFiles);
+    connect(m_edit, &InputEdit::fileDragActive, this, &ChatInputWidget::showDropCue);
     rowLayout->addWidget(m_edit);
 
     layout->addWidget(inputRow);
+
+    m_dropHint = new QLabel("Drop files to attach");
+    m_dropHint->setAlignment(Qt::AlignCenter);
+    m_dropHint->setAccessibleName("Drop files to attach");
+    m_dropHint->hide();
+    layout->addWidget(m_dropHint);
+}
+
+void ChatInputWidget::showDropCue(bool active) {
+    m_dropHint->setVisible(active);
+    m_edit->setProperty("fileDragActive", active);
+    m_edit->style()->unpolish(m_edit);
+    m_edit->style()->polish(m_edit);
+    m_edit->update();
 }
 
 void ChatInputWidget::applyTheme(const Theme& theme, int scale) {
     m_theme = theme;
     m_scale = scale;
     if (m_edit) m_edit->applyTheme(theme, scale);
+    m_dropHint->setStyleSheet(QString(
+        "color:%1; background:%2; border:1px dashed %1; border-radius:6px; padding:3px;")
+        .arg(theme["focus"], theme["selection"]));
     if (m_attachBtn) {
         int sz = scaledSize(36, scale);
         m_attachBtn->setFixedSize(sz, sz);
@@ -197,19 +275,23 @@ bool ChatInputWidget::isTextFile(const QString& path) const {
 
 void ChatInputWidget::pickFile() {
     QString path = QFileDialog::getOpenFileName(this, "Attach File");
-    if (path.isEmpty()) return;
+    if (!path.isEmpty()) attachFiles({path});
+}
 
-    if (!isTextFile(path) && !isImageFile(path)) {
-        QMessageBox::warning(
-            this, "Cannot Attach File",
-            QString("\"%1\" is not a supported file type.\n"
-                    "Supported: text files and images (JPEG, PNG, GIF, WebP).")
-                .arg(path.section('/', -1)));
-        return;
+void ChatInputWidget::attachFiles(const QStringList& paths) {
+    QStringList unsupported;
+    for (const QString& path : paths) {
+        if (!QFileInfo(path).isFile() || (!isTextFile(path) && !isImageFile(path))) {
+            unsupported.append(QFileInfo(path).fileName());
+        } else if (!m_attachments.contains(path)) {
+            m_attachments.append(path);
+            addChip(path);
+        }
     }
-    if (!m_attachments.contains(path)) {
-        m_attachments.append(path);
-        addChip(path);
+    if (!unsupported.isEmpty()) {
+        QMessageBox::warning(this, "Cannot Attach File",
+            "Unsupported file(s): " + unsupported.join(", ") + "\n"
+            "Supported: text files and images (JPEG, PNG, GIF, WebP).");
     }
 }
 

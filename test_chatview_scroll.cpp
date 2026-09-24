@@ -10,6 +10,11 @@
 #include <QFile>
 #include <QUrl>
 #include <QImage>
+#include <QDialog>
+#include <QLabel>
+#include <QMouseEvent>
+#include <QTemporaryDir>
+#include "imagesave.h"
 #include <iostream>
 #include "chatview.h"
 
@@ -43,6 +48,50 @@ static void requireEqual(const QString& got, const QString& want, const char* la
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     ChatView view;
+
+    // Inline images and attachment thumbnails open a larger, dismissible Qt preview.
+    {
+        QTemporaryDir temp;
+        const QString image = temp.filePath("wide.png");
+        if (!QImage(1000, 500, QImage::Format_RGB32).save(image)) std::exit(1);
+        ChatView v;
+        v.resize(700, 600);
+        v.show();
+        v.appendMessageText("assistant", "![Picture](" + QUrl::fromLocalFile(image).toString() + ")");
+        QApplication::processEvents();
+        requireEqual(v.testImageAt(QPoint(100, 60)), QUrl::fromLocalFile(image).toString(), "image hit");
+        requireEqual(v.testImageAt(QPoint(630, 60)), "", "outside image");
+        v.testOpenImagePreview(QUrl::fromLocalFile(image).toString());
+        auto* preview = v.findChild<QDialog*>("pengyImagePreview");
+        if (!preview || !preview->isVisible()) std::exit(1);
+        auto* picture = preview->findChild<QLabel*>("pengyImagePreviewPicture");
+        if (!picture || picture->pixmap().width() <= 600) std::exit(1);
+        QMouseEvent click(QEvent::MouseButtonPress, QPointF(5, 5), Qt::LeftButton,
+                          Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(preview, &click);
+        if (preview->isVisible()) std::exit(1);
+        v.testOpenImagePreview(QUrl::fromLocalFile(temp.filePath("missing.png")).toString());
+        if (preview->isVisible()) std::exit(1);
+    }
+
+    // Save full-size attachment bytes rather than thumbnail or 600px inline image.
+    {
+        QTemporaryDir temp;
+        const QString thumb = temp.filePath("thumbnail-256-v1.jpg");
+        const QString display = temp.filePath("image-display-v1.jpg");
+        if (!QImage(100, 50, QImage::Format_RGB32).save(thumb)
+            || !QImage(900, 450, QImage::Format_RGB32).save(display)) std::exit(1);
+        const SavableImage saved = imageBytesForSave(QUrl::fromLocalFile(thumb).toString(), {});
+        QFile file(display);
+        if (!file.open(QIODevice::ReadOnly) || saved.bytes != file.readAll()
+            || saved.name != "image-display-v1.jpg") std::exit(1);
+        const QByteArray bytes = saved.bytes;
+        QMap<QString, QByteArray> cache{{"https://example.org/pic?x=1", bytes}};
+        if (imageBytesForSave("https://example.org/pic?x=1", cache).bytes != bytes
+            || imageBytesForSave("https://example.org/pic?x=1", {}).isValid()
+            || imageBytesForSave("data:image/jpeg;base64," + QString::fromLatin1(bytes.toBase64()), {}).bytes != bytes)
+            std::exit(1);
+    }
 
     // ── render cache ────────────────────────────────────────────────────
     {
