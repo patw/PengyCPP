@@ -17,6 +17,9 @@ static const double BASE_DELAY_SECS   = 1.0;
 static const double MAX_DELAY_SECS    = 60.0;
 static const double JITTER            = 0.25;
 static const QList<int> RETRYABLE_STATUSES = {429, 529};
+static const int MAX_CONTEXT_RETRIES = 4;
+static const int CONTEXT_PREVIEW = 1500;
+static const QString CONTEXT_STUB = QStringLiteral("[tool output omitted from provider request to fit context; original remains in chat history]");
 
 // ── Failed turns ────────────────────────────────────────────────
 
@@ -184,6 +187,74 @@ static bool isImageInputError(int statusCode, const QString& errorMsg) {
     return false;
 }
 
+static bool isContextLimitError(int status, const QJsonObject& body, const QString& detail) {
+    if (status != 400 && status != 413 && status != 422) return false;
+    const QJsonValue error = body.contains("error") ? body["error"] : QJsonValue(body);
+    const QJsonObject fields = error.toObject();
+    static const QStringList codes = {
+        "context_length_exceeded", "context_window_exceeded", "prompt_too_long",
+        "input_too_long", "max_context_length_exceeded", "token_limit_exceeded",
+    };
+    for (const QString& code : {fields["code"].toString(), fields["type"].toString(), body["code"].toString()}) {
+        if (codes.contains(code.toLower())) return true;
+    }
+    static const QStringList phrases = {
+        "context length", "context window", "context limit", "maximum context",
+        "prompt too long", "input too long", "too many tokens", "token limit exceeded",
+        "exceeds the model's context", "exceeds the model context",
+        "exceeds the context", "context size", "context_length_exceeded",
+        "exceeds the maximum allowed number of tokens", "maximum number of tokens",
+    };
+    const QString text = (fields["message"].toString().isEmpty()
+        ? (error.isString() ? error.toString() : detail)
+        : fields["message"].toString()).toLower();
+    for (const QString& phrase : phrases) {
+        if (text.contains(phrase)) return true;
+    }
+    return false;
+}
+
+// Return the number of QChars removed, or zero if no safe reduction remains.
+// Tool-call IDs, assistant tool_calls and the original transcript stay intact.
+static int compactToolResults(QJsonArray& messages, int stage) {
+    int newest = -1;
+    for (int i = 0; i < messages.size(); ++i) {
+        if (messages[i].toObject()["role"].toString() == "tool") newest = i;
+    }
+    const auto eligible = [&](int i) {
+        const QJsonObject msg = messages[i].toObject();
+        if (msg["role"].toString() != "tool" || !msg["content"].isString()) return false;
+        const QString text = msg["content"].toString();
+        return !text.startsWith(CONTEXT_STUB)
+            && !text.startsWith("Tool execution was declined")
+            && !text.startsWith("User cancelled")
+            && text.size() >= (stage == 1 ? 2 * CONTEXT_PREVIEW + 200 : 256);
+    };
+    bool olderEligible = false;
+    for (int i = 0; i < messages.size(); ++i) {
+        if (i != newest && eligible(i)) { olderEligible = true; break; }
+    }
+    int saved = 0;
+    for (int i = 0; i < messages.size(); ++i) {
+        if (!eligible(i) || (olderEligible && i == newest)) continue;
+        QJsonObject msg = messages[i].toObject();
+        const QString text = msg["content"].toString();
+        const QString replacement = stage == 1
+            ? text.left(CONTEXT_PREVIEW)
+                + QString("\n\n[... %1 characters omitted from provider request; original remains in chat history ...]\n\n")
+                    .arg(text.size() - 2 * CONTEXT_PREVIEW)
+                + text.right(CONTEXT_PREVIEW)
+            : CONTEXT_STUB;
+        const int reduction = text.size() - replacement.size();
+        if (reduction > 0) {
+            msg["content"] = replacement;
+            messages[i] = msg;
+            saved += reduction;
+        }
+    }
+    return saved;
+}
+
 static QJsonObject usage0() {
     return QJsonObject{
         {"prompt_tokens",     0},
@@ -302,9 +373,13 @@ void LlmClient::run(const LlmParams& params,
     for (;;) {
         if (isCancelled()) return;
 
+        // Compact a private request copy only. Events and persisted history
+        // continue to use the original current messages.
+        QJsonArray requestMessages = current;
+        int contextRetries = 0;
         QJsonObject payload{
             {"model",       params.model},
-            {"messages",    current},
+            {"messages",    requestMessages},
             {"tools",       Tools::toolDefinitions()},
             {"tool_choice", "auto"},
         };
@@ -316,7 +391,8 @@ void LlmClient::run(const LlmParams& params,
         LlmResponse lastResp;
         bool gotSuccess = false;
         bool imagesStripped = false;
-        for (int attempt = 0; attempt <= MAX_RETRIES; ++attempt) {
+        int rateRetries = 0;
+        for (;;) {
             if (isCancelled()) return;
 
             lastResp = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact),
@@ -335,7 +411,8 @@ void LlmClient::run(const LlmParams& params,
             {
                 QString msg = body["error"].toObject()["message"].toString(
                     QString::fromUtf8(lastResp.body));
-                if (isImageInputError(code, msg) && hasImageUrlParts(current)) {
+                if (isImageInputError(code, msg) && !isContextLimitError(code, body, msg)
+                        && hasImageUrlParts(current)) {
                     stripImageUrlParts(current);
                     current.append(QJsonObject{
                         {"role",    "user"},
@@ -349,13 +426,37 @@ void LlmClient::run(const LlmParams& params,
                 }
             }
 
-            if (RETRYABLE_STATUSES.contains(code) && attempt < MAX_RETRIES) {
-                double delay = backoffDelay(attempt, lastResp.retryAfterHeader);
+            const QString detail = body["error"].toObject()["message"].toString(
+                QString::fromUtf8(lastResp.body));
+            if (isContextLimitError(code, body, detail)) {
+                if (contextRetries < MAX_CONTEXT_RETRIES) {
+                    const int saved = compactToolResults(requestMessages, contextRetries == 0 ? 1 : 2);
+                    if (saved > 0) {
+                        payload["messages"] = requestMessages;
+                        ++contextRetries;
+                        onEvent(QJsonObject{
+                            {"type", "context_compacted"},
+                            {"attempt", contextRetries},
+                            {"max_attempts", MAX_CONTEXT_RETRIES},
+                            {"chars_removed", saved},
+                        });
+                        continue;
+                    }
+                }
+                emitTurnError(onEvent, code,
+                    QString("Model context limit reached; could not fit this request after %1 tool-output reductions. The full tool outputs remain in chat history. Try a shorter request or a larger-context model.")
+                        .arg(contextRetries), params.baseUrl);
+                return;
+            }
+
+            if (RETRYABLE_STATUSES.contains(code) && rateRetries < MAX_RETRIES) {
+                double delay = backoffDelay(rateRetries, lastResp.retryAfterHeader);
+                ++rateRetries;
                 QString msg = body["error"].toObject()["message"].toString(
                     QString::fromUtf8(lastResp.body));
                 onEvent(QJsonObject{
                     {"type",         "retrying"},
-                    {"attempt",      attempt + 1},
+                    {"attempt",      rateRetries},
                     {"max_attempts", MAX_RETRIES},
                     {"delay_secs",   qRound(delay * 10.0) / 10.0},
                     {"status_code",  code},

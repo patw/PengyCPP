@@ -9,7 +9,7 @@ PengyCPP is a pure C++17/Qt6 port of [Pengy](https://github.com/patw/pengy) — 
 > **Canonical contracts live in the Python Pengy spec.** This document describes how *this*
 > edition is built. The cross-edition rules every Pengy must satisfy — on-disk formats, tool
 > contracts, and especially the **LLM Loop Contract** (message-ordering invariants, dangling
-> tool-call repair, context elision, retry/backoff) — are specified once in `Pengy/spec.md` and
+> tool-call repair, context elision, context-overflow recovery, retry/backoff) — are specified once in `Pengy/spec.md` and
 > are not repeated here. Read that first if you are porting Pengy to a new language.
 
 ---
@@ -378,7 +378,10 @@ Events are reported via `std::function<void(const QJsonObject&)>` callbacks:
 |---|---|
 | `assistant_tool_calls` | `tool_calls` array |
 | `tool_request` | `tool_name`, `tool_args`, `tool_call_id` |
-| `tool_result` | `tool_name`, `tool_args`, `tool_call_id`, `content`, `declined` |
+| `tool_result` | `name`, `args`, `tool_call_id`, `content`, `declined` |
+| `context_compacted` | `attempt`, `max_attempts`, `chars_removed` (provider-only overflow recovery) |
+| `retrying` | `attempt`, `max_attempts`, `delay_secs`, `status_code`, `message` (429/529 backoff) |
+| `error` | `kind`, `message` (never persisted as a model reply) |
 | `final_response` | `content`, `usage` (prompt/completion tokens) |
 
 **Caller responsibilities:** Callers must accumulate message history from events:
@@ -403,7 +406,7 @@ System message rendered (templates filled) and prepended
 cleanDanglingToolCalls() removes orphaned tool_calls from history
        │
        ▼
-elideOldToolResults() replaces old tool content with [elided] (if context_keep_turns > 0)
+elideOldToolResults() replaces old tool content with [tool output from earlier turn elided] (if context_keep_turns > 0)
        │
        ▼
 LLM API call (non-streaming, full response at once)
@@ -698,7 +701,7 @@ REM → Pengy-Windows.zip
 
 **Process-group kill:** On timeout or cancel, `run_bash` issues `kill -9 -PID` before `QProcess::kill()`, preventing orphaned child processes.
 
-**Context elision:** `elideOldToolResults()` is called after `cleanDanglingToolCalls()` and before every API request, controlled by `context_keep_turns` (0 = keep all). This keeps context window usage under control for long conversations.
+**Context elision and overflow recovery:** `elideOldToolResults()` runs after `cleanDanglingToolCalls()` while constructing a new turn, controlled by `context_keep_turns` (0 = keep all). During a turn, `LlmClient::run()` separately retries explicit provider context-limit errors by compacting a private provider-request copy of tool results (up to four reductions, first previews and then stubs). It never reruns tools or mutates displayed/persisted messages; CLI, GUI, and web show `context_compacted` progress. See `Pengy/spec.md` for the cross-edition error-detection and pairing contract. Neither mechanism is a proactive aggregate token budget.
 
 **QTcpServer for Web UI:** Instead of pulling in an HTTP library, the web UI uses Qt's built-in `QTcpServer` with manual HTTP parsing and SSE handling. This keeps dependencies at zero beyond Qt6. HTML templates are embedded in the binary via Qt Resources.
 

@@ -493,6 +493,15 @@ function hideThinking() {
   if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
 }
 
+function showContextCompacted(data) {
+  hideThinking();
+  thinkingEl = document.createElement('div');
+  thinkingEl.className = 'msg-thinking';
+  thinkingEl.textContent = `Context limit — retrying with ${Number(data.chars_removed).toLocaleString()} fewer tool-output characters (${data.attempt}/${data.max_attempts})`;
+  document.getElementById('messages').appendChild(thinkingEl);
+  scrollBottom();
+}
+
 function showRetrying(data) {
   hideThinking();
   thinkingEl = document.createElement('div');
@@ -1087,6 +1096,9 @@ function handleEvent(ev) {
 
   } else if (ev.type === 'retrying') {
     showRetrying(ev);
+
+  } else if (ev.type === 'context_compacted') {
+    showContextCompacted(ev);
 
   } else if (ev.type === 'final_response') {
     hideThinking();

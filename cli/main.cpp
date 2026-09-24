@@ -570,6 +570,12 @@ private:
             renderAssistantPreamble(ev["message"].toObject());
             appendAndSave(ev["message"].toObject());
 
+        } else if (type == "context_compacted") {
+            outln(yellow(QString("Context limit — retrying with %1 fewer tool-output characters (%2/%3)")
+                .arg(ev["chars_removed"].toInt())
+                .arg(ev["attempt"].toInt())
+                .arg(ev["max_attempts"].toInt())));
+
         } else if (type == "retrying") {
             // 429/529 backoff — surface it instead of hanging silently.
             outln(yellow(QString("Overloaded (HTTP %1) — retrying in %2s (%3/%4)")

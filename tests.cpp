@@ -3646,6 +3646,122 @@ private slots:
         QVERIFY2(stub.requests.isEmpty(), "no request may reach the endpoint");
     }
 
+    void llmContextOverflowAfterRealToolKeepsFullEvent() {
+        StubLlmServer stub;
+        stub.statuses << 200 << 400 << 200;
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString file = dir.path() + "/note.txt";
+        const QString text = QString("source-data-").repeated(1000);
+        { QFile f(file); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(text.toUtf8()); }
+        stub.responses << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_file", {{"path", file}})})
+                       << R"({"error":{"message":"maximum context length exceeded"}})"
+                       << llmCompletion("OK");
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("read it")};
+        p.toolConfirmation = "all";
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+        QCOMPARE(stub.requests.size(), 3);
+        QStringList types;
+        for (const QJsonObject& ev : events) types << ev["type"].toString();
+        QCOMPARE(types, (QStringList{"assistant_tool_calls", "tool_request", "tool_result",
+                                     "context_compacted", "final_response"}));
+        QCOMPARE(events[2]["content"].toString(), text);
+        QCOMPARE(stub.requests[1]["messages"].toArray()[2].toObject()["content"].toString(), text);
+        QVERIFY(stub.requests[2]["messages"].toArray()[2].toObject()["content"].toString().size() < 4000);
+        QCOMPARE(stub.requests[2]["messages"].toArray()[2].toObject()["tool_call_id"].toString(), QString("tc1"));
+    }
+
+    void llmContextOverflowCompactsOnlyProviderCopy() {
+        StubLlmServer stub;
+        stub.statuses << 400 << 200;
+        stub.responses << R"({"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"}})"
+                       << llmCompletion("OK");
+        const QString first(12000, QChar('a'));
+        const QString latest(12000, QChar('b'));
+        const QJsonObject callA = llmToolCall("a", "run_python", {{"code", "print(1)"}});
+        const QJsonObject callB = llmToolCall("b", "run_python", {{"code", "print(2)"}});
+        const QJsonArray history{
+            userMsg("say OK"),
+            QJsonObject{{"role", "assistant"}, {"content", ""}, {"tool_calls", QJsonArray{callA}}},
+            QJsonObject{{"role", "tool"}, {"tool_call_id", "a"}, {"content", first}},
+            QJsonObject{{"role", "assistant"}, {"content", ""}, {"tool_calls", QJsonArray{callB}}},
+            QJsonObject{{"role", "tool"}, {"tool_call_id", "b"}, {"content", latest}},
+        };
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = history;
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+        QCOMPARE(stub.requests.size(), 2);
+        QCOMPARE(events.size(), 2);
+        QCOMPARE(events[0]["type"].toString(), QString("context_compacted"));
+        QCOMPARE(events[0]["attempt"].toInt(), 1);
+        QVERIFY(events[0]["chars_removed"].toInt() > 8000);
+        QCOMPARE(events[1]["type"].toString(), QString("final_response"));
+        QCOMPARE(events[1]["content"].toString(), QString("OK"));
+        const QJsonArray before = stub.requests[0]["messages"].toArray();
+        const QJsonArray after = stub.requests[1]["messages"].toArray();
+        QCOMPARE(before[2].toObject()["content"].toString(), first);
+        QVERIFY(after[2].toObject()["content"].toString().size() < 4000);
+        QCOMPARE(after[4].toObject()["content"].toString(), latest);
+        QCOMPARE(after[2].toObject()["tool_call_id"].toString(), QString("a"));
+        QCOMPARE(after[3].toObject(), before[3].toObject());
+        QCOMPARE(p.messages, history);
+    }
+
+    void llmContextOverflowWithoutToolContentDoesNotRetry() {
+        StubLlmServer stub;
+        stub.statuses << 400;
+        stub.responses << R"({"error":{"message":"context length exceeded"}})";
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hello")};
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+        QCOMPARE(stub.requests.size(), 1);
+        QCOMPARE(events.size(), 1);
+        QCOMPARE(events[0]["type"].toString(), QString("error"));
+        QVERIFY(events[0]["message"].toString().contains("Model context limit reached"));
+    }
+
+    void llmUnrelatedBadRequestIsNotRetried() {
+        StubLlmServer stub;
+        stub.statuses << 400;
+        stub.responses << R"({"error":{"message":"Invalid model; images unsupported"}})";
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hello")};
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+        QCOMPARE(stub.requests.size(), 1);
+        QCOMPARE(events.size(), 1);
+        QCOMPARE(events[0]["type"].toString(), QString("error"));
+        QVERIFY(events[0]["message"].toString().contains("Invalid model"));
+    }
+
     // Loopback port 1: nothing listens.  With a local default this is the
     // likeliest first-run failure, so it must name the URL and point at the
     // server the user has to start, not just relay Qt's error text.
