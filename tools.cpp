@@ -32,6 +32,12 @@
 #include <signal.h>
 #endif
 
+#ifdef Q_OS_WIN
+// shell32 (linked by default); declared here to keep <windows.h> and its
+// min/max macros out of this file.
+extern "C" __declspec(dllimport) int __stdcall IsUserAnAdmin(void);
+#endif
+
 namespace Tools {
 
 static QString   g_userAgent = "PengyAgent/1.0";
@@ -149,11 +155,21 @@ static int downloadMaxMb() {
 
 // ── Process group management ──────────────────────────────────────────
 
+static QString systemRoot() {
+    QString root = qEnvironmentVariable("SystemRoot");
+    return root.isEmpty() ? QStringLiteral("C:/Windows") : QDir::fromNativeSeparators(root);
+}
+
 static void terminateProcessGroup(qint64 pid) {
 #ifdef Q_OS_UNIX
     QProcess::execute("kill", {"-9", QString("-%1").arg(pid)});
 #else
-    QProcess::execute("taskkill", {"/PID", QString::number(pid), "/T", "/F"});
+    // taskkill /T walks the parent-PID tree (Windows has no process group to
+    // signal).  Absolute path so a taskkill.exe earlier on PATH can't stand in
+    // for it.  From a GUI parent QProcess already starts console children with
+    // CREATE_NO_WINDOW, so nothing flashes.
+    QProcess::execute(systemRoot() + "/System32/taskkill.exe",
+                      {"/PID", QString::number(pid), "/T", "/F"});
 #endif
 }
 
@@ -183,7 +199,7 @@ static QJsonObject td(const QString& name, const QString& desc,
     };
 }
 
-const QJsonArray& toolDefinitions() {
+const QJsonArray& baseToolDefinitions() {
     // Built once; QJsonArray is implicitly shared so callers copy cheaply.
     static const QJsonArray defs = QJsonArray{
         td("read_file", "Read the contents of a text file. Returns the whole file by default; very large files are truncated to the output limit, with a header telling you how to continue with offset/limit. Pass offset and limit to read one line range instead, which is how to page through a file too large to return at once. Use read_image for images — this tool cannot decode binary data.",
@@ -427,6 +443,128 @@ const QJsonArray& toolDefinitions() {
             QJsonArray{"questions"}),
     };
     return defs;
+}
+
+// ── Platform-specific tool surface ────────────────────────────────────
+//
+// One local-shell tool per platform, named for the shell it really runs: the
+// tool name is the strongest hint a model gets about which syntax to write.
+// POSIX keeps run_bash exactly as defined above.  Windows gets run_powershell
+// for local commands, and run_bash survives only for remote hosts (host=),
+// since an ssh target really does run a POSIX shell.  No shell translation
+// either way.  Keep the wording identical to the Python and Rust editions.
+
+static bool isWindowsHost() {
+#ifdef Q_OS_WIN
+    return true;
+#else
+    return false;
+#endif
+}
+
+// PowerShell 7 (pwsh) is preferred when installed, but a clean Windows 11
+// ships only Windows PowerShell 5.1, so that is the supported floor.  The
+// absolute System32 path covers a PATH that has lost the v1.0 directory.
+// Never falls back to cmd.exe.  Resolved once; empty off Windows.
+static QString powershellPath() {
+    static const QString path = []() -> QString {
+        if (!isWindowsHost()) return {};
+        for (const char* name : {"pwsh", "powershell"}) {
+            QString found = QStandardPaths::findExecutable(name);
+            if (!found.isEmpty()) return found;
+        }
+        QString builtin = systemRoot() + "/System32/WindowsPowerShell/v1.0/powershell.exe";
+        return QFileInfo(builtin).isFile() ? builtin : QString();
+    }();
+    return path;
+}
+
+static bool windowsIsAdmin() {
+#ifdef Q_OS_WIN
+    return IsUserAnAdmin() != 0;
+#else
+    return false;
+#endif
+}
+
+QString powershellLabel(const QString& path) {
+    QString name = QString(path).replace('\\', '/').section('/', -1).toLower();
+    if (name == "pwsh" || name == "pwsh.exe") return "PowerShell 7";
+    return "Windows PowerShell 5.1";
+}
+
+static QJsonObject runPowershellDefinition(const QString& label, bool isAdmin) {
+    const QString privilege = isAdmin
+        ? QStringLiteral("Pengy is running as Administrator, so commands already have full administrative rights (HKLM registry, services, scheduled tasks, firewall, Windows features); no elevation step is needed.")
+        : QStringLiteral("Pengy is NOT running as Administrator. Commands that need admin rights (writing HKLM, managing services, scheduled tasks that run as SYSTEM or with highest privileges, firewall rules, Windows features, machine-wide installs) fail with access denied. Do not try to self-elevate with Start-Process -Verb RunAs or sudo: the elevated process cannot be captured here. Instead tell the user the step needs admin rights: they can restart Pengy with Run as administrator, or run the command themselves.");
+    const QString dialect = label == "Windows PowerShell 5.1"
+        ? QStringLiteral(" This is Windows PowerShell 5.1, not PowerShell 7: there are no && / || chain operators and no ternary operator, and curl/wget are aliases for Invoke-WebRequest (use curl.exe for real curl).")
+        : QString();
+    const QString desc =
+        QStringLiteral("Run a PowerShell script on this Windows machine with ") + label +
+        QStringLiteral(". Use PowerShell syntax and cmdlets; this is not bash. The script may span multiple lines. It is non-interactive: stdin is closed, so anything that prompts (Read-Host, Get-Credential, confirmation prompts, an editor) fails rather than waits; pass -Force, -Confirm:$false or other non-interactive flags. Set cwd to run in a specific directory. Default table formatting is cut to a narrow width, so for wide or detailed objects pipe to Format-List, ConvertTo-Json, or Out-String -Width 4096. The exit code is the last native command's exit code, or 1 if the script throws or fails to parse; non-terminating errors are shown but do not change it. ") +
+        privilege + dialect +
+        QStringLiteral(" To run on a remote Linux or macOS machine, use run_bash with host. Commands are killed once the configured tool timeout elapses.");
+    return td("run_powershell", desc,
+        QJsonObject{
+            {"command", prop("string", "The PowerShell script to execute")},
+            {"cwd",     prop("string", "Optional working directory to run the script in")}},
+        QJsonArray{"command"});
+}
+
+// Windows variant of run_bash: same parameters, host required.
+static QJsonObject remoteOnlyRunBash(QJsonObject def) {
+    QJsonObject fn = def["function"].toObject();
+    fn["description"] = QStringLiteral("Run a bash command on a remote Linux or macOS host over ssh. On this Windows machine run_bash is only for remote hosts: host is required, and local commands go through run_powershell. Use the ssh destination the user uses (an ~/.ssh/config alias, host, or user@host); key-based login must already work. The command is non-interactive: stdin is closed, so anything that prompts or waits for input fails rather than waits; pass non-interactive flags instead. cwd, if given, is a path on the remote host. To run something as root there, include an explicit `sudo ...` in the command AND set elevated=true; Pengy then prompts for that host's sudo password. elevated=true does NOT elevate on its own: a command with elevated=true but no `sudo` is rejected. Do not wrap the command in ssh yourself. Commands are killed once the configured tool timeout elapses.");
+    QJsonObject params = fn["parameters"].toObject();
+    params["required"] = QJsonArray{"command", "host"};
+    fn["parameters"] = params;
+    def["function"] = fn;
+    return def;
+}
+
+QJsonArray platformTools(const QJsonArray& base, bool windows,
+                         const QString& powershellLabel, bool isAdmin) {
+    if (!windows) return base;
+    // Other schemas that point the model at run_bash for local work.
+    struct Swap { const char* name; const char* from; const char* to; };
+    static const Swap swaps[] = {
+        {"download_file", "use run_bash with curl or wget", "use run_powershell with curl.exe"},
+        {"fetch_url", "use run_bash with curl", "use run_powershell with curl.exe"},
+        {"glob", "run_bash('find ...') or run_bash('ls ...')", "run_powershell('Get-ChildItem ...')"},
+    };
+    QJsonArray tools;
+    for (const QJsonValue& v : base) {
+        QJsonObject def = v.toObject();
+        QJsonObject fn = def["function"].toObject();
+        const QString name = fn["name"].toString();
+        if (name == "run_bash") {
+            tools.append(runPowershellDefinition(powershellLabel, isAdmin));
+            tools.append(remoteOnlyRunBash(def));
+            continue;
+        }
+        for (const Swap& sw : swaps) {
+            if (name == sw.name) {
+                fn["description"] = fn["description"].toString().replace(sw.from, sw.to);
+                def["function"] = fn;
+            }
+        }
+        tools.append(def);
+    }
+    return tools;
+}
+
+const QJsonArray& toolDefinitions() {
+    static const QJsonArray defs = platformTools(
+        baseToolDefinitions(), isWindowsHost(), powershellLabel(powershellPath()), windowsIsAdmin());
+    return defs;
+}
+
+QString windowsLocalRunBashError(bool windows, const QString& host) {
+    if (windows && host.isEmpty())
+        return "Error: on Windows, run_bash only runs on remote hosts (set host). "
+               "Use run_powershell for commands on this machine.";
+    return {};
 }
 
 void ToolContext::addPendingImage(const QString& path, const QString& mime,
@@ -1446,6 +1584,107 @@ static QString toolRunBash(const QJsonObject& args, std::atomic<bool>* cancel,
     if (needsSudo)
         out += sudoAuthFailureNote(ctx, QString(), err);
 
+    return out.trimmed().isEmpty() ? "(No output)" : snipMiddle(out);
+}
+
+// ── run_powershell (Windows) ─────────────────────────────────────────
+//
+// Fixed prelude.  The model's script is written to a UTF-8 temp file and
+// compiled with [ScriptBlock]::Create rather than run via -File (blocked by
+// the default Restricted execution policy on Windows client SKUs, and
+// -ExecutionPolicy Bypass is a pattern EDR flags) or -EncodedCommand (a
+// classic malware IOC that corporate EDR blocks outright).  Reading the file
+// with an explicit UTF-8 encoding sidesteps 5.1's ANSI default for BOM-less
+// scripts, and nothing model-authored ever crosses the command line, so there
+// is no quoting to get wrong.
+//   - ProgressPreference: progress records otherwise leak onto redirected
+//     output (as CLIXML on 5.1).
+//   - PSStyle.OutputRendering (7.2+): pwsh emits ANSI colour even into a pipe.
+//   - OutputEncoding: UTF-8 both ways so non-ASCII output survives; the
+//     Console setter can throw without a console, hence the try.
+//   - A parse error surfaces from Create() and must exit non-zero, otherwise
+//     the run reports success.
+//   - Exit code: the last native exit code (LASTEXITCODE), or 1 when the
+//     script throws; `exit N` inside the script ends the process directly.
+// Must stay free of double quotes: it is one argv element, and Windows argv
+// quoting of embedded quotes is the fragile part.
+// Keep byte-identical with the Python and Rust editions.
+static const char kPowershellPrelude[] =
+    "$ProgressPreference = 'SilentlyContinue'; "
+    "if ($PSStyle) { $PSStyle.OutputRendering = 'PlainText' }; "
+    "try { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) } catch {}; "
+    "$OutputEncoding = [Text.UTF8Encoding]::new($false); "
+    "try { $__pengy = [ScriptBlock]::Create([IO.File]::ReadAllText('{path}', [Text.Encoding]::UTF8)) } "
+    "catch { $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }; "
+    "[Console]::Error.WriteLine($e.Message); exit 1 }; "
+    "$global:LASTEXITCODE = 0; "
+    "& $__pengy; "
+    "exit $LASTEXITCODE";
+
+QString powershellPrelude(const QString& scriptPath) {
+    // PowerShell single-quoted strings escape ' by doubling it.
+    QString escaped = scriptPath;
+    escaped.replace("'", "''");
+    return QString::fromUtf8(kPowershellPrelude).replace("{path}", escaped);
+}
+
+QString runPowershellWith(const QString& exe, const QJsonObject& args,
+                          std::atomic<bool>* cancel, ToolContext* ctx) {
+    if (!ctx) ctx = &g_defaultContext;
+    if (exe.isEmpty())
+        return "Error: PowerShell was not found (looked for pwsh and powershell "
+               "on PATH and Windows PowerShell under System32).";
+    QString command = aStr(args, "command");
+    if (command.isEmpty()) return "Error: command is required.";
+    QString cwd = expandHome(aStr(args, "cwd"));
+    if (!cwd.isEmpty() && !QFileInfo(cwd).isDir())
+        return "Error: cwd not found or not a directory: " + cwd;
+
+    QTemporaryFile script;
+    script.setFileTemplate(QDir::tempPath() + "/pengy-XXXXXX.ps1");
+    if (!script.open()) return "Error: Could not create temp file.";
+    script.write(command.toUtf8());
+    // Close (the file stays until `script` is destroyed): .NET's ReadAllText
+    // opens with FileShare.Read, which fails on Windows while our write
+    // handle is still open.
+    script.close();
+
+    auto tmpFiles = createOutputFiles("powershell");
+    if (!tmpFiles.valid) {
+        return "Error: Could not create temp output files.";
+    }
+
+    QProcess proc;
+    proc.setProgram(exe);
+    proc.setArguments({"-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                       powershellPrelude(QDir::toNativeSeparators(script.fileName()))});
+    proc.setStandardOutputFile(tmpFiles.stdoutPath);
+    proc.setStandardErrorFile(tmpFiles.stderrPath);
+    proc.setStandardInputFile(QProcess::nullDevice());
+    if (!cwd.isEmpty()) proc.setWorkingDirectory(cwd);
+
+#ifdef Q_OS_UNIX
+    // POSIX pwsh (tests): own group so a timeout's group kill can't reach us.
+    proc.setChildProcessModifier([]() {
+        setsid();
+    });
+#endif
+
+    proc.start();
+    if (!proc.waitForStarted(5000)) {
+        removeOutputFiles(tmpFiles);
+        return "Error running PowerShell: " + proc.errorString();
+    }
+
+    qint64 pid = proc.processId();
+    ctx->registerProcess(pid);
+
+    QString early = waitForCommand(proc, pid, toolTimeout(), cancel, ctx, tmpFiles);
+    if (!early.isEmpty()) return early;
+
+    QString out = readAndRemove(tmpFiles.stdoutPath);
+    QString err = readAndRemove(tmpFiles.stderrPath);
+    out = joinCommandOutput(out, err, proc.exitCode());
     return out.trimmed().isEmpty() ? "(No output)" : snipMiddle(out);
 }
 
@@ -2696,7 +2935,12 @@ QString execute(const QString& name, const QJsonObject& args,
     if (name == "write_file")         return toolWriteFile(args);
     if (name == "replace_in_file")    return toolReplaceInFile(args);
     if (name == "apply_changes")      return toolApplyChanges(args);
-    if (name == "run_bash")           return toolRunBash(args, cancel, ctx);
+    if (name == "run_powershell")     return runPowershellWith(powershellPath(), args, cancel, ctx);
+    if (name == "run_bash") {
+        QString e = windowsLocalRunBashError(isWindowsHost(), aStr(args, "host"));
+        if (!e.isEmpty()) return e;
+        return toolRunBash(args, cancel, ctx);
+    }
     if (name == "web_search")         return toolWebSearch(args);
     if (name == "download_file")      return toolDownloadFile(args);
     if (name == "fetch_url")          return toolFetchUrl(args);

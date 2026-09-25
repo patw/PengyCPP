@@ -57,7 +57,25 @@ private:
     QJsonArray     m_pendingImages;
 };
 
+/// The tool list the model sees on this platform (platformTools applied).
 const QJsonArray& toolDefinitions();
+
+// Windows tool surface (run_powershell), exposed for tests.
+/// The POSIX tool list.
+const QJsonArray& baseToolDefinitions();
+/// *base* as seen on Windows (*windows* true) or unchanged.
+QJsonArray platformTools(const QJsonArray& base, bool windows,
+                         const QString& powershellLabel, bool isAdmin);
+/// "PowerShell 7" for pwsh, else "Windows PowerShell 5.1".
+QString    powershellLabel(const QString& path);
+/// The fixed run_powershell prelude with *scriptPath* filled in.
+QString    powershellPrelude(const QString& scriptPath);
+/// Error for a local run_bash on Windows (remote-only there); empty if allowed.
+QString    windowsLocalRunBashError(bool windows, const QString& host);
+/// run_powershell against an explicit executable (empty = not found).
+QString    runPowershellWith(const QString& exe, const QJsonObject& args,
+                             std::atomic<bool>* cancel = nullptr,
+                             ToolContext* ctx = nullptr);
 bool       isReadOnly(const QString& name);
 void       setUserAgent(const QString& ua);
 void       setTimeout(int secs);

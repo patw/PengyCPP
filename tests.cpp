@@ -14,6 +14,7 @@
 #include <QTimer>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QStandardPaths>
 #include <QEventLoop>
 
 #include "config.h"
@@ -303,6 +304,22 @@ static void recordingProvider(Tools::ToolContext& ctx, QStringList* prompts,
     });
 }
 #endif
+
+// Windows adds run_powershell.
+#ifdef Q_OS_WIN
+static constexpr int kToolCount = 17;
+#else
+static constexpr int kToolCount = 16;
+#endif
+
+static QHash<QString, QJsonObject> fnsByName(const QJsonArray& defs) {
+    QHash<QString, QJsonObject> out;
+    for (const QJsonValue& v : defs) {
+        QJsonObject fn = v.toObject()["function"].toObject();
+        out.insert(fn["name"].toString(), fn);
+    }
+    return out;
+}
 
 class PengyTests : public QObject {
     Q_OBJECT
@@ -825,10 +842,116 @@ private slots:
         QVERIFY(!Tools::isReadOnly(""));
     }
 
+    // ── Tools: Windows surface (run_powershell) ─────────────────────
+
+    void posixToolSurfaceUnchanged() {
+        const QJsonArray& base = Tools::baseToolDefinitions();
+        QCOMPARE(Tools::platformTools(base, false, QString(), false), base);
+        auto fns = fnsByName(base);
+        QVERIFY(!fns.contains("run_powershell"));
+        QCOMPARE(fns["run_bash"]["parameters"].toObject()["required"].toArray(), QJsonArray{"command"});
+    }
+
+    void windowsToolSurface() {
+        const QJsonArray& base = Tools::baseToolDefinitions();
+        const QJsonArray before = base;
+        QJsonArray win = Tools::platformTools(base, true, "PowerShell 7", false);
+        QStringList names;
+        for (const QJsonValue& v : win) names << v.toObject()["function"].toObject()["name"].toString();
+        QCOMPARE(names.count("run_powershell"), 1);
+        QCOMPARE(names.count("run_bash"), 1);
+        QCOMPARE(names.indexOf("run_powershell") + 1, names.indexOf("run_bash"));
+        QCOMPARE(win.size(), base.size() + 1);
+        auto fns = fnsByName(win);
+        QCOMPARE(fns["run_bash"]["parameters"].toObject()["required"].toArray(), (QJsonArray{"command", "host"}));
+        QVERIFY(fns["run_bash"]["description"].toString().contains("remote"));
+        for (const char* name : {"download_file", "fetch_url", "glob"}) {
+            QString d = fns[name]["description"].toString();
+            QVERIFY2(!d.contains("run_bash") && d.contains("run_powershell"), qPrintable(d));
+        }
+        QCOMPARE(base, before);  // the shared base list is not mutated
+    }
+
+    void powershellWording() {
+        auto desc = [](const QString& label, bool admin) {
+            return fnsByName(Tools::platformTools(Tools::baseToolDefinitions(), true, label, admin))
+                ["run_powershell"]["description"].toString();
+        };
+        QString admin = desc("PowerShell 7", true);
+        QString user = desc("Windows PowerShell 5.1", false);
+        QVERIFY(admin.contains("running as Administrator") && !admin.contains("NOT running"));
+        QVERIFY(user.contains("NOT running as Administrator"));
+        QVERIFY(user.contains("Start-Process -Verb RunAs"));
+        QVERIFY(user.contains("5.1") && user.contains("&&"));
+        QVERIFY(!admin.contains("&&"));
+    }
+
+    void powershellLabels() {
+        QCOMPARE(Tools::powershellLabel("C:\\Program Files\\PowerShell\\7\\pwsh.exe"), QString("PowerShell 7"));
+        QCOMPARE(Tools::powershellLabel("/usr/bin/pwsh"), QString("PowerShell 7"));
+        QCOMPARE(Tools::powershellLabel("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+                 QString("Windows PowerShell 5.1"));
+    }
+
+    void localRunBashRejectedOnWindows() {
+        QString e = Tools::windowsLocalRunBashError(true, QString());
+        QVERIFY(e.startsWith("Error") && e.contains("run_powershell"));
+        QVERIFY(Tools::windowsLocalRunBashError(true, "web1").isEmpty());
+        QVERIFY(Tools::windowsLocalRunBashError(false, QString()).isEmpty());
+    }
+
+    void runPowershellMissingExecutable() {
+        QString r = Tools::runPowershellWith(QString(), QJsonObject{{"command", "Get-Date"}});
+        QVERIFY2(r.contains("PowerShell was not found"), qPrintable(r));
+    }
+
+    void powershellPreludeQuoting() {
+        // One argv element on Windows: embedded double quotes are the fragile part.
+        QString prelude = Tools::powershellPrelude("C:\\Users\\o'brien\\x.ps1");
+        QVERIFY(!prelude.contains('"'));
+        QVERIFY(prelude.contains("'C:\\Users\\o''brien\\x.ps1'"));
+    }
+
+    // Live: drive the real prelude through pwsh when it is installed.
+    void runPowershellLive() {
+        const QString pwsh = QStandardPaths::findExecutable("pwsh");
+        if (pwsh.isEmpty()) QSKIP("pwsh not installed");
+        auto run = [&](const QString& cmd, const QString& cwd = QString()) {
+            QJsonObject args{{"command", cmd}};
+            if (!cwd.isEmpty()) args["cwd"] = cwd;
+            return Tools::runPowershellWith(pwsh, args);
+        };
+
+        QTemporaryDir tmp;
+        QString d = tmp.path() + QString::fromUtf8("/dir with späce");
+        QVERIFY(QDir().mkpath(d));
+        QString out = run(QString::fromUtf8("\"héllo ✓\"\nif ($true) {\n  (Get-Location).Path\n}"), d);
+        QVERIFY2(out.contains(QString::fromUtf8("héllo ✓")) && out.contains(d), qPrintable(out));
+        QVERIFY2(!out.contains("[Exit code"), qPrintable(out));
+
+        out = run("Write-Error 'bad'");
+        QVERIFY2(!out.contains("\x1b[") && out.contains("bad"), qPrintable(out));
+        out = run("throw \"boom\"");
+        QVERIFY2(out.contains("boom") && out.contains("[Exit code: 1]"), qPrintable(out));
+        out = run("if ($true) {");
+        QVERIFY2(out.contains("Missing closing") && out.contains("[Exit code: 1]"), qPrintable(out));
+        QVERIFY(run("exit 7").contains("[Exit code: 7]"));
+
+        auto scripts = []() {
+            return QDir(QDir::tempPath()).entryList({"pengy-*.ps1"}, QDir::Files);
+        };
+        const QStringList before = scripts();
+        Tools::setTimeout(2);
+        out = run("Start-Sleep -Seconds 30");
+        Tools::setTimeout(300);
+        QVERIFY2(out.contains("timed out"), qPrintable(out));
+        for (const QString& f : scripts()) QVERIFY2(before.contains(f), qPrintable(f));
+    }
+
     // ── Tools: definitions ──────────────────────────────────────────
 
     void toolDefinitionsHasSixteen() {
-        QCOMPARE(Tools::toolDefinitions().size(), 16);
+        QCOMPARE(Tools::toolDefinitions().size(), kToolCount);
     }
 
     void toolDefinitionsAllFunctionType() {
@@ -842,7 +965,7 @@ private slots:
         for (const QJsonValue& v : Tools::toolDefinitions()) {
             names.insert(v.toObject()["function"].toObject()["name"].toString());
         }
-        QCOMPARE(names.size(), 16);
+        QCOMPARE(names.size(), kToolCount);
     }
 
     void toolDefinitionsAllHaveRequired() {
