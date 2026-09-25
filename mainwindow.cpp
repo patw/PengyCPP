@@ -954,10 +954,18 @@ void MainWindow::onWorkerFinished() {
     QString chatId = m_workerToChat.take(worker);
     TabSession* session = tabForChat(chatId);
     if (!session) {
+        if (m_sudoDialogWorker == worker && m_sudoDialog)
+            m_sudoDialog->reject();
+        if (m_questionDialogWorker == worker && m_questionDialog)
+            m_questionDialog->reject();
         worker->deleteLater();
         return;
     }
 
+    if (m_sudoDialogWorker == worker && m_sudoDialog)
+        m_sudoDialog->reject();
+    if (m_questionDialogWorker == worker && m_questionDialog)
+        m_questionDialog->reject();
     session->worker       = nullptr;
     session->thinking     = false;
     session->toolRunning  = false;
@@ -981,6 +989,10 @@ void MainWindow::abandonWorkerFor(TabSession* session) {
     ChatWorker* worker = session->worker;
     m_workerToChat.remove(worker);
     worker->cancel();
+    if (m_sudoDialogWorker == worker && m_sudoDialog)
+        m_sudoDialog->reject();
+    if (m_questionDialogWorker == worker && m_questionDialog)
+        m_questionDialog->reject();
 
     // Stop listening for UI updates, but keep the worker alive and tracked so
     // closeEvent can wait for its thread before we (its parent) are destroyed.
@@ -1050,23 +1062,30 @@ void MainWindow::pollToolConfirmation() {
     if (!session->worker->isSudoPending()) return;
 
     m_sudoDialogOpen = true;
-
-    // Name the remote machine so the user knows whose password is asked for.
-    const QString host = session->worker->sudoHost();
-    bool ok = false;
-    QString password = QInputDialog::getText(
-        this,
-        host.isEmpty() ? QString("sudo Password") : QString("sudo Password — %1").arg(host),
-        host.isEmpty() ? QString("Enter sudo password:") : QString("Enter sudo password for %1:").arg(host),
-        QLineEdit::Password, QString(), &ok);
-
+    ChatWorker* worker = session->worker;
+    const QString chatId = m_activeChatId;
+    const QString host = worker->sudoHost();
+    QInputDialog dialog(this);
+    dialog.setWindowTitle(host.isEmpty() ? QString("sudo Password")
+                                         : QString("sudo Password — %1").arg(host));
+    dialog.setLabelText(host.isEmpty() ? QString("Enter sudo password:")
+                                       : QString("Enter sudo password for %1:").arg(host));
+    dialog.setTextEchoMode(QLineEdit::Password);
+    m_sudoDialog = &dialog;
+    m_sudoDialogWorker = worker;
+    const int result = dialog.exec();
+    const QString password = dialog.textValue();
+    m_sudoDialog = nullptr;
+    m_sudoDialogWorker = nullptr;
     m_sudoDialogOpen = false;
 
-    if (ok && !password.isEmpty()) {
-        session->worker->sendSudoPassword(password);
-    } else {
-        session->worker->cancelSudo();
-    }
+    // The modal dialog's nested event loop can retire or replace the worker.
+    TabSession* current = tabForChat(chatId);
+    if (!current || current->worker != worker || !worker->isSudoPending()) return;
+    if (result == QDialog::Accepted && !password.isEmpty())
+        worker->sendSudoPassword(password);
+    else
+        worker->cancelSudo();
 }
 
 // ── Quick settings panel ──────────────────────────────────────────
@@ -1092,6 +1111,7 @@ void MainWindow::updateQuickSettingsFor(TabSession* session) {
 void MainWindow::handleQuestionRequest(TabSession* session, const QJsonObject& event) {
     ChatWorker* worker = session->worker;
     if (!worker) return;
+    const QString chatId = session->chat["id"].toString();
 
     QJsonArray questions = event["questions"].toArray();
     if (questions.isEmpty()) {
@@ -1162,7 +1182,17 @@ void MainWindow::handleQuestionRequest(TabSession* session, const QJsonObject& e
     connect(submit, &QPushButton::clicked, &dlg, &QDialog::accept);
     connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
 
-    if (dlg.exec() == QDialog::Accepted) {
+    m_questionDialog = &dlg;
+    m_questionDialogWorker = worker;
+    const int result = dlg.exec();
+    m_questionDialog = nullptr;
+    m_questionDialogWorker = nullptr;
+
+    // exec() runs a nested event loop; Stop, tab replacement, or completion
+    // can retire this worker before Submit/Cancel is clicked.
+    TabSession* current = tabForChat(chatId);
+    if (!current || current->worker != worker || !worker->isQuestionPending()) return;
+    if (result == QDialog::Accepted) {
         QStringList answers;
         for (auto* bg : groups) {
             QAbstractButton* checked = bg->checkedButton();
@@ -1186,6 +1216,9 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         if (!session.chat.isEmpty())
             chatSave(session.chat);
     }
+
+    if (m_questionDialog) m_questionDialog->reject();
+    if (m_sudoDialog) m_sudoDialog->reject();
 
     // Cancel every live worker (open tabs + already-abandoned ones) and wait
     // for its thread to stop.  Workers are parented to this window, so letting

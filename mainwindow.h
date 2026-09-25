@@ -13,6 +13,7 @@ class ChatHistoryWidget;
 class ChatView;
 class ChatInputWidget;
 class ChatWorker;
+class QDialog;
 
 /// Per-tab state for a single chat.
 struct TabSession {
@@ -104,4 +105,8 @@ private:
 
     QTimer*     m_confirmTimer = nullptr;
     bool        m_sudoDialogOpen = false;
+    QDialog*    m_sudoDialog = nullptr;
+    ChatWorker* m_sudoDialogWorker = nullptr;
+    QDialog*    m_questionDialog = nullptr;
+    ChatWorker* m_questionDialogWorker = nullptr;
 };
