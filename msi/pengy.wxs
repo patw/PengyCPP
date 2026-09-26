@@ -1,0 +1,70 @@
+<!--
+  PengyCPP Windows installer (WiX v5). Built by msi\build.ps1 from the
+  windeployqt'd Pengy-Windows\ folder that the release workflow also zips.
+
+  Per-user install into %LocalAppData%\Programs\PengyCPP: no UAC prompt, and
+  Pengy runs unelevated (run_powershell reports admin-only steps back to the
+  user instead of attempting them). Chats and settings live in the user's
+  config dir and are never touched by install, upgrade or uninstall.
+
+  Named PengyCPP throughout (product, folder, shortcut) with its own
+  UpgradeCode, so it installs side by side with PengyR's MSI.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <!-- UpgradeCode identifies "PengyCPP" across every version: never change it,
+       or new MSIs install alongside old ones instead of replacing them. -->
+  <Package Name="PengyCPP"
+           Manufacturer="Pat Wendorf"
+           Version="$(Version)"
+           UpgradeCode="{DAAB9CF7-E498-4411-95F3-7F144BE04162}"
+           Scope="perUser"
+           Compressed="yes">
+
+    <!-- Same-version upgrades keep dev builds of one version from piling up
+         as separate Add/Remove Programs entries. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="pengy.ico" SourceFile="$(sys.SOURCEFILEDIR)..\pengy.ico" />
+    <Property Id="ARPPRODUCTICON" Value="pengy.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/patw/PengyCPP" />
+
+    <!-- WixUI_Minimal also sets ARPNOMODIFY: no "Change" in Add/Remove
+         Programs, since there are no optional features to change. -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(LicenseRtf)" />
+    <ui:WixUI Id="WixUI_Minimal" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="UserProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="PengyCPP" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Everything windeployqt produced, subfolders included, so the Qt
+         plugin list never has to be maintained here by hand. -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="!(bindpath.app)\**" />
+    </ComponentGroup>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="PengyShortcut"
+                  Name="PengyCPP"
+                  Description="Local-first AI agent with tools"
+                  Target="[INSTALLFOLDER]pengy.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <!-- A per-user shortcut needs an HKCU value as its KeyPath. -->
+        <RegistryValue Root="HKCU" Key="Software\PengyCPP" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

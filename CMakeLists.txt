@@ -53,7 +53,9 @@ target_link_libraries(pengy-web PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
 target_include_directories(pengy-web PRIVATE ${CMAKE_BINARY_DIR})
 
 # ── Desktop GUI ──────────────────────────────────────────────────────
-add_executable(pengy
+# WIN32 builds a GUI-subsystem exe on Windows (no console window alongside the
+# app; Qt6::Core links the WinMain entry point for it). Ignored elsewhere.
+add_executable(pengy WIN32
     main.cpp
     config.cpp
     chatmanager.cpp
@@ -72,6 +74,11 @@ add_executable(pengy
     settingsdialog.cpp
     resources.qrc
 )
+
+if(WIN32)
+    enable_language(RC)
+    target_sources(pengy PRIVATE pengy.rc)
+endif()
 
 target_link_libraries(pengy PRIVATE
     Qt6::Core

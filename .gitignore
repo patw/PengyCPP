@@ -44,6 +44,8 @@ ui_*.h
 *.so.*
 *.dll
 *.exe
+*.msi
+*.wixpdb
 *.dylib
 
 # IDE

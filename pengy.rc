@@ -1,0 +1,3 @@
+// Windows resources for pengy.exe: the icon Explorer, the taskbar and
+// shortcuts show before Qt's own setWindowIcon() takes over at runtime.
+IDI_ICON1 ICON "pengy.ico"

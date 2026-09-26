@@ -3,10 +3,15 @@
 # Produces and attaches to GitHub Release:
 #   Linux:   .deb + AppImage
 #   macOS:   .dmg
-#   Windows: Pengy-Windows.zip (Qt DLLs bundled)
+#   Windows: Pengy-Windows.zip (Qt + MSVC runtime DLLs bundled) + .msi installer
 #
 # Usage:
 #   git tag v1.3.0 && git push --tags
+#
+# Manual test builds (no release is created or touched):
+#   Actions tab -> Release -> "Run workflow", pick a branch and platform, or
+#   gh workflow run release.yml --ref <branch> -f platform=windows
+# The packages are attached to that run as downloadable artifacts instead.
 #
 name: Release
 
@@ -14,9 +19,22 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform(s) to build'
+        type: choice
+        default: windows
+        options:
+          - windows
+          - linux
+          - macos
+          - all
 
 env:
-  VERSION: ${{ github.ref_name }}   # e.g. v1.3.0
+  # e.g. v1.3.0 on tag builds. Empty on manual runs, so build_deb.sh falls
+  # back to CMakeLists.txt's version instead of packaging version "main".
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
 
 permissions:
   contents: write
@@ -24,6 +42,7 @@ permissions:
 jobs:
   linux:
     name: Linux (.deb + AppImage)
+    if: github.event_name == 'push' || contains(fromJSON('["linux","all"]'), inputs.platform)
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -54,6 +73,7 @@ jobs:
           cd appimage && ./build.sh
 
       - name: Upload Release Assets
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -62,8 +82,19 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: false
 
+      - name: Upload test build
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pengy-Linux-${{ github.sha }}
+          path: |
+            pengy_*.deb
+            Pengy-x86_64.AppImage
+          retention-days: 7
+
   macos:
     name: macOS (DMG)
+    if: github.event_name == 'push' || contains(fromJSON('["macos","all"]'), inputs.platform)
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -78,14 +109,24 @@ jobs:
         run: ./build_macos.sh
 
       - name: Upload DMG
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: Pengy-macOS-*.dmg
           generate_release_notes: true
           fail_on_unmatched_files: false
 
+      - name: Upload test build
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pengy-macOS-${{ github.sha }}
+          path: Pengy-macOS-*.dmg
+          retention-days: 7
+
   windows:
-    name: Windows (Zip)
+    name: Windows (Zip + MSI)
+    if: github.event_name == 'push' || contains(fromJSON('["windows","all"]'), inputs.platform)
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -114,21 +155,94 @@ jobs:
             exit /b 1
           )
           echo Using Qt: %QT_ROOT_DIR%
-          cmake -B build_windows -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QT_ROOT_DIR%"
-          cmake --build build_windows
+          cmake -B build_windows -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QT_ROOT_DIR%" || exit /b 1
+          cmake --build build_windows || exit /b 1
           mkdir Pengy-Windows
-          copy build_windows\pengy.exe Pengy-Windows\
+          copy build_windows\pengy.exe Pengy-Windows\ || exit /b 1
           cd Pengy-Windows
-          windeployqt pengy.exe
+          windeployqt --no-compiler-runtime pengy.exe
+
+      # Ship the MSVC runtime DLLs app-locally instead of windeployqt's
+      # vc_redist.x64.exe, which zip users had to find and run themselves and
+      # an MSI cannot run for them.
+      - name: Bundle MSVC runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $crt = Get-ChildItem (Join-Path $env:VCToolsRedistDir 'x64') -Directory -Filter 'Microsoft.VC*.CRT' |
+            Select-Object -First 1
+          if (-not $crt) { throw "MSVC CRT redist not found under $env:VCToolsRedistDir" }
+          Copy-Item (Join-Path $crt.FullName '*.dll') Pengy-Windows\
+          Get-ChildItem Pengy-Windows\*.dll | Select-Object Name, Length | Format-Table
+
+      # Runs on every build, release or test, before anything is packaged.
+      - name: Smoke test
+        shell: powershell
+        run: .github\scripts\windows-smoke-test.ps1 -Exe Pengy-Windows\pengy.exe
+
+      - name: Install WiX
+        shell: powershell
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $tools = Join-Path $env:USERPROFILE '.dotnet\tools'
+          $env:PATH = "$tools;$env:PATH"
+          $tools >> $env:GITHUB_PATH
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          wix --version
+
+      # The version comes from CMakeLists.txt's project(Pengy VERSION x.y.z),
+      # like build_macos.sh. A second MSI with the build number bumped lets
+      # the next step test upgrading.
+      - name: Build MSI
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $m = Select-String -Path CMakeLists.txt -Pattern '^project\(Pengy VERSION (\d+)\.(\d+)\.(\d+)' | Select-Object -First 1
+          $g = $m.Matches[0].Groups
+          $major = $g[1].Value; $minor = $g[2].Value; $patch = $g[3].Value
+          $version = "$major.$minor.$patch"
+          $label = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}' } else { 'dev' }
+          msi\build.ps1 -AppDir Pengy-Windows -Version $version -Out "Pengy-Windows-$label.msi"
+          msi\build.ps1 -AppDir Pengy-Windows -Version "$major.$minor.$([int]$patch + 1)" `
+            -Out "$env:RUNNER_TEMP\Pengy-next.msi"
+          "MSI_FILE=Pengy-Windows-$label.msi" >> $env:GITHUB_ENV
+
+      - name: Test MSI install, upgrade, uninstall
+        shell: powershell
+        run: .github\scripts\windows-msi-test.ps1 -Msi $env:MSI_FILE -NextMsi "$env:RUNNER_TEMP\Pengy-next.msi"
 
       - name: Zip artifacts
+        if: github.ref_type == 'tag'
         shell: powershell
         run: |
           Compress-Archive -Path Pengy-Windows\* -DestinationPath Pengy-Windows-${{ github.ref_name }}.zip
 
-      - name: Upload Windows Zip
+      - name: Upload Windows Zip + MSI
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          files: Pengy-Windows-*.zip
+          files: |
+            Pengy-Windows-*.zip
+            Pengy-Windows-*.msi
           generate_release_notes: true
           fail_on_unmatched_files: false
+
+      # Manual runs: the folder is uploaded as-is (GitHub zips it for
+      # download), so there is no zip-inside-a-zip.
+      - name: Upload test build
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pengy-Windows-${{ github.sha }}
+          path: Pengy-Windows/
+          retention-days: 7
+
+      - name: Upload test MSI
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pengy-Windows-MSI-${{ github.sha }}
+          path: ${{ env.MSI_FILE }}
+          retention-days: 7

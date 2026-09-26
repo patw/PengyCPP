@@ -31,7 +31,7 @@ Pre-built binaries are on the [Releases page](https://github.com/patw/PengyCPP/r
 |----------|--------|
 | **Linux** | `Pengy-x86_64.AppImage` (portable) · `.deb` (Debian/Ubuntu) |
 | **macOS** | `Pengy-macOS-<arch>.dmg` (arm64 / x86_64) |
-| **Windows** | `Pengy-Windows.zip` (bundled Qt DLLs) |
+| **Windows** | `Pengy-Windows-<version>.msi` (per-user installer, no admin needed) · `Pengy-Windows-<version>.zip` (portable) |
 
 ### Linux — Build from Source
 
