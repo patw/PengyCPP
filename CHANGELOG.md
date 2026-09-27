@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.10.0
 
 - **Native PowerShell on Windows (`run_powershell`, ported from Python Pengy).** On Windows the model now gets `run_powershell` for local commands instead of a `run_bash` that tried to start `bash`, which a clean Windows install doesn't have. It uses PowerShell 7 (`pwsh`) when installed and otherwise the Windows PowerShell 5.1 that ships with Windows (never `cmd.exe`). The tool description tells the model which version it has, and whether Pengy is running as Administrator: if not, admin-only steps are reported back to the user instead of attempted through `Start-Process -Verb RunAs` or `sudo`. Scripts are run from a UTF-8 temp file compiled with `[ScriptBlock]::Create` (the prelude is byte-identical across editions), so there is no command-line quoting, no execution-policy prompt, and no `-EncodedCommand` for endpoint security to flag. Output is plain UTF-8 text with no ANSI colour or progress noise, and a script that throws or fails to parse exits 1. On Windows `run_bash` is kept only for remote hosts (`host` is required); remote sudo works exactly as on Linux and macOS. Linux and macOS are unchanged.
 - **Stop on Windows runs `taskkill` by its absolute System32 path**, so a `taskkill.exe` earlier on PATH can't stand in for it.
@@ -9,6 +9,8 @@
 - **Windows MSI installer.** Releases now include `Pengy-Windows-<version>.msi` next to the zip. It installs per user into `%LocalAppData%\Programs\PengyCPP` (no admin prompt), adds a "PengyCPP" Start menu shortcut, and replaces the previous version on upgrade; uninstalling leaves chats and settings alone. It has its own UpgradeCode and names, so it installs side by side with PengyR's MSI. Built with WiX v5 from `msi/pengy.wxs` via `msi/build.ps1`, and every Windows build installs, upgrades and uninstalls it on the CI runner (`.github/scripts/windows-msi-test.ps1`) before publishing.
 - **Windows builds bundle the MSVC runtime.** The zip and MSI ship the Visual C++ runtime DLLs next to `pengy.exe` instead of windeployqt's `vc_redist.x64.exe`, so Pengy starts on a clean Windows install without a separate runtime install.
 - **Manual release builds.** `release.yml` can be run by hand (Actions → Release → Run workflow, or `gh workflow run release.yml --ref <branch> -f platform=windows`); manual runs upload their packages as run artifacts and never touch a Release. Every Windows build now smoke-tests `pengy.exe` (GUI subsystem, `--version`, an 8-second GUI launch).
+
+- Coordinated v1.10.0 release across the Python, Rust, and C++ editions.
 
 ## v1.9.3
 
