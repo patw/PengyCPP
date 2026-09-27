@@ -10,6 +10,7 @@
 - **Windows builds bundle the MSVC runtime.** The zip and MSI ship the Visual C++ runtime DLLs next to `pengy.exe` instead of windeployqt's `vc_redist.x64.exe`, so Pengy starts on a clean Windows install without a separate runtime install.
 - **Manual release builds.** `release.yml` can be run by hand (Actions → Release → Run workflow, or `gh workflow run release.yml --ref <branch> -f platform=windows`); manual runs upload their packages as run artifacts and never touch a Release. Every Windows build now smoke-tests `pengy.exe` (GUI subsystem, `--version`, an 8-second GUI launch).
 
+- **Retire stale sudo and question dialogs with their worker.** If a tab's worker finished, was stopped, or was replaced while a sudo password prompt or an `ask_user_question` dialog it had raised was still open, the dialog lingered and answered a worker that was gone. Those prompts are now tracked against the worker that raised them and are dismissed when it exits, and queued questions from a retired worker are dropped.
 - Coordinated v1.10.0 release across the Python, Rust, and C++ editions.
 
 ## v1.9.3
