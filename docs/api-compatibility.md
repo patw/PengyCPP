@@ -69,6 +69,19 @@ Uses the OpenAI chat completions format. Tool calling works via JSON schema. For
 
 ## Notes
 
+### Opaque proxy continuation state
+
+When using `openai-proxy`, Pengy preserves `reasoning_details` envelopes tagged
+`openai-proxy/reasoning-v1` even with `preserve_reasoning` disabled. These opaque
+native output blocks are saved with assistant messages and returned on tool
+round-trips and resumed chats; they are not rendered as assistant text.
+
+Changing the selected proxy model removes the tagged envelope from outgoing
+request copies only, leaving saved history intact. The proxy validates the
+upstream provider/model identity and performs native Responses/Messages replay.
+Untagged reasoning fields still follow the existing preservation preference.
+
+
 - **Local endpoint API keys:** Ollama, LM Studio, vLLM, and llama.cpp don't validate API keys, but Pengy requires one to be set. Use any string (e.g. `sk-local`).
 - **Reasoning models:** OpenAI o-series, Claude (via OpenRouter), and some Qwen models support reasoning traces. Set `reasoning_effort` to control detail level.
 - **Rate limits:** Cloud providers have rate limits on free tiers. Exponential backoff is built in — Pengy retries 429/529 responses automatically.

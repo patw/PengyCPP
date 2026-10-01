@@ -3612,6 +3612,69 @@ private slots:
         QVERIFY2(found, "reasoning_content should be preserved in follow-up request");
     }
 
+    void llmProxyStateRoundTripAndResume() {
+        StubLlmServer stub;
+        QTemporaryDir dir;
+        const QString file = dir.path() + "/note.txt";
+        { QFile f(file); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("hello"); }
+        const QJsonObject envelope{{"format", "openai-proxy/reasoning-v1"},
+            {"provider", "openai_responses"}, {"proxy_model", "stub-model"},
+            {"model", "upstream-stub"}, {"blocks", QJsonArray{QJsonObject{
+                {"type", "reasoning"}, {"encrypted_content", "opaque-test"}}}}};
+        stub.responses << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_file",
+            QJsonObject{{"path", file}})}, 10, 5,
+            QJsonObject{{"reasoning_details", envelope}, {"reasoning_content", "ordinary"}})
+            << llmCompletion("done", {}, 10, 5, QJsonObject{{"reasoning_details", envelope}})
+            << llmCompletion("resumed") << llmCompletion("switched");
+        LlmParams p;
+        p.baseUrl = stub.baseUrl(); p.apiKey = "test"; p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("read")}; p.toolConfirmation = "all";
+        p.preserveReasoning = false;
+        QList<QJsonObject> events;
+        auto collect = [&events](const QJsonObject& e) { events.append(e); };
+        auto confirm = []() { return std::make_pair(true, false); };
+        auto cancel = []() { return false; };
+        LlmClient().run(p, collect, confirm, cancel, nullptr);
+        QCOMPARE(stub.requests.size(), 2);
+        const auto assistant = stub.requests[1]["messages"].toArray()[1].toObject();
+        QCOMPARE(assistant["reasoning_details"].toObject(), envelope);
+        QVERIFY(!assistant.contains("reasoning_content"));
+        QCOMPARE(events.first()["message"].toObject()["reasoning_details"].toObject(), envelope);
+        const auto finalMessage = events.last()["message"].toObject();
+        QCOMPARE(finalMessage["reasoning_details"].toObject(), envelope);
+        // Exercise actual persisted chat JSON before resuming.
+        QJsonObject chat = chatCreate("Opaque state");
+        chat["messages"] = QJsonArray{finalMessage, userMsg("again")};
+        chatSave(chat);
+        p.messages = chatGet(chat["id"].toString())["messages"].toArray();
+        const QJsonArray original = p.messages;
+        LlmClient().run(p, collect, confirm, cancel, nullptr);
+        QCOMPARE(stub.requests.size(), 3);
+        QCOMPARE(stub.requests[2]["messages"].toArray()[0].toObject()["reasoning_details"].toObject(), envelope);
+        p.model = "different-model";
+        LlmClient().run(p, collect, confirm, cancel, nullptr);
+        QCOMPARE(stub.requests.size(), 4);
+        QVERIFY(!stub.requests[3]["messages"].toArray()[0].toObject().contains("reasoning_details"));
+        QCOMPARE(p.messages, original);
+    }
+
+    void llmForeignReasoningRespectsToggle() {
+        for (bool preserve : {false, true}) {
+            StubLlmServer stub;
+            const QJsonArray details{QJsonObject{{"type", "other"}, {"text", "ordinary"}}};
+            stub.responses << llmCompletion("ok", {}, 10, 5, QJsonObject{{"reasoning_details", details}});
+            LlmParams p;
+            p.baseUrl = stub.baseUrl(); p.apiKey = "test"; p.model = "stub-model";
+            p.messages = QJsonArray{userMsg("hi")}; p.preserveReasoning = preserve;
+            QJsonObject final;
+            LlmClient().run(p, [&final](const QJsonObject& e) { final = e; },
+                []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
+            QCOMPARE(final["type"].toString(), QString("final_response"));
+            QCOMPARE(final["message"].toObject().contains("reasoning_details"), preserve);
+            if (preserve) QCOMPARE(final["message"].toObject()["reasoning_details"].toArray(), details);
+        }
+    }
+
     // Renamed from llmHttpErrorProducesApiError: a non-2xx used to arrive as a
     // final_response whose "content" was the error, which every frontend then
     // drew in the assistant's own block and stored as a message from the model.

@@ -342,6 +342,33 @@ static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
     return resp;
 }
 
+static bool isProxyReasoning(const QJsonValue& details) {
+    return details.isObject() && details.toObject()["format"].toString()
+        == "openai-proxy/reasoning-v1";
+}
+
+static QJsonArray withoutCrossModelProxyState(const QJsonArray& messages, const QString& model) {
+    QJsonArray result;
+    for (const QJsonValue& value : messages) {
+        QJsonObject message = value.toObject();
+        const QJsonValue details = message["reasoning_details"];
+        if (isProxyReasoning(details) && details.toObject()["proxy_model"].toString() != model)
+            message.remove("reasoning_details");
+        result.append(message);
+    }
+    return result;
+}
+
+static void preserveReasoningFields(QJsonObject& target, const QJsonObject& source, bool preserve) {
+    const QStringList keys = {"reasoning_content", "reasoning", "reasoning_details"};
+    for (const QString& key : keys) {
+        // Tagged proxy state is required for continuation, not a UI preference.
+        if (source.contains(key) && (preserve ||
+                (key == "reasoning_details" && isProxyReasoning(source[key]))))
+            target[key] = source[key];
+    }
+}
+
 void LlmClient::run(const LlmParams& params,
                     EventFn   onEvent,
                     ConfirmFn onConfirm,
@@ -375,7 +402,7 @@ void LlmClient::run(const LlmParams& params,
 
         // Compact a private request copy only. Events and persisted history
         // continue to use the original current messages.
-        QJsonArray requestMessages = current;
+        QJsonArray requestMessages = withoutCrossModelProxyState(current, params.model);
         int contextRetries = 0;
         QJsonObject payload{
             {"model",       params.model},
@@ -544,12 +571,7 @@ void LlmClient::run(const LlmParams& params,
             asstMsg["role"]       = "assistant";
             asstMsg["content"]    = content;
             asstMsg["tool_calls"] = toolCalls;
-            if (params.preserveReasoning) {
-                const QStringList reasoningKeys = {"reasoning_content", "reasoning", "reasoning_details"};
-                for (const QString& key : reasoningKeys) {
-                    if (msg.contains(key)) asstMsg[key] = msg[key];
-                }
-            }
+            preserveReasoningFields(asstMsg, msg, params.preserveReasoning);
 
             onEvent(QJsonObject{
                 {"type",    "assistant_tool_calls"},
@@ -710,12 +732,7 @@ void LlmClient::run(const LlmParams& params,
         QJsonObject finalMsg;
         finalMsg["role"] = "assistant";
         finalMsg["content"] = content;
-        if (params.preserveReasoning) {
-            const QStringList reasoningKeys = {"reasoning_content", "reasoning", "reasoning_details"};
-            for (const QString& key : reasoningKeys) {
-                if (msg.contains(key)) finalMsg[key] = msg[key];
-            }
-        }
+        preserveReasoningFields(finalMsg, msg, params.preserveReasoning);
         onEvent(QJsonObject{
             {"type",    "final_response"},
             {"content", content},
