@@ -131,7 +131,7 @@ All three binaries share these modules — no code duplication, no FFI:
 │  ─────────────     │  └────────────────────────────────────────────┘   │
 │  Status ● Idle     │                                                    │
 │  Model: llama3.2   │  🤖 Assistant                                      │
-│  Tool Confirm: None│  Here are the files in /tmp: ...                   │
+│  Effort: Global    │  Here are the files in /tmp: ...                   │
 │  Tokens: — in/out  │                                                    │
 │                    │  ──────────────────────────────────────────────    │
 │                    │  [Type a message...                  ] [⏹ Stop]   │
@@ -144,7 +144,32 @@ All three binaries share these modules — no code duplication, no FFI:
 - **Tasks button** — Opens the prompt-template Tasks manager/player
 - **Chat history list** — Scrollable, sorted newest first; click to load
 - **Per-row buttons** — 💾 (export chat to Markdown file) and 🗑 (delete chat)
-- **Quick settings panel** — Shows status dot (● idle / ● running), model name, tool confirmation mode, and cumulative token usage for the active chat (`chat["usage"]`, summed across every turn — not just the last one)
+- **Quick settings panel** — Status dot, per-tab model and Effort selectors, cumulative chat token totals, and last-final-response tok/s. Tool confirmation remains in Settings.
+
+### Per-chat Effort and last-response throughput (v1.11.0)
+
+The desktop sidebar replaces the Tool Confirm display with an **Effort** dropdown; the
+confirmation policy remains global and accessible in Settings. **Global setting** follows
+`config.reasoning_effort`; **Provider default** explicitly omits the request hint. The offered
+levels are `none`, `low`, `medium`, `high`, `xhigh`, and `max`, subject to provider support.
+`minimal` is not offered in GUI/web Settings or the sidebar; legacy raw values remain readable.
+Changes are saved immediately and apply to the next message, not an already-running worker.
+
+The optional per-chat `reasoning_effort` string is an override: missing/null means use the
+global setting, while `""` explicitly means omit the provider option. The optional numeric
+`last_response_tokens_per_second` stores only the last final API response's throughput.
+Both fields survive chat save/reload and cumulative-usage updates across editions; neither
+is a provider message field. New chats omit both. Switching tabs refreshes effort and metrics,
+including clearing token labels for an empty/unmeasured chat.
+
+The core final-response event adds optional `tokens_per_second`: API-reported
+`usage.completion_tokens` for that final response divided by monotonic wall time for its
+successful HTTP request through complete body consumption. Do not divide accumulated turn
+usage or time the whole tool loop. The rate includes latency, prompt processing, and reasoning;
+it excludes preceding API calls, tool execution, human confirmation waits, and retry backoff.
+No provider-specific generation-duration heuristic is used. Missing usage or invalid duration
+means no rate (`—`); zero output tokens is a valid zero rate. The GUI saves the metric even
+when final text is empty. Existing cumulative `chat.usage` remains separate.
 
 ### Right-Top Pane (Chat View)
 - Markdown-rendered chat messages via `QTextBrowser`
@@ -587,6 +612,8 @@ one-per-file at `~/.config/pengy/chats/<uuid>.json`; `chats/index.json` is a reb
 cache. Legacy `~/.config/pengy/chats.json` is imported as a compatibility seed only, and deletion
 must also remove its old entry so it cannot resurrect. Chat messages retain `user`, `assistant`
 (including `tool_calls`), and `tool` roles; optional `chat.usage` is cumulative token usage.
+Optional `chat.reasoning_effort` and `chat.last_response_tokens_per_second` follow the per-chat
+control contract above and are preserved by chat storage and usage accumulation.
 
 Image attachments are durable content-addressed references in `message.attachments`, with source
 objects and display/thumbnail derivatives under `~/.config/pengy/attachments/`. Never persist

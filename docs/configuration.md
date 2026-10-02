@@ -61,3 +61,9 @@ over tools!
 **Web:** Click the ⚙ button in the top-right navbar. Changes apply immediately.
 
 All three interfaces read from and write to the same file. You can switch between them freely — your settings follow you.
+
+### Desktop per-chat controls
+
+The GUI sidebar’s **Effort** dropdown overrides `reasoning_effort` for that chat only and applies to the next message. **Global setting** follows the saved default; **Provider default** explicitly sends no reasoning hint. Offered levels are Off / none, Low, Medium, High, Extra high, and Max; support depends on the model/provider. Minimal is no longer offered, though legacy raw configuration remains readable.
+
+**Last: … tok/s** is the final API response’s output tokens divided by its successful request wall time. It includes network latency, prompt processing, and reasoning, but excludes earlier tool calls, tool execution, confirmation waits, and retry backoff. It is not pure decoding speed. Missing usage shows `—`; the last measurement is saved with the chat, separately from cumulative token totals.

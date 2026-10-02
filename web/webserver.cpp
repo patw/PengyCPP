@@ -1233,7 +1233,6 @@ QByteArray WebServer::renderSettingsPage() {
     html.replace("{{TC_ALL}}",   cfg.toolConfirmation == "all"   ? "selected" : "");
     html.replace("{{REASONING_DEFAULT}}", cfg.reasoningEffort.isEmpty() ? "selected" : "");
     html.replace("{{REASONING_NONE}}",    cfg.reasoningEffort == "none" ? "selected" : "");
-    html.replace("{{REASONING_MINIMAL}}", cfg.reasoningEffort == "minimal" ? "selected" : "");
     html.replace("{{REASONING_LOW}}",     cfg.reasoningEffort == "low" ? "selected" : "");
     html.replace("{{REASONING_MEDIUM}}",  cfg.reasoningEffort == "medium" ? "selected" : "");
     html.replace("{{REASONING_HIGH}}",    cfg.reasoningEffort == "high" ? "selected" : "");

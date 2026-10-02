@@ -20,7 +20,8 @@ public:
     void selectChatById(const QString& id);
     void updateChatTitle(const QString& id, const QString& title);
     void setModels(const QStringList& models, const QString& current);
-    void updateQuickSettings(const QString& model, const QString& confirm);
+    void updateQuickSettings(const QString& model, const QString& effort);
+    void updateResponseRate(double tokensPerSecond);
     void updateTokenUsage(int prompt, int completion);
     void setThinking(bool thinking);
     void setToolRunning(bool running);
@@ -40,6 +41,7 @@ signals:
     void tasksRequested();
     void deleteRequested(const QString& id);
     void modelChanged(const QString& model);
+    void effortChanged(const QString& effort);
 
 private slots:
     void onItemClicked(QListWidgetItem* item);
@@ -64,7 +66,9 @@ private:
     QLabel*      m_modelLabel;
     QComboBox*   m_modelCombo;
     QLabel*      m_modelHint;
-    QLabel*      m_confirmLabel;
+    QLabel*      m_effortLabel;
+    QComboBox*   m_effortCombo;
+    QLabel*      m_rateLabel;
     QLabel*      m_tokensLabel;
     QTimer*      m_blinkTimer;
     bool         m_dotPhase = true;

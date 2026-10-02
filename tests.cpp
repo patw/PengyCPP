@@ -3249,6 +3249,47 @@ private slots:
         QVERIFY(sawToolMsg);
     }
 
+    void responseRateUsesOnlyFinalOutput() {
+        QJsonObject body{{"usage", QJsonObject{{"prompt_tokens", 1000},
+            {"completion_tokens", 30}, {"total_tokens", 1030}}}};
+        QCOMPARE(responseTokensPerSecond(body, 2.0).value(), 15.0);
+        QVERIFY(!responseTokensPerSecond(body, 0.0));
+        QVERIFY(!responseTokensPerSecond(body, -1.0));
+        QVERIFY(!responseTokensPerSecond(QJsonObject{}, 2.0));
+        body["usage"] = QJsonObject{{"completion_tokens", 0}};
+        QCOMPARE(responseTokensPerSecond(body, 2.0).value(), 0.0);
+    }
+
+    void effortAndRateSurviveUsageAndStorage() {
+        QJsonObject chat = chatCreate("Effort test");
+        for (const QString& effort : {QString(""), QString("high"), QString("max")}) {
+            chat["reasoning_effort"] = effort;
+            chat["last_response_tokens_per_second"] = 42.5;
+            chat = chatAddUsage(chat, QJsonObject{{"prompt_tokens", 10}, {"completion_tokens", 5}, {"total_tokens", 15}});
+            chatSave(chat);
+            const auto restored = chatGet(chat["id"].toString());
+            QCOMPARE(restored["reasoning_effort"].toString(), effort);
+            QCOMPARE(restored["last_response_tokens_per_second"].toDouble(), 42.5);
+        }
+        chatDelete(chat["id"].toString());
+    }
+
+    void llmMissingUsageHasNoRate() {
+        StubLlmServer stub;
+        auto body = QJsonDocument::fromJson(llmCompletion("ok")).object();
+        body.remove("usage");
+        stub.responses << QJsonDocument(body).toJson(QJsonDocument::Compact);
+        LlmParams p;
+        p.baseUrl = stub.baseUrl(); p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hi")};
+        QList<QJsonObject> events;
+        LlmClient().run(p, [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); }, []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+        QCOMPARE(events.size(), 1);
+        QVERIFY(!events[0].contains("tokens_per_second"));
+    }
+
     void llmFinalResponseNoTools() {
         StubLlmServer stub;
         stub.responses << llmCompletion("hello there");
@@ -3270,6 +3311,8 @@ private slots:
         QCOMPARE(events.size(), 1);
         QCOMPARE(events[0]["type"].toString(), QString("final_response"));
         QCOMPARE(events[0]["content"].toString(), QString("hello there"));
+        QVERIFY(events[0]["tokens_per_second"].isDouble());
+        QVERIFY(events[0]["tokens_per_second"].toDouble() > 0);
         QCOMPARE(events[0]["usage"].toObject()["total_tokens"].toInt(), 15);
 
         QCOMPARE(stub.requests.size(), 1);

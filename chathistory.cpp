@@ -1,4 +1,6 @@
 #include "chathistory.h"
+#include <QSignalBlocker>
+#include <cmath>
 #include "themehelper.h"
 #include "iconhelper.h"
 #include "chatmanager.h"
@@ -106,13 +108,37 @@ void ChatHistoryWidget::setupUi() {
     m_modelHint->hide();  // shown only when setModels() has no cached list
     qsLayout->addWidget(m_modelHint);
 
-    m_confirmLabel = new QLabel("Tool Confirm: Confirm All");
-    m_confirmLabel->setStyleSheet(QString("color: %1;").arg(m_theme["fg"]));
-    qsLayout->addWidget(m_confirmLabel);
+    auto* effortRow = new QHBoxLayout;
+    m_effortLabel = new QLabel("Effort:");
+    effortRow->addWidget(m_effortLabel);
+    m_effortCombo = new QComboBox;
+    m_effortCombo->setObjectName("effortCombo");
+    m_effortCombo->addItem("Global setting", "global");
+    m_effortCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_effortCombo->setMinimumContentsLength(10);
+    m_effortCombo->addItem("Provider default", "");
+    m_effortCombo->addItem("Off / none", "none");
+    m_effortCombo->addItem("Low", "low");
+    m_effortCombo->addItem("Medium", "medium");
+    m_effortCombo->addItem("High", "high");
+    m_effortCombo->addItem("Extra high", "xhigh");
+    m_effortCombo->addItem("Max", "max");
+    m_effortCombo->setToolTip("Reasoning effort for this tab; saved with the chat. Global setting follows Settings. "
+        "Provider default sends no hint. Supported levels depend on the model/provider. Changes apply to the next message.");
+    connect(m_effortCombo, qOverload<int>(&QComboBox::activated), this,
+        [this](int) { emit effortChanged(m_effortCombo->currentData().toString()); });
+    effortRow->addWidget(m_effortCombo, 1);
+    qsLayout->addLayout(effortRow);
 
     m_tokensLabel = new QLabel("Tokens: —");
     m_tokensLabel->setStyleSheet(QString("color: %1;").arg(m_theme["fg"]));
     qsLayout->addWidget(m_tokensLabel);
+    m_rateLabel = new QLabel("Last: — tok/s");
+    m_rateLabel->setObjectName("responseRateLabel");
+    m_rateLabel->setToolTip("Last final API response only: API-reported output tokens divided by successful request "
+        "wall time. Includes network latency, prompt processing and reasoning; excludes tool execution, "
+        "confirmation waits and retry backoff. Not a pure decoding speed. — means no measurement available.");
+    qsLayout->addWidget(m_rateLabel);
 
     layout->addWidget(qsFrame);
 
@@ -141,7 +167,7 @@ QListWidget::item:hover { background-color:%5; }
     applyPengyIcon(m_settingsBtn, "settings", theme, scaledSize(16, scale));
     applyPengyIcon(m_tasksBtn, "tasks", theme, scaledSize(16, scale));
     if (m_statusLabel) m_statusLabel->setStyleSheet(QString("font-weight:bold; color:%1;").arg(theme["fg"]));
-    for (QLabel* label : {m_statusText, m_modelLabel, m_confirmLabel, m_tokensLabel}) {
+    for (QLabel* label : {m_statusText, m_modelLabel, m_effortLabel, m_tokensLabel, m_rateLabel}) {
         if (label) label->setStyleSheet(QString("color:%1;").arg(theme["fg"]));
     }
     if (m_modelHint) m_modelHint->setStyleSheet(QString("color:%1; font-size: 9pt;").arg(theme["muted"]));
@@ -344,7 +370,7 @@ void ChatHistoryWidget::setModels(const QStringList& models, const QString& curr
 
     // An empty QLabel still claims a line of layout height, so hide it
     // outright once populated instead of just clearing its text -- otherwise
-    // it leaves a permanent gap above "Tool Confirm:".
+    // it leaves a permanent gap above the effort selector.
     if (models.isEmpty()) {
         m_modelHint->setText("No cached model list — use Settings → Fetch to populate.");
         m_modelHint->show();
@@ -362,16 +388,20 @@ void ChatHistoryWidget::onModelCommit() {
     emit modelChanged(model);
 }
 
-void ChatHistoryWidget::updateQuickSettings(const QString& model, const QString& confirm) {
+void ChatHistoryWidget::updateQuickSettings(const QString& model, const QString& effort) {
     if (!model.isEmpty()) {
         m_modelCombo->setCurrentText(model);
         m_currentModel = model;
     }
-    QString label;
-    if (confirm == "all")       label = "Tool Confirm: YOLO";
-    else if (confirm == "safe") label = "Tool Confirm: Safe";
-    else                        label = "Tool Confirm: Confirm All";
-    m_confirmLabel->setText(label);
+    const QSignalBlocker blocker(m_effortCombo);
+    int index = m_effortCombo->findData(effort);
+    m_effortCombo->setCurrentIndex(index < 0 ? 0 : index);
+}
+
+void ChatHistoryWidget::updateResponseRate(double tokensPerSecond) {
+    m_rateLabel->setText(tokensPerSecond >= 0 && std::isfinite(tokensPerSecond)
+        ? QString("Last: %1 tok/s").arg(tokensPerSecond, 0, 'f', 1)
+        : QString("Last: — tok/s"));
 }
 
 void ChatHistoryWidget::updateTokenUsage(int prompt, int completion) {

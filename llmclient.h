@@ -5,6 +5,7 @@
 #include <functional>
 #include <atomic>
 #include <utility>
+#include <optional>
 
 namespace Tools { class ToolContext; }
 
@@ -20,8 +21,12 @@ struct LlmParams {
     Tools::ToolContext* toolContext = nullptr;  // per-run sudo/subprocess scope
 };
 
+// Final API response only; includes latency/prefill, excludes tools/retries.
+std::optional<double> responseTokensPerSecond(const QJsonObject& body, double seconds);
+
 struct LlmResponse {
     int         httpStatus = 200;
+    double      requestSeconds = 0; // per-attempt wall time, not whole turn
     QByteArray  body;
     QString     retryAfterHeader;  // "retry-after" or "retry-after-ms" value
 };

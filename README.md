@@ -63,6 +63,8 @@ The web UI is for single-user personal use. For remote access, put it behind ngi
 - **16 built-in tools** — Read files and inspect images; write and edit files transactionally; run bash and Python; search the web; explore and glob your filesystem; track multi-step ops with structured to-do lists; ask clarifying questions
 - **Agentic workflow** — The LLM chains multiple tool calls per turn to accomplish complex tasks
 - **Tool confirmation** — Three modes: auto-approve everything, auto-approve read-only tools only, or confirm every call
+- **Per-tab reasoning effort (GUI)** — Adjust Effort for individual chats; choices persist after reopening. Global setting follows Settings; Provider default sends no hint.
+- **Last-response tokens/s (GUI)** — Output tokens divided by the final successful request time, separate from cumulative token usage; excludes tool execution and retry waits.
 - **Theme system** — System/light/dark modes plus 8 accent colours; fonts scale with the UI
 - **Tasks** — Reusable prompt templates with `%placeholder%` tokens for repeat workflows
 - **Model discovery** — Fetch available models from your endpoint with one click

@@ -146,7 +146,6 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     m_reasoningEffort = new QComboBox;
     m_reasoningEffort->addItem("Provider default — do not send reasoning option", "");
     m_reasoningEffort->addItem("Off / none", "none");
-    m_reasoningEffort->addItem("Minimal", "minimal");
     m_reasoningEffort->addItem("Low", "low");
     m_reasoningEffort->addItem("Medium", "medium");
     m_reasoningEffort->addItem("High", "high");

@@ -100,6 +100,7 @@ void MainWindow::setupUi() {
     connect(m_chatHistory, &ChatHistoryWidget::tasksRequested,   this, &MainWindow::openTasks);
     connect(m_chatHistory, &ChatHistoryWidget::deleteRequested,  this, &MainWindow::deleteChat);
     connect(m_chatHistory, &ChatHistoryWidget::modelChanged,     this, &MainWindow::onModelChanged);
+    connect(m_chatHistory, &ChatHistoryWidget::effortChanged, this, &MainWindow::onEffortChanged);
     leftSplitter->addWidget(m_chatHistory);
 
     // Right pane: tab widget + input row
@@ -187,6 +188,15 @@ void MainWindow::applyTheme() {
             applyPengyIcon(button, "close", theme, scaledSize(13, m_runtimeUiScale), "muted", "danger");
         }
     }
+}
+
+void MainWindow::onEffortChanged(const QString& effort) {
+    TabSession* session = tabForChat(m_activeChatId);
+    if (!session) return;
+    if (effort == "global") session->chat.remove("reasoning_effort");
+    else session->chat["reasoning_effort"] = effort;
+    chatSave(session->chat);
+    updateQuickSettingsFor(session);
 }
 
 void MainWindow::loadChatList() {
@@ -659,7 +669,9 @@ void MainWindow::processResponse(TabSession* session, const QJsonArray& apiMessa
             Qt::QueuedConnection);
 
     worker->start(m_config.baseUrl, m_config.apiKey, modelForSession(session),
-                  apiMessages, toolConfirmation, m_config.reasoningEffort,
+                  apiMessages, toolConfirmation,
+                  session->chat["reasoning_effort"].isString()
+                      ? session->chat["reasoning_effort"].toString() : m_config.reasoningEffort,
                   m_config.preserveReasoning);
 
     session->worker = worker;
@@ -802,6 +814,9 @@ void MainWindow::handleFinalResponse(TabSession* session, const QJsonObject& res
     // across reloads. Done *before* the message-append save below so both
     // land in the same write instead of the usage total lagging a turn behind.
     session->chat = chatAddUsage(session->chat, response["usage"].toObject());
+    if (response["tokens_per_second"].isDouble())
+        session->chat["last_response_tokens_per_second"] = response["tokens_per_second"];
+    else session->chat.remove("last_response_tokens_per_second");
     QJsonObject cumulative = session->chat["usage"].toObject();
     session->promptTokens     = cumulative["prompt_tokens"].toInt();
     session->completionTokens = cumulative["completion_tokens"].toInt();
@@ -825,8 +840,9 @@ void MainWindow::handleFinalResponse(TabSession* session, const QJsonObject& res
             display["reasoning_content"] = asstMsg["reasoning"];
         }
         session->chatView->appendMessage("assistant", display);
-        chatSave(session->chat);
     }
+    // Persist metrics even when there is no visible text.
+    chatSave(session->chat);
 
     if (session == tabForChat(m_activeChatId))
         updateQuickSettingsFor(session);
@@ -1091,10 +1107,11 @@ void MainWindow::pollToolConfirmation() {
 // ── Quick settings panel ──────────────────────────────────────────
 
 void MainWindow::updateQuickSettingsFor(TabSession* session) {
-    m_chatHistory->updateQuickSettings(modelForSession(session), m_config.toolConfirmation);
-
-    if (session->promptTokens || session->completionTokens)
-        m_chatHistory->updateTokenUsage(session->promptTokens, session->completionTokens);
+    m_chatHistory->updateQuickSettings(modelForSession(session),
+        session->chat["reasoning_effort"].isString()
+            ? session->chat["reasoning_effort"].toString() : QString("global"));
+    m_chatHistory->updateTokenUsage(session->promptTokens, session->completionTokens);
+    m_chatHistory->updateResponseRate(session->chat["last_response_tokens_per_second"].toDouble(-1));
 
     // Drive the status dot + label from this tab's state
     if (session->toolRunning)

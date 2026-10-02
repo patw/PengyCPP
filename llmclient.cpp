@@ -11,6 +11,7 @@
 #include <QThread>
 #include <random>
 #include <chrono>
+#include <cmath>
 
 static const int    MAX_RETRIES       = 5;
 static const double BASE_DELAY_SECS   = 1.0;
@@ -300,6 +301,14 @@ static void interruptibleSleep(double seconds, const std::function<bool()>& isCa
     }
 }
 
+std::optional<double> responseTokensPerSecond(const QJsonObject& body, double seconds) {
+    const QJsonValue output = body["usage"].toObject()["completion_tokens"];
+    if (!output.isDouble() || output.toDouble() < 0 || !std::isfinite(seconds) || seconds <= 0)
+        return std::nullopt;
+    const double rate = output.toDouble() / seconds;
+    return std::isfinite(rate) ? std::optional<double>(rate) : std::nullopt;
+}
+
 static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
                             const QString& apiKey, int timeoutMs) {
     QNetworkAccessManager mgr;
@@ -309,6 +318,7 @@ static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
     req.setRawHeader("api-key",       apiKey.toUtf8());
     req.setTransferTimeout(timeoutMs);
 
+    const auto started = std::chrono::steady_clock::now();
     QNetworkReply* reply = mgr.post(req, body);
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
@@ -317,6 +327,7 @@ static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
     LlmResponse resp;
     resp.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     resp.body       = reply->readAll();
+    resp.requestSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
     // Capture Retry-After headers
     if (reply->hasRawHeader("retry-after-ms")) {
@@ -733,12 +744,16 @@ void LlmClient::run(const LlmParams& params,
         finalMsg["role"] = "assistant";
         finalMsg["content"] = content;
         preserveReasoningFields(finalMsg, msg, params.preserveReasoning);
-        onEvent(QJsonObject{
+        QJsonObject event{
             {"type",    "final_response"},
             {"content", content},
             {"message", finalMsg},
             {"usage",   accUsage}
-        });
+        };
+        // Final response output only; never accumulated turn usage.
+        if (const auto rate = responseTokensPerSecond(body, lastResp.requestSeconds))
+            event["tokens_per_second"] = *rate;
+        onEvent(event);
         return;
     }
 }

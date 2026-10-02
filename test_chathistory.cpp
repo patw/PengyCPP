@@ -114,6 +114,44 @@ int main(int argc, char** argv) {
         requireTrue(w.testModelHintHidden(), "hint actually hidden, not just text-cleared");
     }
 
+    // Tab refreshes must not emit changes or retain another tab's metrics.
+    {
+        ChatHistoryWidget w;
+        auto* effort = w.findChild<QComboBox*>("effortCombo");
+        auto* rate = w.findChild<QLabel*>("responseRateLabel");
+        requireTrue(effort && rate, "effort and throughput controls exist");
+        requireEqual(effort->findData("minimal"), -1, "legacy Minimal effort is not offered");
+        int changes = 0;
+        QString selected;
+        QObject::connect(&w, &ChatHistoryWidget::effortChanged, [&changes, &selected](const QString& value) {
+            ++changes;
+            selected = value;
+        });
+        w.updateQuickSettings("model-a", "high");
+        requireEqual(effort->currentData().toString(), QString("high"), "restores tab effort");
+        requireEqual(changes, 0, "programmatic update does not commit effort");
+        w.updateQuickSettings("model-b", "");
+        requireEqual(effort->currentData().toString(), QString(""), "explicit provider default");
+        w.updateQuickSettings("model-c", "global");
+        requireEqual(effort->currentData().toString(), QString("global"), "global is distinct from provider default");
+        effort->setCurrentIndex(effort->findData("max"));
+        QMetaObject::invokeMethod(effort, "activated", Q_ARG(int, effort->currentIndex()));
+        requireEqual(changes, 1, "user selection commits once");
+        requireEqual(selected, QString("max"), "effort signal carries API value");
+        w.updateResponseRate(42.25);
+        requireTrue(rate->text().contains("42.3"), "rate displayed to one decimal");
+        w.updateResponseRate(0);
+        requireTrue(rate->text().contains("0.0"), "zero output is a valid measurement");
+        w.updateResponseRate(-1);
+        requireEqual(rate->text(), QString("Last: — tok/s"), "unmeasured tab clears rate");
+        w.updateTokenUsage(100, 30);
+        w.updateTokenUsage(0, 0);
+        bool cleared = false;
+        for (auto* label : w.findChildren<QLabel*>())
+            if (label->text() == "Tokens: —") cleared = true;
+        requireTrue(cleared, "empty tab clears cumulative usage");
+    }
+
     std::cout << "All chathistory tests passed." << std::endl;
     return 0;
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.11.0
+
+- **Per-tab reasoning effort and last-response throughput.** The GUI replaces Tool Confirm with an Effort selector saved with each chat. Global setting follows Settings; Provider default explicitly omits the reasoning hint. Minimal is no longer offered in GUI/web Settings or the tab dropdown. Last-response tok/s uses API output tokens divided by the final successful request wall time, including latency/prefill/reasoning but excluding tools and retry waits. The rate is saved separately from cumulative token totals; switching to an empty tab clears both displays. Tool-confirmation policy remains in Settings.
+
+- **Reliable proxy continuation.** Preserve opaque proxy reasoning/continuation envelopes across tool calls and saved-chat resumes, even when visible reasoning preservation is off; drop model-bound proxy state when switching models.
+- Coordinated v1.11.0 release across the Python, Rust, and C++ editions.
+
 ## v1.10.0
 
 - **Native PowerShell on Windows (`run_powershell`, ported from Python Pengy).** On Windows the model now gets `run_powershell` for local commands instead of a `run_bash` that tried to start `bash`, which a clean Windows install doesn't have. It uses PowerShell 7 (`pwsh`) when installed and otherwise the Windows PowerShell 5.1 that ships with Windows (never `cmd.exe`). The tool description tells the model which version it has, and whether Pengy is running as Administrator: if not, admin-only steps are reported back to the user instead of attempted through `Start-Process -Verb RunAs` or `sudo`. Scripts are run from a UTF-8 temp file compiled with `[ScriptBlock]::Create` (the prelude is byte-identical across editions), so there is no command-line quoting, no execution-policy prompt, and no `-EncodedCommand` for endpoint security to flag. Output is plain UTF-8 text with no ANSI colour or progress noise, and a script that throws or fails to parse exits 1. On Windows `run_bash` is kept only for remote hosts (`host` is required); remote sudo works exactly as on Linux and macOS. Linux and macOS are unchanged.

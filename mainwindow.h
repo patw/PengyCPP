@@ -47,6 +47,7 @@ private slots:
     void redactLast();
     void pollToolConfirmation();
     void onModelChanged(const QString& model);
+    void onEffortChanged(const QString& effort);
 
 private:
     // ── UI setup ──────────────────────────────────────────────────
