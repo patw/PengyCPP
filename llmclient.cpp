@@ -175,17 +175,48 @@ static void stripImageUrlParts(QJsonArray& messages) {
     }
 }
 
-static const QStringList IMAGE_ERROR_KEYWORDS = {
-    "image", "multimodal", "vision", "not support", "unsupported"
-};
+static QString errorDetail(const QJsonObject& body, const QByteArray& raw) {
+    const QJsonValue error = body["error"];
+    const QString message = error.toObject()["message"].toString();
+    if (!message.isEmpty()) return message;
+    if (error.isString()) return error.toString();
+    if (body["message"].isString()) return body["message"].toString();
+    return QString::fromUtf8(raw);
+}
 
-static bool isImageInputError(int statusCode, const QString& errorMsg) {
+static const QString LEGACY_TEXT_ONLY_ERROR =
+    "Only text content parts are supported by this upstream format";
+
+static bool isImageInputError(int statusCode, const QJsonObject& body, const QString& errorMsg) {
     if (statusCode != 400) return false;
+    const QJsonObject error = body["error"].toObject();
+    // Structured adapter errors are authoritative. Do not strip images to hide
+    // malformed requests, unsupported audio, image roles/detail, or options.
+    if (error["source"].toString() == "openai-proxy")
+        return error["code"].toString() == "unsupported_content_type"
+            && error["content_type"].toString() == "image_url";
     QString lower = errorMsg.toLower();
-    for (const QString& kw : IMAGE_ERROR_KEYWORDS) {
-        if (lower.contains(kw)) return true;
-    }
-    return false;
+    while (lower.endsWith('.')) lower.chop(1);
+    if (lower == LEGACY_TEXT_ONLY_ERROR.toLower()) return true;
+    static const QStringList phrases = {
+        "does not support image", "doesn't support image", "do not support image",
+        "does not support vision", "does not support multimodal",
+        "image inputs are not supported", "image input is not supported",
+        "images are not supported", "image_url is not supported",
+        "unsupported image input", "unsupported vision input",
+    };
+    for (const QString& phrase : phrases)
+        if (lower.contains(phrase)) return true;
+    return (lower.contains("text-only") || lower.contains("only text"))
+        && (lower.contains("image") || lower.contains("vision") || lower.contains("multimodal"));
+}
+
+static QString imageRejectionNotice(const QJsonObject& body, QString detail) {
+    while (detail.endsWith('.')) detail.chop(1);
+    if (body["error"].toObject()["source"].toString() == "openai-proxy"
+            || detail.compare(LEGACY_TEXT_ONLY_ERROR, Qt::CaseInsensitive) == 0)
+        return "[The proxy adapter cannot translate image inputs for this route. Images were omitted from this request; only file metadata is available. This is not evidence that the underlying model lacks vision. Do not claim to have inspected the images.]";
+    return "[The API endpoint rejected image/vision inputs as unsupported. Images were omitted from this request; only file metadata is available. Do not claim to have inspected the images.]";
 }
 
 static bool isContextLimitError(int status, const QJsonObject& body, const QString& detail) {
@@ -407,6 +438,8 @@ void LlmClient::run(const LlmParams& params,
     QJsonArray current = params.messages;
     QJsonObject accUsage = usage0();
     bool yoloThisTurn = false;
+    bool imageInputRejected = false;
+    QString imageRejection;
 
     for (;;) {
         if (isCancelled()) return;
@@ -414,6 +447,10 @@ void LlmClient::run(const LlmParams& params,
         // Compact a private request copy only. Events and persisted history
         // continue to use the original current messages.
         QJsonArray requestMessages = withoutCrossModelProxyState(current, params.model);
+        if (imageInputRejected) {
+            stripImageUrlParts(requestMessages);
+            requestMessages.append(QJsonObject{{"role", "user"}, {"content", imageRejection}});
+        }
         int contextRetries = 0;
         QJsonObject payload{
             {"model",       params.model},
@@ -428,7 +465,6 @@ void LlmClient::run(const LlmParams& params,
         // ── API call with 429 / 529 exponential backoff ──────────
         LlmResponse lastResp;
         bool gotSuccess = false;
-        bool imagesStripped = false;
         int rateRetries = 0;
         for (;;) {
             if (isCancelled()) return;
@@ -445,27 +481,20 @@ void LlmClient::run(const LlmParams& params,
                 break;
             }
 
-            // ── Graceful handling: model doesn't support images ──
-            {
-                QString msg = body["error"].toObject()["message"].toString(
-                    QString::fromUtf8(lastResp.body));
-                if (isImageInputError(code, msg) && !isContextLimitError(code, body, msg)
-                        && hasImageUrlParts(current)) {
-                    stripImageUrlParts(current);
-                    current.append(QJsonObject{
-                        {"role",    "user"},
-                        {"content", QStringLiteral(
-                            "[This AI model does not support image/vision inputs, "
-                            "so the image could not be attached. "
-                            "The file metadata was returned above.]")},
-                    });
-                    imagesStripped = true;
-                    break;  // exit retry loop, outer loop will restart
-                }
+            const QString detail = errorDetail(body, lastResp.body);
+            // Retry the outgoing copy only. Preserve stored history, prior
+            // context reductions, and opaque reasoning/tool continuation state.
+            if (isImageInputError(code, body, detail) && !isContextLimitError(code, body, detail)
+                    && hasImageUrlParts(requestMessages)) {
+                imageInputRejected = true;
+                imageRejection = imageRejectionNotice(body, detail);
+                stripImageUrlParts(requestMessages);
+                requestMessages.append(QJsonObject{
+                    {"role", "user"}, {"content", imageRejection},
+                });
+                payload["messages"] = requestMessages;
+                continue; // bounded: this request no longer contains image parts
             }
-
-            const QString detail = body["error"].toObject()["message"].toString(
-                QString::fromUtf8(lastResp.body));
             if (isContextLimitError(code, body, detail)) {
                 if (contextRetries < MAX_CONTEXT_RETRIES) {
                     const int saved = compactToolResults(requestMessages, contextRetries == 0 ? 1 : 2);
@@ -490,8 +519,7 @@ void LlmClient::run(const LlmParams& params,
             if (RETRYABLE_STATUSES.contains(code) && rateRetries < MAX_RETRIES) {
                 double delay = backoffDelay(rateRetries, lastResp.retryAfterHeader);
                 ++rateRetries;
-                QString msg = body["error"].toObject()["message"].toString(
-                    QString::fromUtf8(lastResp.body));
+                QString msg = errorDetail(body, lastResp.body);
                 onEvent(QJsonObject{
                     {"type",         "retrying"},
                     {"attempt",      rateRetries},
@@ -516,14 +544,9 @@ void LlmClient::run(const LlmParams& params,
             break;
         }
 
-        if (imagesStripped) {
-            continue;  // restart outer loop with images removed
-        }
-
         if (!gotSuccess) {
             QJsonObject body = QJsonDocument::fromJson(lastResp.body).object();
-            QString msg = body["error"].toObject()["message"].toString(
-                QString::fromUtf8(lastResp.body));
+            QString msg = errorDetail(body, lastResp.body);
             if (lastResp.httpStatus <= 0) {
                 // The request never reached the endpoint -- syncPost() wrote the
                 // transport failure into an error body for us.  With a local

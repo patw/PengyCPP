@@ -86,3 +86,22 @@ Untagged reasoning fields still follow the existing preservation preference.
 - **Reasoning models:** OpenAI o-series, Claude (via OpenRouter), and some Qwen models support reasoning traces. Set `reasoning_effort` to control detail level.
 - **Rate limits:** Cloud providers have rate limits on free tiers. Exponential backoff is built in — Pengy retries 429/529 responses automatically.
 - **Tool calling quirks:** Not all models do it well, even if the provider supports it. Smaller models (3B–8B params) often struggle with multi-turn tool use. If tools aren't being called, try a larger model.
+
+## Native proxy adapters and image recovery
+
+When using `openai-proxy` with a native Responses/Anthropic route, user image
+parts are translated by the proxy, not discarded. Responses preserves image
+URLs/data URLs and `auto`/`low`/`high` detail; Anthropic accepts URL/base64 image
+sources but rejects explicit non-auto detail. Other unsupported content and
+malformed requests produce structured local errors with `source: openai-proxy`.
+
+Pengy retries without images only for an explicit unsupported-image-input error
+(or the original proxy's exact text-only error). The retry changes the outgoing
+request copy only, preserving stored attachments and opaque reasoning/tool
+state, and tells the model that the images were **not inspected**. Adapter
+limitations are not presented as proof that the model lacks vision. Invalid
+images, unsupported formats/detail, audio/options, context errors, and unrelated
+HTTP 400s are not silently converted into text-only success.
+
+Rejected images remain omitted on subsequent tool rounds of the same turn,
+without changing the stored transcript or future turns.

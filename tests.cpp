@@ -26,6 +26,7 @@
 #include "sanitize.h"
 #include "web/webserver.h"
 #include "attachments.h"
+#include "provider_messages.h"
 #include "image_utils.h"
 #include <QTcpServer>
 #include <QCryptographicHash>
@@ -3470,6 +3471,146 @@ private slots:
             if (v.toObject()["role"].toString() == "user")
                 QVERIFY(v.toObject()["content"].isString());
         }
+    }
+
+    void llmImageRecovery_data() {
+        QTest::addColumn<QByteArray>("errorBody");
+        QTest::addColumn<bool>("proxyError");
+        QTest::newRow("structured-adapter") << QByteArray(R"({"error":{"source":"openai-proxy","code":"unsupported_content_type","content_type":"image_url","message":"Cannot translate pictures"}})") << true;
+        QTest::newRow("legacy-text-only") << QByteArray(R"({"error":"Only text content parts are supported by this upstream format"})") << true;
+        QTest::newRow("upstream-image-unsupported") << QByteArray(R"({"error":{"message":"This model does not support image inputs"}})") << false;
+    }
+
+    void llmImageRecovery() {
+        QFETCH(QByteArray, errorBody);
+        QFETCH(bool, proxyError);
+        QTemporaryDir dir;
+        QString file = dir.path() + "/shot.png";
+        QImage image(48, 32, QImage::Format_RGB32);
+        image.fill(Qt::blue);
+        QVERIFY(image.save(file));
+        const QJsonObject envelope{{"format", "openai-proxy/reasoning-v1"},
+            {"proxy_model", "stub-model"}, {"provider", "openai_responses"},
+            {"model", "upstream"}, {"blocks", QJsonArray{QJsonObject{{"type", "reasoning"}, {"encrypted_content", "opaque"}}}}};
+        StubLlmServer stub;
+        stub.statuses << 200 << 400 << 200;
+        stub.responses << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_image", {{"path", file}})},
+                                         10, 5, {{"reasoning_details", envelope}})
+                       << errorBody << llmCompletion("Image not inspected");
+        LlmParams p;
+        p.baseUrl = stub.baseUrl(); p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("look")}; p.toolConfirmation = "all";
+        const QJsonArray original = p.messages;
+        QList<QJsonObject> events;
+        Tools::ToolContext context;
+        p.toolContext = &context;
+        LlmClient().run(p, [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); }, []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+        QCOMPARE(p.messages, original);
+        QCOMPARE(stub.requests.size(), 3);
+        QCOMPARE(events.size(), 4);
+        QCOMPARE(events[2]["type"].toString(), QString("tool_result"));
+        QCOMPARE(events.last()["type"].toString(), QString("final_response"));
+        const QJsonArray before = stub.requests[1]["messages"].toArray();
+        const QJsonArray after = stub.requests[2]["messages"].toArray();
+        QCOMPARE(before.last().toObject()["content"].toArray()[1].toObject()["type"].toString(), QString("image_url"));
+        QVERIFY(after[3].toObject()["content"].isString());
+        QCOMPARE(after[1].toObject()["reasoning_details"].toObject(), envelope);
+        QCOMPARE(after[2].toObject()["tool_call_id"].toString(), QString("tc1"));
+        const QString notice = after.last().toObject()["content"].toString();
+        QVERIFY(notice.contains("Do not claim to have inspected"));
+        QCOMPARE(notice.contains("proxy adapter"), proxyError);
+    }
+
+    void llmImageBadRequestNotRetried_data() {
+        QTest::addColumn<QByteArray>("errorBody");
+        QTest::newRow("invalid-url") << QByteArray(R"({"error":{"message":"Invalid image URL"}})");
+        QTest::newRow("invalid-format") << QByteArray(R"({"error":{"message":"Unsupported image format"}})");
+        QTest::newRow("sampling") << QByteArray(R"({"error":{"message":"Unsupported parameter: temperature"}})");
+        QTest::newRow("structured-invalid") << QByteArray(R"({"error":{"source":"openai-proxy","code":"invalid_chat_request","content_type":"image_url","message":"This model does not support image inputs"}})");
+        QTest::newRow("structured-audio") << QByteArray(R"({"error":{"source":"openai-proxy","code":"unsupported_content_type","content_type":"input_audio","message":"This model does not support image inputs"}})");
+        QTest::newRow("structured-detail") << QByteArray(R"({"error":{"source":"openai-proxy","code":"unsupported_image_detail","message":"Unsupported image detail"}})");
+        QTest::newRow("structured-role") << QByteArray(R"({"error":{"source":"openai-proxy","code":"unsupported_content_role","content_type":"image_url","message":"Image input is only supported in user messages"}})");
+    }
+
+    void llmImageBadRequestNotRetried() {
+        QFETCH(QByteArray, errorBody);
+        StubLlmServer stub;
+        stub.statuses << 400; stub.responses << errorBody;
+        LlmParams p;
+        p.baseUrl = stub.baseUrl(); p.model = "stub-model";
+        const QJsonArray parts{
+            QJsonObject{{"type", "text"}, {"text", "look"}},
+            QJsonObject{{"type", "image_url"}, {"image_url", QJsonObject{{"url", "data:image/png;base64,aW1hZ2U="}}}}
+        };
+        p.messages = QJsonArray{QJsonObject{{"role", "user"}, {"content", parts}}};
+        const QJsonArray original = p.messages;
+        QList<QJsonObject> events;
+        LlmClient().run(p, [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); }, []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+        QCOMPARE(stub.requests.size(), 1);
+        QCOMPARE(events.size(), 1);
+        QCOMPARE(events.last()["type"].toString(), QString("error"));
+        QCOMPARE(p.messages, original);
+    }
+
+    void llmAttachmentRecoveryBoundedAndHistoryPreserved() {
+        QTemporaryDir dir;
+        const QString file = dir.path() + "/attached.png";
+        QImage image(32, 32, QImage::Format_RGB32); image.fill(Qt::red);
+        QVERIFY(image.save(file));
+        const QJsonObject ref = attachmentImportImage(file, "attached.png");
+        QVERIFY(!ref.isEmpty());
+        const QJsonArray persisted{QJsonObject{{"role", "user"}, {"content", "attachment"}, {"attachments", QJsonArray{ref}}}};
+        const QJsonArray original = persisted;
+        const QByteArray error = R"({"error":{"source":"openai-proxy","code":"unsupported_content_type","content_type":"image_url","message":"Cannot translate pictures"}})";
+        StubLlmServer stub;
+        stub.statuses << 400 << 400; stub.responses << error << error;
+        LlmParams p;
+        p.baseUrl = stub.baseUrl(); p.model = "stub-model";
+        p.messages = messagesForProvider(persisted, 4, 4096, 4.5, 85);
+        const QJsonArray outgoing = p.messages;
+        QList<QJsonObject> events;
+        LlmClient().run(p, [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); }, []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+        QCOMPARE(stub.requests.size(), 2);
+        QCOMPARE(stub.requests[1]["messages"].toArray()[0].toObject()["content"].toString(), QString("attachment"));
+        QCOMPARE(p.messages, outgoing); QCOMPARE(persisted, original);
+        QCOMPARE(events.last()["type"].toString(), QString("error"));
+        QVERIFY(events.last()["message"].toString().contains("Cannot translate pictures"));
+    }
+
+    void llmRejectedImagesStayOmittedInLaterToolRounds() {
+        QTemporaryDir dir;
+        const QString file = dir.path() + "/note.txt";
+        { QFile f(file); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("metadata"); }
+        StubLlmServer stub;
+        stub.statuses << 400 << 200 << 200;
+        stub.responses << R"({"error":{"source":"openai-proxy","code":"unsupported_content_type","content_type":"image_url","message":"Cannot translate pictures"}})"
+                       << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_file", {{"path", file}})})
+                       << llmCompletion("done");
+        LlmParams p;
+        p.baseUrl = stub.baseUrl(); p.model = "stub-model"; p.toolConfirmation = "all";
+        const QJsonArray parts{
+            QJsonObject{{"type", "text"}, {"text", "look"}},
+            QJsonObject{{"type", "image_url"}, {"image_url", QJsonObject{{"url", "data:image/png;base64,aW1hZ2U="}}}}
+        };
+        p.messages = QJsonArray{QJsonObject{{"role", "user"}, {"content", parts}}};
+        const QJsonArray original = p.messages;
+        QList<QJsonObject> events;
+        LlmClient().run(p, [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); }, []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+        QCOMPARE(stub.requests.size(), 3); QCOMPARE(p.messages, original);
+        for (int i = 1; i < 3; ++i) {
+            const QJsonArray messages = stub.requests[i]["messages"].toArray();
+            QCOMPARE(messages[0].toObject()["content"].toString(), QString("look"));
+            QVERIFY(messages.last().toObject()["content"].toString().contains("not evidence"));
+        }
+        QCOMPARE(events.last()["type"].toString(), QString("final_response"));
     }
 
     void llmSafeModePausesForWriteTool() {
