@@ -37,6 +37,7 @@ class Recovery {
     int summaryCalls = 0;
 
   private:
+    bool summaryPlan(const QJsonArray &messages, Plan &result) const;
     QJsonObject m_state;
     QString m_path;
 };

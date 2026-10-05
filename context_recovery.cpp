@@ -185,6 +185,14 @@ bool Recovery::plan(const QJsonArray &msgs, Plan &p) const {
     p = Plan{};
     p.before = size(beforeMsgs);
     p.state = m_state;
+    // Reserve attempt 4 only when a valid summary fits its call budget.
+    if (attempts == 3) {
+        Plan summary = p;
+        if (summaryPlan(msgs, summary)) {
+            p = summary;
+            return true;
+        }
+    }
     if (!p.state["reasoning"].toBool()) {
         p.state["reasoning"] = true;
         if (size(applyState(p.state, msgs)) < p.before) {
@@ -226,6 +234,9 @@ bool Recovery::plan(const QJsonArray &msgs, Plan &p) const {
             return true;
         }
     }
+    return summaryPlan(msgs, p);
+}
+bool Recovery::summaryPlan(const QJsonArray &msgs, Plan &p) const {
     QVector<int> users, boundaries;
     for (int i = 0; i < msgs.size(); ++i)
         if (msgs[i].toObject()["role"] == "user" && !synthetic(msgs[i].toObject()))

@@ -3291,6 +3291,75 @@ private slots:
         QVERIFY(!events[0].contains("tokens_per_second"));
     }
 
+    void recoverySharedFinalAttemptReservationFixtures() {
+        QFile file(QString(PENGY_SOURCE_DIR) + "/tests/fixtures/context_recovery_reserve.json");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        for (const auto &value : QJsonDocument::fromJson(file.readAll()).array()) {
+            auto fixture = value.toObject();
+            const auto messages = fixture["messages"].toArray();
+            const auto original = messages;
+            ContextRecovery::Options options; options.keepTurns = fixture["keep_turns"].toInt();
+            ContextRecovery::Recovery recovery(messages, "test", "m", options);
+            recovery.attempts = fixture["initial_attempts"].toInt();
+            recovery.summaryCalls = fixture["summary_calls"].toInt();
+            QJsonArray strategies;
+            for (int i = recovery.attempts; i < 4; ++i) {
+                ContextRecovery::Plan plan;
+                if (!recovery.plan(messages, plan)) break;
+                const auto before = recovery.apply(messages);
+                if (!plan.chunks.isEmpty() && fixture["failure"] == "failure") {
+                    QCOMPARE(recovery.apply(messages), before); break;
+                }
+                QStringList summaries;
+                for (const auto &chunk : plan.chunks) summaries << (fixture["failure"] == "nonreducing" ? chunk : fixture["summary"].toString());
+                QString error;
+                auto event = recovery.commit(plan, summaries, messages, error);
+                if (event.isEmpty()) { QCOMPARE(recovery.apply(messages), before); break; }
+                strategies.append(event["strategy"]);
+            }
+            QCOMPARE(strategies, fixture["strategies"].toArray());
+            QCOMPARE(recovery.attempts, fixture["expected_attempts"].toInt());
+            QCOMPARE(recovery.apply(messages), fixture["expected"].toArray());
+            QCOMPARE(messages, original);
+            if (fixture["failure"] == "") { ContextRecovery::Plan plan; QVERIFY(!recovery.plan(messages, plan)); }
+        }
+    }
+
+    void recoveryFourthAttemptReachesSummaryForContextAndEmptyLength() {
+        QFile file(QString(PENGY_SOURCE_DIR) + "/tests/fixtures/context_recovery_reserve.json");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto fixture = QJsonDocument::fromJson(file.readAll()).array()[0].toObject();
+        for (bool emptyLength : {false, true}) {
+            StubLlmServer stub;
+            for (int i = 0; i < 4; ++i) {
+                if (emptyLength) {
+                    auto blank = QJsonDocument::fromJson(llmCompletion("")).object();
+                    auto choice = blank["choices"].toArray()[0].toObject(); choice["finish_reason"] = "length";
+                    blank["choices"] = QJsonArray{choice}; stub.responses << QJsonDocument(blank).toJson(); stub.statuses << 200;
+                } else {
+                    stub.responses << R"({"error":{"code":"context_length_exceeded","message":"context length exceeded"}})"; stub.statuses << 400;
+                }
+            }
+            stub.responses << llmCompletion(fixture["summary"].toString()) << llmCompletion("HARBOR_17 /tmp/harbor-17 audit pending");
+            stub.statuses << 200 << 200;
+            LlmParams p; p.baseUrl = stub.baseUrl(); p.model = "m"; p.messages = fixture["messages"].toArray(); p.toolConfirmation = "all";
+            const auto original = p.messages;
+            QList<QJsonObject> events;
+            LlmClient().run(p, [&](const QJsonObject &e) { events.append(e); }, []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
+            QCOMPARE(events.size(), 5);
+            QCOMPARE(events[3]["attempt"].toInt(), 4);
+            QCOMPARE(events[3]["strategy"].toString(), QString("history_summary"));
+            QCOMPARE(events[4]["type"].toString(), QString("final_response"));
+            QCOMPARE(stub.requests.size(), 6);
+            QVERIFY(!stub.requests[4].contains("tools"));
+            auto outgoing = stub.requests[5]["messages"].toArray();
+            QVERIFY(outgoing[1].toObject()["content"].toString().contains("HARBOR_17"));
+            QVERIFY(outgoing.last().toObject()["content"].toString().startsWith('B'));
+            QCOMPARE(outgoing[outgoing.size()-2].toObject()["tool_calls"].toArray()[0].toObject()["id"].toString(), QString("newest"));
+            QCOMPARE(p.messages, original);
+        }
+    }
+
     void recoverySharedPythonFixtures() {
         QFile file(QString(PENGY_SOURCE_DIR) + "/tests/fixtures/context_recovery.json");
         QVERIFY(file.open(QIODevice::ReadOnly));

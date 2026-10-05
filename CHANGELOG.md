@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Reserve the final context-recovery retry for history.** Attempt 4 prioritizes a summary of eligible older completed turns instead of allowing reasoning/tool reductions to consume the entire retry budget. If no eligible turns or insufficient summary-call budget exist, the last attempt remains available for tool compaction. Failed or non-reducing summaries stop safely; the active task, recent-turn protection, full transcript, and four-attempt limit are unchanged.
+
 ## v1.11.2
 
 - **Automatic context recovery.** On explicit context overflow or an empty length-truncated reply, progressively reduce a provider-only conversation view: omit historical reasoning text, preview/stub large tool results, then summarize old completed turns. Protect instructions, the active task/tool chain and recent turns; keep required continuation state and the full transcript. Bounded retries and tool-free summary calls never rerun completed tools. Durable validated checkpoints avoid restoring oversized history next turn; recovery notices explain what changed. Optional output-token allowance and recovery settings are documented in `docs/context-recovery.md`.

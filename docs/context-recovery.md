@@ -8,6 +8,8 @@ Recovery starts after an explicit provider context-limit error (400/413/422 with
 
 Each retry must make the provider view smaller. The per-user-run limit is **four reduction/retry attempts**, shared across tool rounds:
 
+**Attempt 4 reserves a chance for history summarization.** If an eligible completed-turn summary fits the remaining summary-call budget, it takes priority over additional reasoning/tool reductions on the final attempt. Otherwise tool compaction can still use that attempt. A failed, incomplete, or non-reducing selected summary does not trigger a destructive fallback or extra retry. Attempts 1–3 keep the normal order below; summarization can also happen earlier when no reasoning/tool reductions remain.
+
 1. Omit historical `reasoning` / `reasoning_content` from completed tasks. Keep the active task's reasoning and all `reasoning_details`, which may contain provider-required signatures or opaque continuation state.
 2. Replace large tool-result bodies with 1,500-character head/tail previews, then omission stubs if needed. Preserve assistant tool-call structure and matching result IDs. Prefer older results; the latest result is reduced only when no older eligible result remains.
 3. Summarize whole oldest completed turns. Preserve system/developer instructions, the current user task and its tool chain, and the configured recent completed turns. `read_image` synthetic multimodal follow-ups are not new task boundaries.
