@@ -426,6 +426,7 @@ void WebServer::routeChatSend(const QString& chatId,
     m_persistedCount[chatId] = 0;
 
     auto* worker = new WebChatWorker(this);
+    worker->recoveryOptions = {cfg.autoContextRecovery, cfg.recoveryKeepTurns, chatId, cfg.outputTokenLimit, cfg.outputTokenParameter};
     m_workers[chatId] = worker;
 
     // Push most events straight to SSE; enrich final_response with updated title

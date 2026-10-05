@@ -8,6 +8,7 @@
 #include <limits.h>
 
 #include "tools.h"
+#include "context_recovery.h"
 
 class QThread;
 
@@ -21,6 +22,7 @@ public:
                const QString& toolConfirmation, const QString& reasoningEffort,
                bool preserveReasoning);
 
+    ContextRecovery::Options recoveryOptions;
     void cancel();
     void sendConfirmation(bool confirmed, bool yoloTurn);
 

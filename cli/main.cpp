@@ -526,8 +526,10 @@ private:
             out(dim("Thinking..."));
 
         LlmClient client;
+        LlmParams params{cfg.baseUrl, cfg.apiKey, cfg.model, sendMsgs, cfg.toolConfirmation, cfg.reasoningEffort, cfg.preserveReasoning, cfg.llmTimeout};
+        params.recovery = {cfg.autoContextRecovery, cfg.recoveryKeepTurns, m_noSave ? QString() : chat["id"].toString(), cfg.outputTokenLimit, cfg.outputTokenParameter};
         client.run(
-            LlmParams{cfg.baseUrl, cfg.apiKey, cfg.model, sendMsgs, cfg.toolConfirmation, cfg.reasoningEffort, cfg.preserveReasoning, cfg.llmTimeout},
+            params,
             [this](const QJsonObject& ev) { onEvent(ev); },
             [this]() -> std::pair<bool,bool> { return onConfirm(); },
             []() -> bool { return false; },
@@ -573,6 +575,7 @@ private:
             appendAndSave(ev["message"].toObject());
 
         } else if (type == "context_compacted") {
+            if (!ev["message"].toString().isEmpty()) { err(ev["message"].toString()); return; }
             outln(yellow(QString("Context limit — retrying with %1 fewer tool-output characters (%2/%3)")
                 .arg(ev["chars_removed"].toInt())
                 .arg(ev["attempt"].toInt())

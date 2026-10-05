@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Pengy VERSION 1.11.1 LANGUAGES CXX)
+project(Pengy VERSION 1.11.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,6 +26,7 @@ add_executable(pengy-cli
     image_utils.cpp
     attachments.cpp
     provider_messages.cpp
+    context_recovery.cpp
 )
 # Qt6::Gui (not Widgets) for QImage — read_image decodes and rescales in tools.cpp.
 target_link_libraries(pengy-cli PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
@@ -48,6 +49,7 @@ add_executable(pengy-web
     image_utils.cpp
     attachments.cpp
     provider_messages.cpp
+    context_recovery.cpp
 )
 target_link_libraries(pengy-web PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
 target_include_directories(pengy-web PRIVATE ${CMAKE_BINARY_DIR})
@@ -65,6 +67,7 @@ add_executable(pengy WIN32
     image_utils.cpp
     attachments.cpp
     provider_messages.cpp
+    context_recovery.cpp
     chatworker.cpp
     mainwindow.cpp
     chathistory.cpp
@@ -142,6 +145,7 @@ if(Qt6Test_FOUND)
         image_utils.cpp
         attachments.cpp
         provider_messages.cpp
+        context_recovery.cpp
         web/webserver.cpp
         web/webchatworker.cpp
         web/web_resources.qrc
@@ -150,7 +154,7 @@ if(Qt6Test_FOUND)
         Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Test
     )
     target_include_directories(pengy_tests PRIVATE ${CMAKE_BINARY_DIR})
-    target_compile_definitions(pengy_tests PRIVATE PENGY_UNIT_TEST)
+    target_compile_definitions(pengy_tests PRIVATE PENGY_UNIT_TEST PENGY_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     # Ensure CLI and web binaries exist before tests run (subprocess tests)
     add_dependencies(pengy_tests pengy-cli pengy-web)
     add_test(NAME PengyTests COMMAND pengy_tests)

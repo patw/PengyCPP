@@ -3291,6 +3291,69 @@ private slots:
         QVERIFY(!events[0].contains("tokens_per_second"));
     }
 
+    void recoverySharedPythonFixtures() {
+        QFile file(QString(PENGY_SOURCE_DIR) + "/tests/fixtures/context_recovery.json");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        for (const auto& value : QJsonDocument::fromJson(file.readAll()).array()) {
+            auto fixture=value.toObject();auto messages=fixture["messages"].toArray();const auto original=messages;
+            QJsonArray fingerprints;for(const auto& m:messages)fingerprints.append(ContextRecovery::fingerprint(m.toObject()));
+            QCOMPARE(fingerprints,fixture["fingerprints"].toArray());
+            ContextRecovery::Recovery recovery(messages,"test","m",{});
+            ContextRecovery::Plan plan;
+            if(recovery.plan(messages,plan)) {
+                QCOMPARE(plan.strategy,fixture["strategy"].toString());
+                QStringList summaries;for(const auto& chunk:plan.chunks){Q_UNUSED(chunk);summaries<<fixture["summary"].toString();}
+                QString error;QVERIFY(!recovery.commit(plan,summaries,messages,error).isEmpty());QVERIFY(error.isEmpty());
+            }else QVERIFY(fixture["strategy"].isNull());
+            QCOMPARE(recovery.apply(messages),fixture["expected"].toArray());
+            QCOMPARE(messages,original);
+        }
+    }
+
+    void recoveryDurableCheckpointInvalidatesEdits() {
+        QFile fixtureFile(QString(PENGY_SOURCE_DIR) + "/tests/fixtures/context_recovery.json");
+        QVERIFY(fixtureFile.open(QIODevice::ReadOnly));
+        const auto fixture = QJsonDocument::fromJson(fixtureFile.readAll()).array()[2].toObject();
+        const auto messages = fixture["messages"].toArray();
+        ContextRecovery::Options options; options.chatId = "durable-recovery-test";
+        ContextRecovery::Recovery recovery(messages,"test","m",options);
+        ContextRecovery::Plan plan; QVERIFY(recovery.plan(messages,plan));
+        QString error; QVERIFY(!recovery.commit(plan,QStringList{fixture["summary"].toString()},messages,error).isEmpty());
+        ContextRecovery::Recovery resumed(messages,"test","m",options);
+        QCOMPARE(resumed.apply(messages),recovery.apply(messages));
+        auto edited=messages;auto user=edited[1].toObject();user["content"]="changed requirement";edited[1]=user;
+        QCOMPARE(ContextRecovery::Recovery(edited,"test","m",options).apply(edited),edited);
+        QCOMPARE(ContextRecovery::Recovery(messages,"other","m",options).apply(messages),messages);
+        QCOMPARE(ContextRecovery::Recovery(messages,"test","other",options).apply(messages),messages);
+    }
+
+    void recoverySummaryFailureNeverCommits() {
+        QJsonArray messages{userMsg("Old requirement: /tmp/project; audit pending. " + QString("history ").repeated(1000)),assistantMsg("done")};
+        for(int i=0;i<4;++i){messages.append(userMsg("recent"));messages.append(assistantMsg("ok"));}
+        messages.append(userMsg("current"));
+        ContextRecovery::Recovery recovery(messages,"test","m",{});
+        ContextRecovery::Plan plan;QVERIFY(recovery.plan(messages,plan));QVERIFY(!plan.chunks.isEmpty());
+        QString error;QVERIFY(recovery.commit(plan,QStringList{""},messages,error).isEmpty());QVERIFY(!error.isEmpty());
+        QCOMPARE(recovery.apply(messages),messages);
+        recovery.attempts=4;QVERIFY(!recovery.plan(messages,plan));
+    }
+
+    void recoveryEmptyLengthSummarizesHistoryWithoutSavingBlank() {
+        StubLlmServer stub;
+        QJsonArray messages{userMsg("Old requirement: codename HARBOR_17, /tmp/harbor-17; audit pending. " + QString("history ").repeated(1000)),assistantMsg("done")};
+        for(int i=0;i<4;++i){messages.append(userMsg("recent"));messages.append(assistantMsg("ok"));}
+        messages.append(userMsg("current"));
+        auto blank=QJsonDocument::fromJson(llmCompletion("")).object();auto choice=blank["choices"].toArray()[0].toObject();choice["finish_reason"]="length";blank["choices"]=QJsonArray{choice};
+        stub.responses<<QJsonDocument(blank).toJson()<<llmCompletion("Codename HARBOR_17; path /tmp/harbor-17; audit pending.")<<llmCompletion("recovered");
+        LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=messages;
+        QList<QJsonObject> events;
+        LlmClient().run(p,[&](const QJsonObject& e){events.append(e);},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        QCOMPARE(events.size(),2);QCOMPARE(events[0]["strategy"].toString(),QString("history_summary"));QCOMPARE(events[1]["type"].toString(),QString("final_response"));
+        QCOMPARE(stub.requests.size(),3);QVERIFY(!stub.requests[1].contains("tools"));
+        QCOMPARE(stub.requests[1]["messages"].toArray()[0].toObject()["content"].toString(),ContextRecovery::SummaryPrompt);
+        QCOMPARE(p.messages,messages);
+    }
+
     void llmLengthCompletionsFailWithoutRetryOrAssistantHistory() {
         for (const QJsonValue& content : {QJsonValue(QJsonValue::Null), QJsonValue(""),
                                          QJsonValue(" \n\t"), QJsonValue(QString::fromUtf8("## Partial plan… 🐧"))}) {

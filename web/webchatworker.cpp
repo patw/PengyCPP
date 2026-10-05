@@ -124,7 +124,9 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
         };
 
         LlmClient client;
-        client.run(LlmParams{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation, m_reasoningEffort, m_preserveReasoning, llmTimeout},
+        LlmParams params{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation, m_reasoningEffort, m_preserveReasoning, llmTimeout};
+        params.recovery = recoveryOptions;
+        client.run(params,
                    onEvent, onConfirm, isCancelled, onQuestion);
 
         Tools::clearSudoPasswordProvider();

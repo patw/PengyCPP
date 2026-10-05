@@ -72,6 +72,10 @@ QJsonObject Config::toJson() const {
     o["reasoning_effort"]   = reasoningEffort;
     o["preserve_reasoning"] = preserveReasoning;
     o["context_keep_turns"] = contextKeepTurns;
+    o["auto_context_recovery"] = autoContextRecovery;
+    o["recovery_keep_turns"] = recoveryKeepTurns;
+    o["output_token_limit"] = outputTokenLimit;
+    o["output_token_parameter"] = outputTokenParameter;
     o["attachment_context_keep_turns"] = attachmentContextKeepTurns;
     o["ui_scale"]           = uiScale;
     o["theme_mode"]         = themeMode;
@@ -99,6 +103,10 @@ Config Config::fromJson(const QJsonObject& o) {
     if (o.contains("tool_confirmation"))  c.toolConfirmation  = o["tool_confirmation"].toString(c.toolConfirmation);
     if (o.contains("reasoning_effort"))   c.reasoningEffort   = o["reasoning_effort"].toString(c.reasoningEffort);
     if (o.contains("preserve_reasoning")) c.preserveReasoning = o["preserve_reasoning"].toBool(false);
+    if (o.contains("auto_context_recovery")) c.autoContextRecovery = o["auto_context_recovery"].toBool(true);
+    if (o.contains("recovery_keep_turns")) c.recoveryKeepTurns = qMax(0, o["recovery_keep_turns"].toInt(3));
+    if (o.contains("output_token_limit")) c.outputTokenLimit = qMax(0, o["output_token_limit"].toInt(0));
+    if (o.contains("output_token_parameter")) c.outputTokenParameter = o["output_token_parameter"].toString("max_tokens");
     if (o.contains("context_keep_turns")) c.contextKeepTurns  = qMax(0, o["context_keep_turns"].toInt(0));
     if (o.contains("attachment_context_keep_turns")) c.attachmentContextKeepTurns = qMax(0, o["attachment_context_keep_turns"].toInt(4));
     if (o.contains("ui_scale"))           c.uiScale           = o["ui_scale"].toInt(100);

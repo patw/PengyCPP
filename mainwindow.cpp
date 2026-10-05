@@ -659,6 +659,7 @@ void MainWindow::processResponse(TabSession* session, const QJsonArray& apiMessa
 
     QString toolConfirmation = m_config.toolConfirmation;
     auto* worker = new ChatWorker(this);
+    worker->recoveryOptions = {m_config.autoContextRecovery, m_config.recoveryKeepTurns, session->chat["id"].toString(), m_config.outputTokenLimit, m_config.outputTokenParameter};
     m_workerToChat[worker] = session->chat["id"].toString();
 
     connect(worker, &ChatWorker::eventReceived, this, &MainWindow::onWorkerEvent,
@@ -710,6 +711,7 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
                                    : QString("Error: ") + event["message"].toString());
 
     } else if (type == "context_compacted") {
+        if (!event["message"].toString().isEmpty()) session->chatView->appendMessage("assistant", event["message"]);
         if (session == tabForChat(m_activeChatId)) {
             m_chatHistory->setRetrying(
                 QString("Context limit — retrying with %1 fewer tool-output characters (%2/%3)")

@@ -7,6 +7,7 @@
 #include <QString>
 #include <QStringList>
 #include <atomic>
+#include "../context_recovery.h"
 
 class WebChatWorker : public QObject {
     Q_OBJECT
@@ -17,6 +18,7 @@ public:
                const QString& model, const QJsonArray& messages,
                const QString& toolConfirmation, const QString& reasoningEffort = QString(),
                bool preserveReasoning = false, int llmTimeout = 300);
+    ContextRecovery::Options recoveryOptions;
     void cancel();
     void sendConfirmation(bool confirmed, bool yoloTurn);
     // Answers to a pending ask_user_question.  An empty list is a cancel.

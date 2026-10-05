@@ -20,6 +20,10 @@ struct Config {
     QString reasoningEffort;
     bool preserveReasoning   = false;
     int  contextKeepTurns    = 0;
+    bool autoContextRecovery = true;
+    int recoveryKeepTurns = 3;
+    int outputTokenLimit = 0;
+    QString outputTokenParameter = "max_tokens";
     int  attachmentContextKeepTurns = 4;
     int  uiScale             = 100;
     QString themeMode        = "system"; // "system" | "light" | "dark"

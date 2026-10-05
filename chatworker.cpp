@@ -47,6 +47,7 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
     auto* thread = QThread::create([this] {
         LlmParams params{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation, m_reasoningEffort, m_preserveReasoning};
         params.toolContext = &m_toolContext;
+        params.recovery = recoveryOptions;
 
         LlmClient::EventFn onEvent = [this](const QJsonObject& ev) {
             if (m_cancelled) return;

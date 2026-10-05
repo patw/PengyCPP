@@ -12,6 +12,7 @@
 #include <random>
 #include <chrono>
 #include <cmath>
+#include <stdexcept>
 
 static const int    MAX_RETRIES       = 5;
 static const double BASE_DELAY_SECS   = 1.0;
@@ -236,6 +237,7 @@ static bool isContextLimitError(int status, const QJsonObject& body, const QStri
         "exceeds the model's context", "exceeds the model context",
         "exceeds the context", "context size", "context_length_exceeded",
         "exceeds the maximum allowed number of tokens", "maximum number of tokens",
+        "leaves no room to answer in the context",
     };
     const QString text = (fields["message"].toString().isEmpty()
         ? (error.isString() ? error.toString() : detail)
@@ -457,12 +459,46 @@ void LlmClient::run(const LlmParams& params,
     bool imageInputRejected = false;
     QString imageRejection;
 
+    ContextRecovery::Recovery recovery(params.messages, params.baseUrl, params.model, params.recovery);
+    if (params.recovery.outputParameter != "max_tokens" && params.recovery.outputParameter != "max_completion_tokens") {
+        emitConfigError(onEvent, "output_token_parameter must be max_tokens or max_completion_tokens"); return;
+    }
+    auto recover = [&]() -> bool {
+        ContextRecovery::Plan plan;
+        if (!recovery.plan(current, plan)) return false;
+        QStringList summaries;
+        for (const QString& chunk : plan.chunks) {
+            if (isCancelled()) return false;
+            ++recovery.summaryCalls;
+            QJsonObject payload{{"model", params.model}, {"messages", QJsonArray{
+                QJsonObject{{"role", "system"}, {"content", ContextRecovery::SummaryPrompt}},
+                QJsonObject{{"role", "user"}, {"content", chunk}}}}};
+            payload[params.recovery.outputParameter] = 2048;
+            auto resp = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact), params.apiKey, params.llmTimeout * 1000);
+            if (isCancelled()) return false;
+            auto body = QJsonDocument::fromJson(resp.body).object();
+            if (body.contains("usage")) addUsage(accUsage, body["usage"].toObject());
+            auto choices = body["choices"].toArray();
+            auto choice = choices.isEmpty() ? QJsonObject{} : choices[0].toObject();
+            auto message = choice["message"].toObject();
+            if (resp.httpStatus < 200 || resp.httpStatus >= 300 || choice["finish_reason"] != "stop" || message["content"].toString().trimmed().isEmpty() || !message["tool_calls"].toArray().isEmpty()) {
+                emitTurnError(onEvent, 0, "Context summary was incomplete or failed; original history retained.", params.baseUrl);
+                throw std::runtime_error("context summary failed");
+            }
+            summaries << message["content"].toString();
+        }
+        QString error;
+        auto event = recovery.commit(plan, summaries, current, error);
+        if (!error.isEmpty()) { emitTurnError(onEvent, 0, error, params.baseUrl); throw std::runtime_error("context checkpoint failed"); }
+        if (event.isEmpty()) return false;
+        onEvent(event); return true;
+    };
     for (;;) {
         if (isCancelled()) return;
 
         // Compact a private request copy only. Events and persisted history
         // continue to use the original current messages.
-        QJsonArray requestMessages = withoutCrossModelProxyState(current, params.model);
+        QJsonArray requestMessages = withoutCrossModelProxyState(recovery.apply(current), params.model);
         if (imageInputRejected) {
             stripImageUrlParts(requestMessages);
             requestMessages.append(QJsonObject{{"role", "user"}, {"content", imageRejection}});
@@ -474,6 +510,7 @@ void LlmClient::run(const LlmParams& params,
             {"tools",       Tools::toolDefinitions()},
             {"tool_choice", "auto"},
         };
+        if (params.recovery.outputLimit > 0) payload[params.recovery.outputParameter] = params.recovery.outputLimit;
         if (!params.reasoningEffort.isEmpty()) {
             payload["reasoning_effort"] = params.reasoningEffort;
         }
@@ -512,6 +549,17 @@ void LlmClient::run(const LlmParams& params,
                 continue; // bounded: this request no longer contains image parts
             }
             if (isContextLimitError(code, body, detail)) {
+                if (params.recovery.enabled) {
+                    try {
+                        if (recover()) {
+                            requestMessages = withoutCrossModelProxyState(recovery.apply(current), params.model);
+                            if (imageInputRejected) { stripImageUrlParts(requestMessages); requestMessages.append(QJsonObject{{"role","user"},{"content",imageRejection}}); }
+                            payload["messages"] = requestMessages; continue;
+                        }
+                    } catch (const std::runtime_error&) { return; }
+                    emitTurnError(onEvent, code, "Model context limit reached; could not fit the protected task after bounded recovery. Full history retained; try a shorter request or a new chat.", params.baseUrl);
+                    return;
+                }
                 if (contextRetries < MAX_CONTEXT_RETRIES) {
                     const int saved = compactToolResults(requestMessages, contextRetries == 0 ? 1 : 2);
                     if (saved > 0) {
@@ -618,6 +666,9 @@ void LlmClient::run(const LlmParams& params,
         // Fail before emitting/persisting assistant messages or executing tools.
         // A length-truncated tool sequence is unsafe even if its JSON parses.
         if (choice["finish_reason"].toString() == "length") {
+            if (content.trimmed().isEmpty() && toolCalls.isEmpty()) {
+                try { if (recover()) continue; } catch (const std::runtime_error&) { return; }
+            }
             onEvent(QJsonObject{
                 {"type", "error"},
                 {"kind", "truncated"},

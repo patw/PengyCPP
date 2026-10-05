@@ -6,6 +6,7 @@
 #include <atomic>
 #include <utility>
 #include <optional>
+#include "context_recovery.h"
 
 namespace Tools { class ToolContext; }
 
@@ -19,6 +20,7 @@ struct LlmParams {
     bool      preserveReasoning = false;
     int       llmTimeout        = 300;
     Tools::ToolContext* toolContext = nullptr;  // per-run sudo/subprocess scope
+    ContextRecovery::Options recovery;
 };
 
 // Final API response only; includes latency/prefill, excludes tools/retries.
