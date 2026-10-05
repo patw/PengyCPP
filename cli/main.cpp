@@ -371,6 +371,7 @@ public:
     bool        m_firstEventDone = false;
     bool        m_noSave = false;
     QString     m_outputMode = "pretty";
+    bool        m_truncationFailed = false;
 
     void exec(bool singleShot, const QString& singleShotMsg,
               bool noSave = false,
@@ -451,6 +452,7 @@ private:
     // ── LLM run ─────────────────────────────────────────────────────
 
     void runLlm(const QString& rawInput, bool noSave = false) {
+        m_truncationFailed = false;
         QString input = rawInput;
         QJsonArray attachmentRefs;
         QRegularExpression imageToken(R"(@(\\S+))");
@@ -585,6 +587,7 @@ private:
                 .arg(ev["max_attempts"].toInt())));
 
         } else if (type == "tool_request") {
+            if (m_outputMode == "json" || m_outputMode == "silent") return;
             outln();
             // Lead with a remote target so it is visible before the argument dump.
             QString target;
@@ -604,6 +607,7 @@ private:
                 {"tool_call_id", ev["tool_call_id"].toString()},
                 {"content",      ev["content"].toString()}
             });
+            if (m_outputMode == "json" || m_outputMode == "silent") return;
             outln(dim(ev["content"].toString()));
 
         } else if (type == "tool_result") {
@@ -612,6 +616,7 @@ private:
                 {"tool_call_id", ev["tool_call_id"].toString()},
                 {"content",      ev["content"].toString()}
             });
+            if (m_outputMode == "json" || m_outputMode == "silent") return;
             if (ev["declined"].toBool()) {
                 outln(dim("  (declined)"));
             } else {
@@ -630,6 +635,12 @@ private:
             // UI. Report it on stderr instead, and store nothing.
             const bool credential = ev["kind"].toString() == "credentials";
             const QString text = ev["message"].toString();
+            if (ev["kind"].toString() == "truncated") {
+                m_truncationFailed = true;
+                if (m_outputMode == "json")
+                    outln(QJsonDocument(QJsonObject{{"error", QJsonObject{
+                        {"type", "truncated"}, {"message", text}}}}).toJson(QJsonDocument::Compact));
+            }
             err(credential ? QString::fromUtf8("\u274c ") + text
                            : QString("Error: ") + text);
 
@@ -1383,5 +1394,5 @@ int main(int argc, char* argv[]) {
     PengyCliApp cli;
     cli.m_outputMode = outputMode;
     cli.exec(singleShot, msg, noSave, modelOverride, systemOverride);
-    return 0;
+    return singleShot && cli.m_truncationFailed ? 1 : 0;
 }

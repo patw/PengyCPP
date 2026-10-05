@@ -3291,6 +3291,132 @@ private slots:
         QVERIFY(!events[0].contains("tokens_per_second"));
     }
 
+    void llmLengthCompletionsFailWithoutRetryOrAssistantHistory() {
+        for (const QJsonValue& content : {QJsonValue(QJsonValue::Null), QJsonValue(""),
+                                         QJsonValue(" \n\t"), QJsonValue(QString::fromUtf8("## Partial plan… 🐧"))}) {
+            StubLlmServer stub;
+            QJsonObject reply = QJsonDocument::fromJson(llmCompletion("")).object();
+            QJsonObject choice = reply["choices"].toArray()[0].toObject();
+            QJsonObject msg = choice["message"].toObject();
+            msg["content"] = content;
+            choice["message"] = msg;
+            choice["finish_reason"] = "length";
+            reply["choices"] = QJsonArray{choice};
+            stub.responses << QJsonDocument(reply).toJson();
+            LlmParams p;
+            p.baseUrl = stub.baseUrl(); p.model = "stub-model";
+            p.messages = QJsonArray{userMsg("think hard")};
+            const QJsonArray original = p.messages;
+            QList<QJsonObject> events;
+            LlmClient().run(p, [&](const QJsonObject& e) { events.append(e); },
+                []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
+            QCOMPARE(events.size(), 1);
+            QCOMPARE(events[0]["type"].toString(), QString("error"));
+            QCOMPARE(events[0]["kind"].toString(), QString("truncated"));
+            const QString detail = events[0]["message"].toString();
+            QVERIFY(detail.contains("finish_reason=length"));
+            QVERIFY(detail.contains("output-token cap or insufficient remaining context"));
+            QVERIFY(detail.contains("did not retry automatically"));
+            if (content.toString().trimmed().isEmpty()) {
+                QVERIFY(detail.contains("before an answer was produced"));
+            } else {
+                QVERIFY(detail.contains("answer is incomplete"));
+                QVERIFY(detail.contains(content.toString()));
+                QVERIFY(detail.contains("not saved as an answer"));
+            }
+            QCOMPARE(stub.requests.size(), 1);
+            QCOMPARE(p.messages, original);
+        }
+    }
+
+    void llmLengthToolCallsNeverExecuteEvenWhenArgumentsParse() {
+        for (bool malformed : {false, true}) {
+            QTemporaryDir dir;
+            const QString target = dir.path() + "/must-not-exist";
+            QJsonObject call = llmToolCall("tc1", "write_file", {{"path", target}, {"content", "unsafe"}});
+            if (malformed) {
+                QJsonObject fn = call["function"].toObject();
+                fn["arguments"] = "{\"path\":";
+                call["function"] = fn;
+            }
+            QJsonObject reply = QJsonDocument::fromJson(llmCompletion("About to write", QJsonArray{call})).object();
+            QJsonObject choice = reply["choices"].toArray()[0].toObject();
+            choice["finish_reason"] = "length";
+            reply["choices"] = QJsonArray{choice};
+            StubLlmServer stub;
+            stub.responses << QJsonDocument(reply).toJson();
+            LlmParams p;
+            p.baseUrl = stub.baseUrl(); p.model = "stub-model"; p.toolConfirmation = "all";
+            p.messages = QJsonArray{userMsg("write")};
+            const QJsonArray original = p.messages;
+            QList<QJsonObject> events;
+            int confirms = 0;
+            LlmClient().run(p, [&](const QJsonObject& e) { events.append(e); },
+                [&]() { ++confirms; return std::make_pair(true, false); }, []() { return false; }, nullptr);
+            QCOMPARE(events.size(), 1);
+            QCOMPARE(events[0]["type"].toString(), QString("error"));
+            QCOMPARE(events[0]["kind"].toString(), QString("truncated"));
+            QVERIFY(events[0]["message"].toString().contains("no tools from this response were executed"));
+            QVERIFY(!QFile::exists(target));
+            QCOMPARE(confirms, 0);
+            QCOMPARE(stub.requests.size(), 1);
+            QCOMPARE(p.messages, original);
+        }
+    }
+
+    void llmLengthAfterCompletedToolDoesNotRerunIt() {
+        QTemporaryDir dir;
+        const QString target = dir.path() + "/done.txt";
+        StubLlmServer stub;
+        stub.responses << llmCompletion("", QJsonArray{llmToolCall("tc1", "write_file", {{"path", target}, {"content", "done"}})});
+        QJsonObject last = QJsonDocument::fromJson(llmCompletion("")).object();
+        QJsonObject choice = last["choices"].toArray()[0].toObject();
+        choice["finish_reason"] = "length";
+        last["choices"] = QJsonArray{choice};
+        stub.responses << QJsonDocument(last).toJson();
+        LlmParams p;
+        p.baseUrl = stub.baseUrl(); p.model = "stub-model"; p.toolConfirmation = "all";
+        p.messages = QJsonArray{userMsg("write")};
+        QList<QJsonObject> events;
+        LlmClient().run(p, [&](const QJsonObject& e) { events.append(e); },
+            []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
+        QCOMPARE(events.size(), 4);
+        QCOMPARE(events[0]["type"].toString(), QString("assistant_tool_calls"));
+        QCOMPARE(events[1]["type"].toString(), QString("tool_request"));
+        QCOMPARE(events[2]["type"].toString(), QString("tool_result"));
+        QCOMPARE(events[3]["type"].toString(), QString("error"));
+        QCOMPARE(events[3]["kind"].toString(), QString("truncated"));
+        QFile file(target); QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("done"));
+        QCOMPARE(stub.requests.size(), 2);
+    }
+
+    void llmEmptyToolOnlyResponsesWithMissingOrToolFinishReasonStillRun() {
+        for (bool missing : {false, true}) {
+            QTemporaryDir dir;
+            const QString target = dir.path() + "/safe.txt";
+            QJsonObject first = QJsonDocument::fromJson(llmCompletion("", QJsonArray{
+                llmToolCall("tc1", "write_file", {{"path", target}, {"content", "done"}})})).object();
+            QJsonObject choice = first["choices"].toArray()[0].toObject();
+            if (missing) choice.remove("finish_reason"); else choice["finish_reason"] = "tool_calls";
+            first["choices"] = QJsonArray{choice};
+            StubLlmServer stub;
+            stub.responses << QJsonDocument(first).toJson() << llmCompletion("written");
+            LlmParams p;
+            p.baseUrl = stub.baseUrl(); p.model = "stub-model"; p.toolConfirmation = "all";
+            p.messages = QJsonArray{userMsg("write")};
+            QList<QJsonObject> events;
+            LlmClient().run(p, [&](const QJsonObject& e) { events.append(e); },
+                []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
+            QCOMPARE(events.size(), 4);
+            QCOMPARE(events.last()["type"].toString(), QString("final_response"));
+            QCOMPARE(events.last()["content"].toString(), QString("written"));
+            QFile file(target); QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(file.readAll(), QByteArray("done"));
+            QCOMPARE(stub.requests.size(), 2);
+        }
+    }
+
     void llmFinalResponseNoTools() {
         StubLlmServer stub;
         stub.responses << llmCompletion("hello there");
@@ -4278,6 +4404,63 @@ private slots:
         QVERIFY(out.contains("Chats:"));
         // At minimum the auto-created chat and the /new chat appear
         QVERIFY(out.contains("New Chat"));
+    }
+
+    void cliLengthSingleShotFailsWithJsonErrorAndNoAssistantHistory() {
+        for (const QString& content : {QString(""), QString::fromUtf8("Only the first step… 🐧"), QString("after-tool")}) {
+            QTemporaryDir configDir;
+            StubLlmServer stub;
+            const bool afterTool = content == "after-tool";
+            if (afterTool)
+                stub.responses << llmCompletion("", QJsonArray{llmToolCall("tc1", "write_file",
+                    {{"path", configDir.path() + "/done.txt"}, {"content", "done"}})});
+            QJsonObject reply = QJsonDocument::fromJson(llmCompletion(afterTool ? QString() : content)).object();
+            QJsonObject choice = reply["choices"].toArray()[0].toObject();
+            choice["finish_reason"] = "length";
+            reply["choices"] = QJsonArray{choice};
+            stub.responses << QJsonDocument(reply).toJson();
+            Config cfg;
+            cfg.baseUrl = stub.baseUrl(); cfg.model = "stub-model"; cfg.toolConfirmation = "all";
+            QFile settings(configDir.path() + "/settings.json");
+            QVERIFY(settings.open(QIODevice::WriteOnly));
+            settings.write(QJsonDocument(cfg.toJson()).toJson()); settings.close();
+            QProcess proc;
+            proc.setProgram(cliBin());
+            proc.setArguments({"--config-dir", configDir.path(), "--output", "json", "think hard"});
+            proc.start();
+            QVERIFY(proc.waitForStarted(3000));
+            // Pump the stub server while the child waits for its HTTP response.
+            QElapsedTimer timer; timer.start();
+            while (proc.state() != QProcess::NotRunning && timer.elapsed() < 10000)
+                QTest::qWait(10);
+            if (proc.state() != QProcess::NotRunning) { proc.kill(); proc.waitForFinished(); QFAIL("CLI timed out"); }
+            QCOMPARE(proc.exitCode(), 1);
+            const QJsonObject payload = QJsonDocument::fromJson(proc.readAllStandardOutput()).object();
+            QCOMPARE(payload["error"].toObject()["type"].toString(), QString("truncated"));
+            QVERIFY(QString::fromUtf8(proc.readAllStandardError()).contains("Generation limit reached"));
+            if (!content.isEmpty() && !afterTool) QVERIFY(payload["error"].toObject()["message"].toString().contains(content));
+            const QStringList files = QDir(configDir.path() + "/chats").entryList({"*.json"}, QDir::Files);
+            int chats = 0;
+            for (const QString& name : files) {
+                if (name == "index.json") continue;
+                QFile file(configDir.path() + "/chats/" + name);
+                QVERIFY(file.open(QIODevice::ReadOnly));
+                const QJsonArray messages = QJsonDocument::fromJson(file.readAll()).object()["messages"].toArray();
+                QCOMPARE(messages.size(), afterTool ? 3 : 1);
+                QCOMPARE(messages[0].toObject()["role"].toString(), QString("user"));
+                if (afterTool) {
+                    QCOMPARE(messages[1].toObject()["tool_calls"].toArray().size(), 1);
+                    QCOMPARE(messages[2].toObject()["role"].toString(), QString("tool"));
+                }
+                ++chats;
+            }
+            QCOMPARE(chats, 1);
+            QCOMPARE(stub.requests.size(), afterTool ? 2 : 1);
+            if (afterTool) {
+                QFile file(configDir.path() + "/done.txt"); QVERIFY(file.open(QIODevice::ReadOnly));
+                QCOMPARE(file.readAll(), QByteArray("done"));
+            }
+        }
     }
 
     void cliQuitExitsCleanly() {

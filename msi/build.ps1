@@ -1,6 +1,6 @@
 # Build the PengyCPP MSI from the windeployqt'd app folder.
 #
-#   msi\build.ps1 -AppDir Pengy-Windows -Version 1.11.0 -Out Pengy-Windows-v1.11.0.msi
+#   msi\build.ps1 -AppDir Pengy-Windows -Version 1.11.1 -Out Pengy-Windows-v1.11.1.msi
 #
 # Needs the WiX v5 CLI and its UI extension (v5 is pinned on purpose: v6
 # changed the licence terms for the binaries):

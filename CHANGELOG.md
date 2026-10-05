@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.11.1
+
+- **Report generation truncation instead of a successful blank answer.** Completions with `finish_reason: length` now fail clearly before tool execution or assistant-history persistence. Partial text is labelled incomplete in the error; truncated tool calls are never executed. No automatic retry or context reduction is attempted because a generation cap does not prove context overflow. Single-shot CLI returns exit 1 and a structured error in JSON mode. Token-budget and history-compaction policies are unchanged.
+
 ## v1.11.0
 
 - **Per-tab reasoning effort and last-response throughput.** The GUI replaces Tool Confirm with an Effort selector saved with each chat. Global setting follows Settings; Provider default explicitly omits the reasoning hint. Minimal is no longer offered in GUI/web Settings or the tab dropdown. Last-response tok/s uses API output tokens divided by the final successful request wall time, including latency/prefill/reasoning but excluding tools and retry waits. The rate is saved separately from cumulative token totals; switching to an empty tab clears both displays. Tool-confirmation policy remains in Settings.

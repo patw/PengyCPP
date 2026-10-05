@@ -411,6 +411,22 @@ static void preserveReasoningFields(QJsonObject& target, const QJsonObject& sour
     }
 }
 
+// Length means generation exhaustion, not necessarily a full context window.
+static QString generationLimitMessage(const QString& content, bool hasToolCalls) {
+    const QString detail = hasToolCalls
+        ? "Generation limit reached during tool calls; no tools from this response were executed."
+        : content.trimmed().isEmpty()
+            ? "Generation limit reached before an answer was produced."
+            : "Generation limit reached; the answer is incomplete.";
+    QString message = detail + " The provider reported finish_reason=length. "
+        "This can mean an output-token cap or insufficient remaining context. "
+        "Try a shorter conversation, a larger output allowance, or a reasoning budget "
+        "that leaves room for an answer. Pengy did not retry automatically.";
+    if (!content.trimmed().isEmpty())
+        message += "\n\nPartial response (incomplete, not saved as an answer):\n" + content;
+    return message;
+}
+
 void LlmClient::run(const LlmParams& params,
                     EventFn   onEvent,
                     ConfirmFn onConfirm,
@@ -598,6 +614,17 @@ void LlmClient::run(const LlmParams& params,
         QJsonObject msg    = choice["message"].toObject();
         QString     content = msg["content"].toString();
         QJsonArray  toolCalls = msg["tool_calls"].toArray();
+
+        // Fail before emitting/persisting assistant messages or executing tools.
+        // A length-truncated tool sequence is unsafe even if its JSON parses.
+        if (choice["finish_reason"].toString() == "length") {
+            onEvent(QJsonObject{
+                {"type", "error"},
+                {"kind", "truncated"},
+                {"message", generationLimitMessage(content, !toolCalls.isEmpty())},
+            });
+            return;
+        }
 
         if (!toolCalls.isEmpty()) {
             // Build assistant message for history
