@@ -1,5 +1,6 @@
 #include <QtTest>
 #include <QTemporaryDir>
+#include <QLocale>
 #include <QTemporaryFile>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -3421,6 +3422,84 @@ private slots:
         QCOMPARE(stub.requests.size(),3);QVERIFY(!stub.requests[1].contains("tools"));
         QCOMPARE(stub.requests[1]["messages"].toArray()[0].toObject()["content"].toString(),ContextRecovery::SummaryPrompt);
         QCOMPARE(p.messages,messages);
+    }
+
+    static QJsonArray recoverableHistory() {
+        QJsonArray messages{userMsg("Old requirement: HARBOR_17. " + QString("history ").repeated(1000)), assistantMsg("done")};
+        for (int i = 0; i < 4; ++i) { messages.append(userMsg("recent")); messages.append(assistantMsg("ok")); }
+        messages.append(userMsg("current"));
+        return messages;
+    }
+
+    static QByteArray lengthStop(const QString& content, const QJsonArray& toolCalls, int completionTokens) {
+        QJsonObject reply = QJsonDocument::fromJson(llmCompletion(content, toolCalls, 250000, completionTokens)).object();
+        QJsonObject choice = reply["choices"].toArray()[0].toObject();
+        choice["finish_reason"] = "length";
+        reply["choices"] = QJsonArray{choice};
+        return QJsonDocument(reply).toJson();
+    }
+
+    void recoveryShortPartialLengthRecoversAndDiscardsLeadIn() {
+        const QString leadIn = QString::fromUtf8("The mutations never applied — redoing it properly:");
+        StubLlmServer stub;
+        stub.responses << lengthStop(leadIn, {}, 14) << llmCompletion("HARBOR_17") << llmCompletion("recovered");
+        LlmParams p; p.baseUrl = stub.baseUrl(); p.model = "m"; p.messages = recoverableHistory();
+        const QJsonArray original = p.messages;
+        QList<QJsonObject> events;
+        LlmClient().run(p, [&](const QJsonObject& e) { events.append(e); },
+            []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
+        QCOMPARE(events.size(), 2);
+        QCOMPARE(events[0]["type"].toString(), QString("context_compacted"));
+        QCOMPARE(events[1]["content"].toString(), QString("recovered"));
+        QCOMPARE(stub.requests.size(), 3);
+        for (int i = 1; i < stub.requests.size(); ++i)
+            QVERIFY(!QJsonDocument(stub.requests[i]).toJson().contains(leadIn.toUtf8()));
+        QCOMPARE(p.messages, original);
+    }
+
+    void recoveryShortTruncatedToolCallRecoversWithoutExecuting() {
+        QTemporaryDir dir;
+        const QString target = dir.path() + "/must-not-exist";
+        QJsonObject call = llmToolCall("tc1", "write_file", {{"path", target}, {"content", "unsafe"}});
+        QJsonObject fn = call["function"].toObject(); fn["arguments"] = "{\"path\":"; call["function"] = fn;
+        StubLlmServer stub;
+        stub.responses << lengthStop("Writing:", QJsonArray{call}, 40) << llmCompletion("HARBOR_17") << llmCompletion("recovered");
+        LlmParams p; p.baseUrl = stub.baseUrl(); p.model = "m"; p.messages = recoverableHistory();
+        p.toolConfirmation = "all";
+        QList<QJsonObject> events;
+        LlmClient().run(p, [&](const QJsonObject& e) { events.append(e); },
+            []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
+        QCOMPARE(events.size(), 2);
+        QCOMPARE(events[0]["type"].toString(), QString("context_compacted"));
+        QCOMPARE(events[1]["content"].toString(), QString("recovered"));
+        QVERIFY(!QFile::exists(target));
+    }
+
+    void recoveryCappedOrUnreportedPartialLengthStillFailsSafely() {
+        struct Case { int completion; int limit; bool reported; };
+        for (const Case& c : {Case{4096, 0, true}, Case{256, 256, true}, Case{0, 0, false}}) {
+            QJsonObject reply = QJsonDocument::fromJson(lengthStop("A long partial answer", {}, c.completion)).object();
+            if (!c.reported) reply.remove("usage");
+            StubLlmServer stub;
+            stub.responses << QJsonDocument(reply).toJson();
+            LlmParams p; p.baseUrl = stub.baseUrl(); p.model = "m"; p.messages = recoverableHistory();
+            p.recovery.outputLimit = c.limit;
+            QList<QJsonObject> events;
+            LlmClient().run(p, [&](const QJsonObject& e) { events.append(e); },
+                []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
+            QCOMPARE(events.size(), 1);
+            QCOMPARE(events[0]["kind"].toString(), QString("truncated"));
+            const QString detail = events[0]["message"].toString();
+            QVERIFY(detail.contains("answer is incomplete"));
+            QVERIFY(detail.contains("did not retry automatically"));
+            if (c.reported) {
+                QVERIFY2(detail.contains(QString("(prompt 250,000 tokens, completion %1 tokens)")
+                    .arg(QLocale(QLocale::English, QLocale::UnitedStates).toString(c.completion))), qPrintable(detail));
+            } else {
+                QVERIFY(!detail.contains("prompt "));
+            }
+            QCOMPARE(stub.requests.size(), 1);
+        }
     }
 
     void llmLengthCompletionsFailWithoutRetryOrAssistantHistory() {

@@ -4,7 +4,7 @@ All editions use the same provider-only policy. Default: enabled. Recovery never
 
 ## Triggers and stages
 
-Recovery starts after an explicit provider context-limit error (400/413/422 with a recognized code/message), or an HTTP 200 `finish_reason: length` completion with empty/whitespace answer and **no tool calls**. The latter is only a possible context-pressure signal: a small generation cap can cause the same response. Partial answers and truncated tool calls retain the safe failure behavior from 1.11.1.
+Recovery starts after an explicit provider context-limit error (400/413/422 with a recognized code/message), or an HTTP 200 `finish_reason: length` completion that is either an empty/whitespace answer with **no tool calls**, or a partial answer/truncated tool call whose reported `completion_tokens` is below 1,024 (and below `output_token_limit` when set). Length stops are only a possible context-pressure signal: a small generation cap can cause the same response. A completion that short is not a plausible output cap — it is typically a lead-in sentence cut off before its tool call because the window was nearly full. The truncated reply is discarded unexecuted and regenerated after reduction. Longer or unreported completions retain the safe failure behavior from 1.11.1, and every length failure reports the prompt/completion token counts so a cap can be told apart from context exhaustion.
 
 Each retry must make the provider view smaller. The per-user-run limit is **four reduction/retry attempts**, shared across tool rounds:
 

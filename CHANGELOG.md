@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.11.3
+
+- **Recover from short truncated replies, not just empty ones.** A `finish_reason: length` reply with a lead-in sentence (e.g. "Redoing it properly:") or a truncated tool call now triggers automatic context recovery when the provider reports fewer than 1,024 completion tokens (and fewer than `output_token_limit`, if set) — too short to be an output cap, so the window was nearly full. Previously only an empty reply qualified, and long agentic runs failed outright. The truncated reply is discarded and no tool from it runs. Longer or unreported completions still fail safely. Length errors now include prompt/completion token counts and say whether recovery was attempted.
 
 - **Reserve the final context-recovery retry for history.** Attempt 4 prioritizes a summary of eligible older completed turns instead of allowing reasoning/tool reductions to consume the entire retry budget. If no eligible turns or insufficient summary-call budget exist, the last attempt remains available for tool compaction. Failed or non-reducing summaries stop safely; the active task, recent-turn protection, full transcript, and four-attempt limit are unchanged.
 

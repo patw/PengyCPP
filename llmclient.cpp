@@ -7,6 +7,7 @@
 #include <QNetworkReply>
 #include <QEventLoop>
 #include <QUrl>
+#include <QLocale>
 #include <QStringList>
 #include <QThread>
 #include <random>
@@ -413,17 +414,52 @@ static void preserveReasoningFields(QJsonObject& target, const QJsonObject& sour
     }
 }
 
+// A length stop this short is context starvation, not a plausible output cap;
+// larger (or unreported) completions keep the safe truncation failure.
+static constexpr qint64 kShortLengthCompletionTokens = 1024;
+
+static qint64 completionTokens(const QJsonObject& usage) {
+    const QJsonValue value = usage["completion_tokens"];
+    return value.isDouble() && value.toDouble() >= 0 ? qint64(value.toDouble()) : -1;
+}
+
+// Whether a length stop is worth a context-reduction retry.
+//
+// An empty answer always qualifies. A partial answer or truncated tool call
+// qualifies only when the provider reports a completion too short to be an
+// output cap -- typically a lead-in like "Redoing it properly:" cut off just
+// before its tool call because the window was nearly full.
+static bool lengthSuggestsContextPressure(const QString& content, bool hasToolCalls,
+                                          const QJsonObject& usage, int outputLimit) {
+    if (!hasToolCalls && content.trimmed().isEmpty()) return true;
+    qint64 limit = kShortLengthCompletionTokens;
+    if (outputLimit > 0) limit = qMin(limit, qint64(outputLimit));
+    const qint64 completion = completionTokens(usage);
+    return completion >= 0 && completion < limit;
+}
+
 // Length means generation exhaustion, not necessarily a full context window.
-static QString generationLimitMessage(const QString& content, bool hasToolCalls) {
+static QString generationLimitMessage(const QString& content, bool hasToolCalls,
+                                      const QJsonObject& usage, int recoveryAttempts) {
     const QString detail = hasToolCalls
         ? "Generation limit reached during tool calls; no tools from this response were executed."
         : content.trimmed().isEmpty()
             ? "Generation limit reached before an answer was produced."
             : "Generation limit reached; the answer is incomplete.";
-    QString message = detail + " The provider reported finish_reason=length. "
+    // Grouped digits match Python's {:,} in the shared message.
+    const QLocale grouped(QLocale::English, QLocale::UnitedStates);
+    const qint64 completion = completionTokens(usage);
+    QString counts;
+    if (usage["prompt_tokens"].isDouble() && completion >= 0)
+        counts = QString(" (prompt %1 tokens, completion %2 tokens)")
+            .arg(grouped.toString(qint64(usage["prompt_tokens"].toDouble())), grouped.toString(completion));
+    const QString retried = recoveryAttempts > 0
+        ? QString("Pengy retried after %1 context reduction(s) without success.").arg(recoveryAttempts)
+        : QString("Pengy did not retry automatically.");
+    QString message = detail + " The provider reported finish_reason=length" + counts + ". "
         "This can mean an output-token cap or insufficient remaining context. "
         "Try a shorter conversation, a larger output allowance, or a reasoning budget "
-        "that leaves room for an answer. Pengy did not retry automatically.";
+        "that leaves room for an answer. " + retried;
     if (!content.trimmed().isEmpty())
         message += "\n\nPartial response (incomplete, not saved as an answer):\n" + content;
     return message;
@@ -666,13 +702,17 @@ void LlmClient::run(const LlmParams& params,
         // Fail before emitting/persisting assistant messages or executing tools.
         // A length-truncated tool sequence is unsafe even if its JSON parses.
         if (choice["finish_reason"].toString() == "length") {
-            if (content.trimmed().isEmpty() && toolCalls.isEmpty()) {
+            const QJsonObject usage = body["usage"].toObject();
+            // The truncated reply is discarded unexecuted; a retry regenerates
+            // it against a smaller provider view.
+            if (lengthSuggestsContextPressure(content, !toolCalls.isEmpty(), usage,
+                                              params.recovery.outputLimit)) {
                 try { if (recover()) continue; } catch (const std::runtime_error&) { return; }
             }
             onEvent(QJsonObject{
                 {"type", "error"},
                 {"kind", "truncated"},
-                {"message", generationLimitMessage(content, !toolCalls.isEmpty())},
+                {"message", generationLimitMessage(content, !toolCalls.isEmpty(), usage, recovery.attempts)},
             });
             return;
         }
