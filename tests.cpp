@@ -24,6 +24,7 @@
 #include <QImage>
 #include "tools.h"
 #include "llmclient.h"
+#include "chatworker.h"
 #include "sanitize.h"
 #include "web/webserver.h"
 #include "attachments.h"
@@ -133,6 +134,7 @@ public:
     QList<QByteArray>  responses;   // JSON bodies served in order
     QList<int>         statuses;    // optional per-response HTTP status
     QList<QJsonObject> requests;    // recorded request payloads
+    bool               silent = false; // accept the request but never answer
 
     StubLlmServer() {
         m_server.listen(QHostAddress::LocalHost, 0);
@@ -169,6 +171,7 @@ private:
         requests.append(QJsonDocument::fromJson(
             buf.mid(headerEnd + 4, contentLength)).object());
         m_bufs[sock].clear();
+        if (silent) return; // hold the connection open so the client times out
 
         QByteArray body = responses.isEmpty()
             ? QByteArray(R"({"error": {"message": "stub exhausted"}})")
@@ -4492,6 +4495,30 @@ private slots:
         const QString msg = events[0]["message"].toString();
         QVERIFY2(msg.contains("Nothing answered at http://127.0.0.1:1"), qPrintable(msg));
         QVERIFY2(msg.contains("ollama serve"), qPrintable(msg));
+    }
+
+    // The desktop GUI has no per-call timeout argument: MainWindow passes
+    // config.llmTimeout into ChatWorker::start, which is the only path the
+    // setting has.  This pins the regression that ChatWorker used to build
+    // LlmParams *without* the llmTimeout field, silently falling back to the
+    // struct default 300 and ignoring the setting the Settings dialog still
+    // wrote.  A one-second timeout against a stub that never answers must abort
+    // long before the 300s default would.
+    void chatWorkerHonoursConfiguredLlmTimeout() {
+        StubLlmServer stub;
+        stub.silent = true;   // accept the request, never respond
+
+        ChatWorker worker;
+        QElapsedTimer timer;
+        timer.start();
+        worker.start(stub.baseUrl(), "", "stub-model", QJsonArray{userMsg("hi")},
+                     "none", "", false, /*llmTimeout=*/1);
+        QVERIFY(worker.wait(10000));
+        const qint64 elapsedMs = timer.elapsed();
+
+        QVERIFY2(elapsedMs < 4000,
+                 qPrintable(QString("a 1s llm_timeout must abort before the 300s default; "
+                                    "waited %1ms").arg(elapsedMs)));
     }
 
     // A fresh install with the shipped defaults: local endpoint, no key, no model.

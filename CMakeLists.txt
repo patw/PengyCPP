@@ -146,6 +146,7 @@ if(Qt6Test_FOUND)
         attachments.cpp
         provider_messages.cpp
         context_recovery.cpp
+        chatworker.cpp
         web/webserver.cpp
         web/webchatworker.cpp
         web/web_resources.qrc

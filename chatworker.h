@@ -20,7 +20,7 @@ public:
     void start(const QString& baseUrl, const QString& apiKey,
                const QString& model, const QJsonArray& messages,
                const QString& toolConfirmation, const QString& reasoningEffort,
-               bool preserveReasoning);
+               bool preserveReasoning, int llmTimeout = 300);
 
     ContextRecovery::Options recoveryOptions;
     void cancel();
@@ -65,6 +65,7 @@ private:
 
     QString    m_baseUrl, m_apiKey, m_model, m_toolConfirmation, m_reasoningEffort;
     bool       m_preserveReasoning = false;
+    int        m_llmTimeout        = 300;
     QJsonArray m_messages;
 
     QThread*   m_thread = nullptr;

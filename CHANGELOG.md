@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The GUI now honors the configured LLM timeout.** `ChatWorker` built its `LlmParams` without the `llmTimeout` field, so the desktop app always used the 300 s default and ignored the "LLM timeout" setting the Settings dialog still wrote — only the CLI and Web UI honored it. `ChatWorker::start()` now takes the timeout and the GUI passes `config.llmTimeout`, matching the web worker. A slow local model no longer fails as "Could not reach <url> (timed out)" at 300 s with no way to raise it from the desktop app.
+
 ## v1.11.3
 
 - **Recover from short truncated replies, not just empty ones.** A `finish_reason: length` reply with a lead-in sentence (e.g. "Redoing it properly:") or a truncated tool call now triggers automatic context recovery when the provider reports fewer than 1,024 completion tokens (and fewer than `output_token_limit`, if set) — too short to be an output cap, so the window was nearly full. Previously only an empty reply qualified, and long agentic runs failed outright. The truncated reply is discarded and no tool from it runs. Longer or unreported completions still fail safely. Length errors now include prompt/completion token counts and say whether recovery was attempted.

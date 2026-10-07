@@ -673,7 +673,7 @@ void MainWindow::processResponse(TabSession* session, const QJsonArray& apiMessa
                   apiMessages, toolConfirmation,
                   session->chat["reasoning_effort"].isString()
                       ? session->chat["reasoning_effort"].toString() : m_config.reasoningEffort,
-                  m_config.preserveReasoning);
+                  m_config.preserveReasoning, m_config.llmTimeout);
 
     session->worker = worker;
     m_confirmTimer->start();

@@ -9,7 +9,7 @@ ChatWorker::ChatWorker(QObject* parent) : QObject(parent) {}
 void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
                        const QString& model, const QJsonArray& messages,
                        const QString& toolConfirmation, const QString& reasoningEffort,
-                       bool preserveReasoning) {
+                       bool preserveReasoning, int llmTimeout) {
     m_baseUrl           = baseUrl;
     m_apiKey            = apiKey;
     m_model             = model;
@@ -17,6 +17,7 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
     m_toolConfirmation  = toolConfirmation;
     m_reasoningEffort   = reasoningEffort;
     m_preserveReasoning = preserveReasoning;
+    m_llmTimeout        = llmTimeout;
     m_cancelled         = false;
 
     {
@@ -45,7 +46,7 @@ void ChatWorker::start(const QString& baseUrl, const QString& apiKey,
     });
 
     auto* thread = QThread::create([this] {
-        LlmParams params{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation, m_reasoningEffort, m_preserveReasoning};
+        LlmParams params{m_baseUrl, m_apiKey, m_model, m_messages, m_toolConfirmation, m_reasoningEffort, m_preserveReasoning, m_llmTimeout};
         params.toolContext = &m_toolContext;
         params.recovery = recoveryOptions;
 
