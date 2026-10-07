@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.11.4
 
 - **The GUI now honors the configured LLM timeout.** `ChatWorker` built its `LlmParams` without the `llmTimeout` field, so the desktop app always used the 300 s default and ignored the "LLM timeout" setting the Settings dialog still wrote — only the CLI and Web UI honored it. `ChatWorker::start()` now takes the timeout and the GUI passes `config.llmTimeout`, matching the web worker. A slow local model no longer fails as "Could not reach <url> (timed out)" at 300 s with no way to raise it from the desktop app.
 
