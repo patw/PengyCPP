@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The desktop Status bubble no longer blows out the sidebar during context recovery.** The sidebar's Status label sizes to its own text, and the context-compaction event set a full sentence there — "Context limit — retrying with N fewer tool-output characters (a/b)" — which raised the sidebar's minimum width from 254 px to 602 px and pushed the left split open. It now reads a constant "Context recovery". The event's `chars_removed`/`attempt`/`max_attempts` fields are unchanged. The 429/529 "Overloaded — retrying in Xs (a/b)" message is deliberately left verbose: those states are rare and indicate a downstream inference problem worth seeing in full.
+
 ## v1.11.4
 
 - **The GUI now honors the configured LLM timeout.** `ChatWorker` built its `LlmParams` without the `llmTimeout` field, so the desktop app always used the 300 s default and ignored the "LLM timeout" setting the Settings dialog still wrote — only the CLI and Web UI honored it. `ChatWorker::start()` now takes the timeout and the GUI passes `config.llmTimeout`, matching the web worker. A slow local model no longer fails as "Could not reach <url> (timed out)" at 300 s with no way to raise it from the desktop app.
