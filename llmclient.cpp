@@ -751,7 +751,10 @@ void LlmClient::run(const LlmParams& params,
                         {"name",         name},
                         {"args",         argsObj},
                         {"tool_call_id", tcId},
-                        {"questions",    questions}
+                        {"questions",    questions},
+                        // Running turn usage so the UI can tick the token count
+                        // before the turn ends (see final_response).
+                        {"usage",        accUsage}
                     });
                     QStringList answers = onQuestion(questions);
                     QJsonObject toolMsg;
@@ -804,7 +807,10 @@ void LlmClient::run(const LlmParams& params,
                     {"type",         "tool_request"},
                     {"name",         name},
                     {"args",         argsObj},
-                    {"tool_call_id", tcId}
+                    {"tool_call_id", tcId},
+                    // Running turn usage so the UI can tick the token count
+                    // before the turn ends (see final_response).
+                    {"usage",        accUsage}
                 });
 
                 bool confirmed = true;

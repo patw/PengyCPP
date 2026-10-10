@@ -494,12 +494,16 @@ function hideThinking() {
 }
 
 function showContextCompacted(data) {
+  // A harness notice, not model output: a persistent highlighted card, matching
+  // the Python edition's alert-info (and the desktop's "notice" role). It used
+  // to replace the spinner with a plain grey status line. The spinner stays, as
+  // in the Python edition.
   hideThinking();
-  thinkingEl = document.createElement('div');
-  thinkingEl.className = 'msg-thinking';
-  thinkingEl.textContent = `Context limit — retrying with ${Number(data.chars_removed).toLocaleString()} fewer tool-output characters (${data.attempt}/${data.max_attempts})`;
-  document.getElementById('messages').appendChild(thinkingEl);
-  scrollBottom();
+  showThinking();
+  const el = document.createElement('div');
+  el.className = 'alert alert-info py-2';
+  el.textContent = `Context limit — retrying with ${Number(data.chars_removed).toLocaleString()} fewer tool-output characters (${data.attempt}/${data.max_attempts})`;
+  appendToArea(el);
 }
 
 function showRetrying(data) {
@@ -1073,6 +1077,7 @@ function handleEvent(ev) {
 
   } else if (ev.type === 'question_request') {
     hideThinking();
+    if (ev.cumulative_usage) updateCumulativeTokens(ev.cumulative_usage);
     if (!currentTurnDiv) currentTurnDiv = startToolTurn();
     addToolCard(currentTurnDiv, ev.name || 'ask_user_question', ev.args || {}, ev.tool_call_id, false);
     showQuestionModal(ev);
@@ -1084,6 +1089,9 @@ function handleEvent(ev) {
 
   } else if (ev.type === 'tool_request') {
     hideThinking();
+    // Intermediate rounds carry the running turn usage: advance the badge now
+    // instead of waiting for final_response.
+    if (ev.cumulative_usage) updateCumulativeTokens(ev.cumulative_usage);
     if (!currentTurnDiv) currentTurnDiv = startToolTurn();
     addToolCard(currentTurnDiv, ev.name, ev.args || {}, ev.tool_call_id, !!ev.auto_approved);
     if (!ev.auto_approved) showConfirmModal(ev.name, ev.args || {});

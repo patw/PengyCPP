@@ -19,6 +19,12 @@ struct HttpRequest {
     QHash<QString, QString> form;
 };
 
+/// Cumulative usage preview for a mid-turn SSE event: the chat's persisted
+/// total plus the in-flight turn's running usage. Never written to disk -- the
+/// authoritative total is produced by chatAddUsage on the final response, so a
+/// failed turn leaves no trace and repeated events cannot double-count.
+QJsonObject midTurnCumulativeUsage(const QJsonObject& base, const QJsonObject& turn);
+
 class WebServer : public QObject {
     Q_OBJECT
 public:

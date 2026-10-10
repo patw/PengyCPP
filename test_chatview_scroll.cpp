@@ -137,6 +137,34 @@ int main(int argc, char** argv) {
         requireEqual(QString::number(v.testCacheSize()), "0", "clear resets cache");
     }
 
+    // ── harness cards (notice / error) ────────────────────────────────
+    // Neither is an assistant turn: each renders on its own highlighted surface,
+    // without the "Assistant" label they used to carry.
+    {
+        struct Card { const char* role; const char* text; const char* cls;
+                      const char* bg; const char* fg; };
+        const Card cards[] = {
+            {"notice", "Context recovery — full history retained.", "notice-card", "#cff4fc", "#055160"},
+            {"error",  "Error: API error (HTTP 500): boom",        "error-card",  "#f8d7da", "#58151c"},
+        };
+        for (const Card& c : cards) {
+            ChatView v;
+            // Pin the theme so the resolved CSS colours are deterministic (the
+            // buildCss placeholder chain is positional; a bad index would show
+            // up here as a wrong or missing colour).
+            v.applyTheme(makeTheme("light", "default"), 100);
+            v.appendMessage(c.role, QString::fromUtf8(c.text), false);
+            const QString html = v.testBuildHtml();
+            requireContains(html, QString("<div class='%1'>").arg(c.cls), "card renders as its own surface");
+            requireContains(html, QString::fromUtf8(c.text), "card text present");
+            requireContains(html, c.bg, "card bg colour resolved in CSS");
+            requireContains(html, c.fg, "card fg colour resolved in CSS");
+            requireNotContains(html, "class='role-assistant'", "card is not labelled Assistant");
+            requireNotContains(html, "&#x1F916; Assistant", "card carries no assistant header");
+            requireEqual(html, v.testBuildHtmlCold(), "cached == cold (card)");
+        }
+    }
+
     // ── auto-scroll pin (regression: "snaps back up to old history") ────
     // ── Local image URLs ───────────────────────────────────────────────
     // Skills emit file:/// URLs, but an LLM can turn a returned absolute path

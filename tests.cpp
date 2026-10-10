@@ -2582,6 +2582,24 @@ private slots:
         QVERIFY(replay.contains("fast done"));
     }
 
+    // The navbar token badge must advance after every model round, so mid-turn
+    // events are enriched with the chat total *including* the in-flight turn --
+    // and that preview must never write the persisted total (chatAddUsage owns
+    // it, and would double-count if the preview mutated it).
+    void midTurnCumulativeUsageAddsTurnToPersistedTotal() {
+        const QJsonObject base{{"prompt_tokens", 1000}, {"completion_tokens", 500}, {"total_tokens", 1500}};
+        const QJsonObject turn{{"prompt_tokens", 10}, {"completion_tokens", 5}, {"total_tokens", 15}};
+        const QJsonObject live = midTurnCumulativeUsage(base, turn);
+        QCOMPARE(live["prompt_tokens"].toInt(), 1010);
+        QCOMPARE(live["completion_tokens"].toInt(), 505);
+        QCOMPARE(live["total_tokens"].toInt(), 1515);
+        // base is untouched: the preview is a value, not a mutation.
+        QCOMPARE(base["total_tokens"].toInt(), 1500);
+
+        // A chat with no history previews just the turn.
+        QCOMPARE(midTurnCumulativeUsage(QJsonObject{}, turn)["total_tokens"].toInt(), 15);
+    }
+
     void webChatTemplateUsesCursorSafeReconnectAndStandardScrollBehavior() {
         QJsonObject chat = chatCreate("Template SSE test");
         WebServer server("127.0.0.1", 0);
@@ -3293,6 +3311,43 @@ private slots:
             [](const QJsonArray&) { return QStringList(); });
         QCOMPARE(events.size(), 1);
         QVERIFY(!events[0].contains("tokens_per_second"));
+    }
+
+    // Intermediate rounds must carry the running turn usage so the UI can tick
+    // the token count before the turn ends, not only at final_response.
+    void llmToolRequestCarriesRunningUsage() {
+        StubLlmServer stub;
+        QTemporaryDir dir;
+        const QString file = dir.path() + "/a.txt";
+        { QFile f(file); f.open(QIODevice::WriteOnly); f.write("x"); }
+
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_file",
+                                 QJsonObject{{"path", file}})}, 100, 20)
+            << llmCompletion("", QJsonArray{llmToolCall("tc2", "read_file",
+                                 QJsonObject{{"path", file}})}, 50, 10)
+            << llmCompletion("done", {}, 200, 30);
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl(); p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("go")};
+        p.toolConfirmation = "all";
+        QList<QJsonObject> events;
+        LlmClient().run(p, [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
+
+        QList<QJsonObject> reqs;
+        for (const auto& e : events)
+            if (e["type"].toString() == "tool_request") reqs << e;
+        QCOMPARE(reqs.size(), 2);
+        // Round 1 reports just that round; round 2 the accumulated total.
+        QCOMPARE(reqs[0]["usage"].toObject()["prompt_tokens"].toInt(), 100);
+        QCOMPARE(reqs[0]["usage"].toObject()["completion_tokens"].toInt(), 20);
+        QCOMPARE(reqs[1]["usage"].toObject()["prompt_tokens"].toInt(), 150);
+        QCOMPARE(reqs[1]["usage"].toObject()["completion_tokens"].toInt(), 30);
+        // final_response still reports the whole turn (350/60 = 410).
+        QCOMPARE(events[events.size() - 1]["type"].toString(), QString("final_response"));
+        QCOMPARE(events[events.size() - 1]["usage"].toObject()["total_tokens"].toInt(), 410);
     }
 
     void recoverySharedFinalAttemptReservationFixtures() {

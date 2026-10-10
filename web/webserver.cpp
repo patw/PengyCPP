@@ -450,6 +450,18 @@ void WebServer::routeChatSend(const QString& chatId,
             enriched["chat_title"] = title;
             enriched["cumulative_usage"] = curChat["usage"].toObject();
             pushSse(chatId, enriched);
+        } else if (ev["usage"].isObject()) {
+            // Mid-turn event carrying the running turn usage (tool_request /
+            // question_request): enrich it with the chat's cumulative total
+            // *including this in-flight turn* so the navbar token badge can
+            // advance after every model round instead of only at the end. The
+            // persisted total is untouched here -- chatAddUsage on the final
+            // response writes the authoritative value.
+            QJsonObject enriched = ev;
+            enriched["cumulative_usage"] =
+                midTurnCumulativeUsage(chatGet(chatId)["usage"].toObject(),
+                                       ev["usage"].toObject());
+            pushSse(chatId, enriched);
         } else {
             pushSse(chatId, ev);
         }
@@ -1097,6 +1109,14 @@ void WebServer::routeAbout(QTcpSocket* socket) {
 }
 
 // ── SSE push ─────────────────────────────────────────────────────────
+
+QJsonObject midTurnCumulativeUsage(const QJsonObject& base, const QJsonObject& turn) {
+    return QJsonObject{
+        {"prompt_tokens",     base["prompt_tokens"].toInt()     + turn["prompt_tokens"].toInt()},
+        {"completion_tokens", base["completion_tokens"].toInt() + turn["completion_tokens"].toInt()},
+        {"total_tokens",      base["total_tokens"].toInt()      + turn["total_tokens"].toInt()},
+    };
+}
 
 QByteArray WebServer::formatSseEvent(int id, const QJsonObject& event) {
     return QString("id: %1\ndata: %2\n\n")
