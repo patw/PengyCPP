@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.11.5
 
 - **The token count advances during a turn, not only when it ends.** The sidebar's "Tokens: N in / M out" label and the web navbar badge only updated on `final_response`, so a long agentic turn showed a stale count until control returned to the user. The `tool_request` and `question_request` events now carry the turn's running usage, and the GUI and web UI add it to the persisted chat total, so the count ticks after every model round. The value is display-only: the authoritative total is still written once, by `chatAddUsage` on the final response, so repeated events cannot double-count and a failed turn leaves the stored total untouched.
 
