@@ -88,6 +88,21 @@ QJsonArray takePendingImages(ToolContext* ctx = nullptr);
 QString    safeDownloadNameForTest(const QString& raw);
 /// Test hook for the tail-biased command-output snipper.
 QString    snipMiddleForTest(const QString& text);
+/// Validate and coerce tool-call arguments against the tool's JSON schema
+/// (*parameters*; null = unknown tool, passed through).  Returns the error
+/// text for the model, or an empty string with the coerced arguments in *out*.
+/// See pengy/core/tool_args.py.
+QString    normalizeArguments(const QString& name, const QJsonObject& args,
+                              const QJsonObject* parameters, QJsonObject& out);
+/// Schema-check ask_user_question, which the harness handles instead of
+/// execute(), so a malformed call reaches the model as an error rather than
+/// reaching the user as an empty or broken prompt.  Same contract as
+/// normalizeArguments().
+QString    validateQuestionArguments(const QJsonObject& args, QJsonObject& out);
+/// Parse a tool call's raw JSON argument string: "" is {}, one level of
+/// double encoding is unwrapped, and anything else that isn't a JSON object
+/// becomes {"_raw_arguments": raw} so normalizeArguments() reports it.
+QJsonObject parseRawArguments(const QString& raw);
 QString    execute(const QString& name, const QJsonObject& args,
                    std::atomic<bool>* cancel = nullptr,
                    ToolContext* ctx = nullptr);

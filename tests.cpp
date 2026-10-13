@@ -870,9 +870,10 @@ private slots:
         auto fns = fnsByName(win);
         QCOMPARE(fns["run_bash"]["parameters"].toObject()["required"].toArray(), (QJsonArray{"command", "host"}));
         QVERIFY(fns["run_bash"]["description"].toString().contains("remote"));
-        for (const char* name : {"download_file", "fetch_url", "glob"}) {
-            QString d = fns[name]["description"].toString();
-            QVERIFY2(!d.contains("run_bash") && d.contains("run_powershell"), qPrintable(d));
+        // No other schema may send the model to run_bash for local work.
+        for (auto it = fns.cbegin(); it != fns.cend(); ++it) {
+            if (it.key() == "run_bash" || it.key() == "run_powershell") continue;
+            QVERIFY2(!it.value()["description"].toString().contains("run_bash"), qPrintable(it.key()));
         }
         QCOMPARE(base, before);  // the shared base list is not mutated
     }
@@ -1296,6 +1297,264 @@ private slots:
         QVERIFY(result.contains("Dry run")); QFile fb2(b); QVERIFY(fb2.open(QIODevice::ReadOnly)); QCOMPARE(fb2.readAll(), QByteArray("unchanged"));
     }
 
+    // ── Tools: hardening (mirror tests/test_tool_hardening.py and
+    //    hardening_tests in tools.rs) ─────────────────────────────────
+
+    static QJsonObject replaceChange(const QString& path, const QString& oldText, const QString& newText) {
+        return QJsonObject{{"path", path}, {"operations", QJsonArray{
+            QJsonObject{{"kind", "replace"}, {"old", oldText}, {"new", newText}}}}};
+    }
+    static QByteArray slurp(const QString& path) {
+        QFile f(path);
+        return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray("<missing>");
+    }
+    static void spit(const QString& path, const QByteArray& data) {
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(data);
+    }
+    static QStringList entries(const QString& dir) {
+        return QDir(dir).entryList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot, QDir::Name);
+    }
+
+    void hardeningArgumentNormalization() {
+        QTemporaryDir dir;
+        const QString f = dir.path() + "/f.txt";
+        spit(f, "l1\nl2\nl3\nl4\n");
+        QString r = Tools::execute("read_file", QJsonObject{{"path", f}, {"offset", "2"}, {"limit", 2.0}});
+        QVERIFY2(r.contains("[Lines 2-3 of"), qPrintable(r));
+        r = Tools::execute("write_file", QJsonObject{{"path", f}, {"content", "x"}, {"append", true}});
+        QVERIFY2(r.contains("append: unknown key (valid keys: content, path)"), qPrintable(r));
+        QCOMPARE(slurp(f), QByteArray("l1\nl2\nl3\nl4\n"));
+        r = Tools::execute("replace_in_file", QJsonObject{{"path", f}, {"old_str", "l1"}});
+        QVERIFY2(r.contains("new_str: missing required key"), qPrintable(r));
+        QCOMPARE(slurp(f), QByteArray("l1\nl2\nl3\nl4\n"));
+        r = Tools::execute("read_file", QJsonObject{{"path", f}, {"offset", "three"}});
+        QVERIFY2(r.contains("offset: expected an integer, got string \"three\""), qPrintable(r));
+        r = Tools::execute("read_file", Tools::parseRawArguments("{oops"));
+        QVERIFY2(r.contains("were not valid JSON"), qPrintable(r));
+        QCOMPARE(Tools::parseRawArguments("\"{\\\"a\\\": 1}\""), (QJsonObject{{"a", 1}}));
+        QCOMPARE(Tools::parseRawArguments(""), QJsonObject());
+    }
+
+    void hardeningDryRunNeverWrites() {
+        QTemporaryDir dir;
+        const QString f = dir.path() + "/t.txt";
+        spit(f, "alpha\nbeta\n");
+        QJsonObject change = replaceChange(f, "beta", "BETA");
+        change["dry_run"] = true;
+        QString r = Tools::execute("apply_changes", QJsonObject{{"changes", QJsonArray{change}}});
+        QVERIFY2(r.contains("changes[0].dry_run: not allowed here — dry_run is a top-level argument"), qPrintable(r));
+        QCOMPARE(slurp(f), QByteArray("alpha\nbeta\n"));
+        r = Tools::execute("apply_changes", QJsonObject{
+            {"changes", QJsonArray{replaceChange(f, "beta", "BETA")}}, {"dry_run", "true"}});
+        QVERIFY2(r.startsWith("Dry run: no changes applied."), qPrintable(r));
+        QVERIFY2(r.contains("@@ -1,2 +1,2 @@\n alpha\n-beta\n+BETA"), qPrintable(r));
+        QCOMPARE(slurp(f), QByteArray("alpha\nbeta\n"));
+    }
+
+    void hardeningUnifiedDiffMatchesDifflib() {
+        QTemporaryDir dir;
+        const QString f = dir.path() + "/d.txt";
+        QByteArray old;
+        for (int i = 1; i <= 20; ++i) old += "line" + QByteArray::number(i) + "\n";
+        spit(f, old);
+        QString r = Tools::execute("apply_changes", QJsonObject{{"dry_run", true}, {"changes", QJsonArray{
+            QJsonObject{{"path", f}, {"operations", QJsonArray{
+                QJsonObject{{"kind", "replace"}, {"old", "line3\n"}, {"new", "LINE3\n"}},
+                QJsonObject{{"kind", "delete"}, {"old", "line18\n"}}}}}}}});
+        QVERIFY2(r.contains("@@ -1,6 +1,6 @@\n line1\n line2\n-line3\n+LINE3\n line4\n line5\n line6\n"
+                            "@@ -15,6 +15,5 @@\n line15\n line16\n line17\n-line18\n line19\n line20"),
+                 qPrintable(r));
+    }
+
+    void hardeningSamePathTwiceIsRejected() {
+        QTemporaryDir dir;
+        const QString f = dir.path() + "/t.txt";
+        spit(f, "a\nb\n");
+        QVERIFY(QFile::link(f, dir.path() + "/link.txt"));
+        for (const QString& other : {dir.path() + "/./t.txt", dir.path() + "/link.txt"}) {
+            QString r = Tools::execute("apply_changes", QJsonObject{{"changes", QJsonArray{
+                replaceChange(f, "a", "A"), replaceChange(other, "b", "B")}}});
+            QVERIFY2(r.contains("duplicate path"), qPrintable(r));
+            QCOMPARE(slurp(f), QByteArray("a\nb\n"));
+        }
+    }
+
+#ifdef Q_OS_UNIX
+    void hardeningFailedStageWritesNothing() {
+        QTemporaryDir dir;
+        const QString a = dir.path() + "/a.txt", locked = dir.path() + "/locked", b = locked + "/b.txt";
+        spit(a, "ORIGINAL\n");
+        QDir().mkpath(locked);
+        spit(b, "ORIGINAL\n");
+        QFile::setPermissions(b, QFile::ReadOwner);
+        QFile::setPermissions(locked, QFile::ReadOwner | QFile::ExeOwner);
+        QString r = Tools::execute("apply_changes", QJsonObject{{"changes", QJsonArray{
+            replaceChange(a, "ORIGINAL", "NEW"), replaceChange(b, "ORIGINAL", "NEW")}}});
+        QFile::setPermissions(locked, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        QVERIFY2(r.startsWith("Error: write failed; no changes applied"), qPrintable(r));
+        QCOMPARE(slurp(a), QByteArray("ORIGINAL\n"));
+        QCOMPARE(entries(dir.path()), (QStringList{"a.txt", "locked"}));
+    }
+
+    void hardeningEditsKeepPermissionsSymlinksAndCrlf() {
+        QTemporaryDir dir;
+        for (const QString& tool : {QString("write_file"), QString("replace_in_file"), QString("apply_changes")}) {
+            const QString f = dir.path() + "/" + tool + ".sh", link = dir.path() + "/" + tool + ".link";
+            spit(f, "echo hi\n");
+            QFile::setPermissions(f, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadGroup | QFile::ExeGroup);
+            const auto before = QFile::permissions(f);
+            QVERIFY(QFile::link(f, link));
+            QJsonObject args;
+            if (tool == "write_file") args = {{"path", link}, {"content", "echo NEW\n"}};
+            else if (tool == "replace_in_file") args = {{"path", link}, {"old_str", "hi"}, {"new_str", "NEW"}};
+            else args = {{"changes", QJsonArray{replaceChange(link, "hi", "NEW")}}};
+            QString r = Tools::execute(tool, args);
+            QVERIFY2(!r.startsWith("Error"), qPrintable(tool + ": " + r));
+            QVERIFY2(QFileInfo(link).isSymLink(), qPrintable(tool));
+            QVERIFY2(slurp(f).contains("NEW"), qPrintable(tool));
+            QCOMPARE(QFile::permissions(f), before);
+        }
+        for (const QString& tool : {QString("replace_in_file"), QString("apply_changes")}) {
+            const QString f = dir.path() + "/" + tool + ".txt";
+            spit(f, "one\r\ntwo\r\nthree\r\n");
+            QJsonObject args = tool == "apply_changes"
+                ? QJsonObject{{"changes", QJsonArray{replaceChange(f, "one\ntwo", "ONE\nTWO")}}}
+                : QJsonObject{{"path", f}, {"old_str", "one\ntwo"}, {"new_str", "ONE\nTWO"}};
+            QString r = Tools::execute(tool, args);
+            QVERIFY2(!r.startsWith("Error"), qPrintable(tool + ": " + r));
+            QCOMPARE(slurp(f), QByteArray("ONE\r\nTWO\r\nthree\r\n"));
+        }
+    }
+#endif
+
+#ifdef Q_OS_UNIX
+    void hardeningReadOnlyFileIsNotReplaced() {
+        for (const QString& tool : {QString("write_file"), QString("replace_in_file"), QString("apply_changes")}) {
+            QTemporaryDir dir;
+            const QString f = dir.path() + "/locked.txt";
+            spit(f, "ORIGINAL\n");
+            QFile::setPermissions(f, QFile::ReadOwner | QFile::ReadGroup | QFile::ReadOther);
+            QJsonObject args;
+            if (tool == "write_file") args = {{"path", f}, {"content", "NEW"}};
+            else if (tool == "replace_in_file") args = {{"path", f}, {"old_str", "ORIGINAL"}, {"new_str", "NEW"}};
+            else args = {{"changes", QJsonArray{replaceChange(f, "ORIGINAL", "NEW")}}};
+            const QString r = Tools::execute(tool, args);
+            QVERIFY2(r.contains("Permission denied"), qPrintable(tool + ": " + r));
+            QCOMPARE(slurp(f), QByteArray("ORIGINAL\n"));
+            QCOMPARE(entries(dir.path()), QStringList{"locked.txt"});
+        }
+    }
+#endif
+
+    static void serveStatus(QTcpServer& server, const QByteArray& status, const QByteArray& body) {
+        QObject::connect(&server, &QTcpServer::newConnection, [&server, status, body]() {
+            QTcpSocket* sock = server.nextPendingConnection();
+            QObject::connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
+            QObject::connect(sock, &QTcpSocket::readyRead, [sock, status, body]() {
+                sock->readAll();
+                sock->write("HTTP/1.1 " + status + "\r\nContent-Length: " + QByteArray::number(body.size())
+                            + "\r\nConnection: close\r\n\r\n");
+                sock->write(body);
+                sock->disconnectFromHost();
+            });
+        });
+    }
+
+    void hardeningFailedDownloadKeepsExistingFile() {
+        for (int big = 0; big < 2; ++big) {
+            QTemporaryDir dir;
+            spit(dir.path() + "/keep.bin", "PRECIOUS");
+            QTcpServer server;
+            QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+            if (big) serveStatus(server, "200 OK", QByteArray(2 * 1024 * 1024, 'x'));
+            else serveStatus(server, "404 Not Found", QByteArray());
+            QJsonObject args{{"url", QString("http://127.0.0.1:%1/file").arg(server.serverPort())},
+                             {"dir", dir.path()}, {"filename", "keep.bin"}};
+            if (big) args["max_size_mb"] = 1;
+            QString r = Tools::execute("download_file", args);
+            QVERIFY2(r.startsWith("Error"), qPrintable(r));
+            QCOMPARE(slurp(dir.path() + "/keep.bin"), QByteArray("PRECIOUS"));
+            QCOMPARE(entries(dir.path()), QStringList{"keep.bin"});
+        }
+    }
+
+    void hardeningSearchCoversAllTextFiles() {
+        QTemporaryDir dir;
+        const QString root = dir.path();
+        const QStringList names{"Program.cs", "app.vue", "main.tf", "deploy", "server.log", "data.csv"};
+        for (const QString& n : names) spit(root + "/" + n, "needle\n");
+        spit(root + "/blob.dat", QByteArray("needle\0\1", 8));
+        QString r = Tools::execute("search_content", QJsonObject{{"pattern", "needle"}, {"path", root}});
+        for (const QString& n : names) QVERIFY2(r.contains(n), qPrintable(n + ": " + r));
+        QVERIFY2(!r.contains("blob.dat"), qPrintable(r));
+        r = Tools::execute("search_content", QJsonObject{{"pattern", "absent"}, {"path", root}});
+        QVERIFY2(r.contains("(searched 6 files; skipped 1 binary)"), qPrintable(r));
+        r = Tools::execute("search_content", QJsonObject{{"pattern", "needle"}, {"path", root}, {"file_glob", "*.rs"}});
+        QVERIFY2(r.contains("No file matched file_glob '*.rs'"), qPrintable(r));
+        QDir().mkpath(root + "/src");
+        spit(root + "/src/a.py", "needle\n");
+        spit(root + "/b.py", "needle\n");
+        r = Tools::execute("search_content", QJsonObject{{"pattern", "needle"}, {"path", root}, {"file_glob", "src/*.py"}});
+        QVERIFY2(r.contains("src/a.py") && !r.contains("b.py:"), qPrintable(r));
+        for (const QString& n : {QString(".config"), QString("build"), QString("target")}) {
+            QDir().mkpath(root + "/" + n);
+            spit(root + "/" + n + "/f.txt", "needle\n");
+            r = Tools::execute("search_content", QJsonObject{{"pattern", "needle"}, {"path", root + "/" + n}});
+            QVERIFY2(r.contains("Found 1 match"), qPrintable(n + ": " + r));
+        }
+    }
+
+    void hardeningSearchHiddenDirsButNotNoise() {
+        QTemporaryDir dir;
+        for (const QString& rel : {QString(".github/workflows/ci.yml"), QString(".env"), QString("app/auth.py"),
+                                   QString(".git/config"), QString("node_modules/x/index.js"), QString(".venv/lib/site.py")}) {
+            QDir().mkpath(QFileInfo(dir.path() + "/" + rel).absolutePath());
+            spit(dir.path() + "/" + rel, "needle\n");
+        }
+        const QString r = Tools::execute("search_content", QJsonObject{{"pattern", "needle"}, {"path", dir.path()}});
+        for (const QString& rel : {QString(".github/workflows/ci.yml"), QString(".env"), QString("app/auth.py")})
+            QVERIFY2(r.contains(rel), qPrintable(rel + ": " + r));
+        for (const QString& rel : {QString(".git/"), QString("node_modules"), QString(".venv")})
+            QVERIFY2(!r.contains(rel), qPrintable(rel + ": " + r));
+    }
+
+    void hardeningReplaceAllAndIgnoreCase() {
+        QTemporaryDir dir;
+        const QString f = dir.path() + "/h.py";
+        spit(f, "client_v1.a()\nclient_v1.b()\n");
+        QString r = Tools::execute("replace_in_file", QJsonObject{{"path", f}, {"old_str", "client_v1"}, {"new_str", "client_v2"}});
+        QVERIFY2(r.contains("set replace_all=true"), qPrintable(r));
+        r = Tools::execute("replace_in_file", QJsonObject{{"path", f}, {"old_str", "client_v1"}, {"new_str", "client_v2"}, {"replace_all", true}});
+        QCOMPARE(r, QString("✅ Replaced 2 occurrence(s) in %1.").arg(f));
+        QCOMPARE(slurp(f), QByteArray("client_v2.a()\nclient_v2.b()\n"));
+        spit(dir.path() + "/a.txt", "Needle\n");
+        r = Tools::execute("search_content", QJsonObject{{"pattern", "needle"}, {"path", dir.path()}, {"file_glob", "*.txt"}});
+        QVERIFY2(r.contains("No matches"), qPrintable(r));
+        r = Tools::execute("search_content", QJsonObject{{"pattern", "needle"}, {"path", dir.path()}, {"file_glob", "*.txt"}, {"ignore_case", true}});
+        QVERIFY2(r.contains("Found 1 match"), qPrintable(r));
+    }
+
+    void hardeningGlobSemantics() {
+        QTemporaryDir dir;
+        const QString root = dir.path();
+        QDir().mkpath(root + "/.hidden");
+        QDir().mkpath(root + "/src/sub");
+        spit(root + "/.hidden/x.txt", "x");
+        spit(root + "/y.txt", "y");
+        spit(root + "/src/sub/a.py", "a");
+        spit(root + "/b.py", "b");
+        QString r = Tools::execute("glob", QJsonObject{{"pattern", "**/*.txt"}, {"path", root}});
+        QVERIFY2(r.contains("y.txt") && !r.contains(".hidden"), qPrintable(r));
+        r = Tools::execute("glob", QJsonObject{{"pattern", ".hidden/*.txt"}, {"path", root}});
+        QVERIFY2(r.contains("x.txt"), qPrintable(r));
+        r = Tools::execute("glob", QJsonObject{{"pattern", "src/**/*.py"}, {"path", root}});
+        QVERIFY2(r.contains("src/sub/a.py") && !r.contains("b.py"), qPrintable(r));
+        r = Tools::execute("glob", QJsonObject{{"pattern", "*.{py,txt}"}, {"path", root}});
+        QVERIFY2(r.contains("b.py") && r.contains("y.txt"), qPrintable(r));
+    }
+
     // ── Tools: directory_tree ───────────────────────────────────────
 
     void directoryTreeBasic() {
@@ -1610,7 +1869,7 @@ private slots:
         todos.append(QJsonObject{{"content", "Task A"}, {"status", "done"}});
 
         QString result = Tools::execute("todowrite", QJsonObject{{"todos", todos}});
-        QVERIFY(result.contains("invalid status"));
+        QVERIFY(result.contains("todos[0].status: must be one of pending, in_progress, completed"));
     }
 
     void todowriteRejectsEmptyContent() {
@@ -3228,6 +3487,73 @@ private slots:
                 QVERIFY(ev["content"].toString().contains("**Approach**: Rebase"));
                 QVERIFY(ev["content"].toString().contains("linear history"));
             }
+        }
+    }
+
+    // A headless frontend (no one to ask) replies noUserAvailable(): the model
+    // is told to decide and state its assumption, not that the user cancelled.
+    void llmAskUserQuestionNoUser() {
+        StubLlmServer stub;
+        stub.responses
+            << llmCompletion("", QJsonArray{llmToolCall("tcq", "ask_user_question",
+                                 questionArgs())})
+            << llmCompletion("ok");
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.apiKey = "test-key";
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("which way?")};
+        p.toolConfirmation = "all";
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return LlmClient::noUserAvailable(); });
+        QString content;
+        for (const QJsonObject& ev : events)
+            if (ev["type"].toString() == "tool_result" && ev["declined"].toBool())
+                content = ev["content"].toString();
+        QCOMPARE(content, QString::fromUtf8(LlmClient::kNoUserAnswer));
+    }
+
+    // ask_user_question bypasses execute(), so it is schema-checked separately:
+    // a malformed call goes back to the model, never to the user.
+    void llmAskUserQuestionMalformed() {
+        const QStringList cases = {
+            // questions as a string holding broken JSON (seen from a local model)
+            QString::fromUtf8(QJsonDocument(QJsonObject{{"questions",
+                "[{\"header\": \"H\", \"question\": \"Q?\", \"options\": [{\"label\": \"A\"]}]"}})
+                .toJson(QJsonDocument::Compact)),
+            "{\"questions\": []}",
+            "{not json!",
+        };
+        for (const QString& raw : cases) {
+            StubLlmServer stub;
+            stub.responses
+                << llmCompletion("", QJsonArray{QJsonObject{
+                       {"id", "tcq"}, {"type", "function"},
+                       {"function", QJsonObject{{"name", "ask_user_question"}, {"arguments", raw}}}}})
+                << llmCompletion("ok");
+            LlmParams p;
+            p.baseUrl = stub.baseUrl();
+            p.apiKey = "test-key";
+            p.model = "stub-model";
+            p.messages = QJsonArray{userMsg("which way?")};
+            p.toolConfirmation = "all";
+            QList<QJsonObject> events;
+            bool asked = false;
+            LlmClient().run(p,
+                [&](const QJsonObject& ev) { events.append(ev); },
+                []() { return std::make_pair(true, false); },
+                []() { return false; },
+                [&](const QJsonArray&) { asked = true; return QStringList{"A"}; });
+            QVERIFY2(!asked, qPrintable(raw));
+            QString content;
+            for (const QJsonObject& ev : events)
+                if (ev["type"].toString() == "tool_result") content = ev["content"].toString();
+            QVERIFY2(content.startsWith("Error: "), qPrintable(content));
+            QVERIFY2(content.contains("ask_user_question"), qPrintable(content));
         }
     }
 

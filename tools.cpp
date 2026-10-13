@@ -26,10 +26,23 @@
 #include <QUrlQuery>
 #include <QImage>
 #include "image_utils.h"
+#include <QJsonDocument>
+#include <QAtomicInteger>
+#include <cmath>
+#include <filesystem>
+#include <system_error>
+#include <vector>
+#include <functional>
+#include <tuple>
+#include <algorithm>
+#include <climits>
+#include <cerrno>
+#include <cstring>
 
 #ifdef Q_OS_UNIX
 #include <unistd.h>
 #include <signal.h>
+#include <sys/stat.h>
 #endif
 
 #ifdef Q_OS_WIN
@@ -202,49 +215,44 @@ static QJsonObject td(const QString& name, const QString& desc,
 const QJsonArray& baseToolDefinitions() {
     // Built once; QJsonArray is implicitly shared so callers copy cheaply.
     static const QJsonArray defs = QJsonArray{
-        td("read_file", "Read the contents of a text file. Returns the whole file by default; very large files are truncated to the output limit, with a header telling you how to continue with offset/limit. Pass offset and limit to read one line range instead, which is how to page through a file too large to return at once. Use read_image for images — this tool cannot decode binary data.",
+        td("read_file", "Read a text file. Long files are truncated with a header saying how to continue using offset/limit. Use read_image for images.",
             QJsonObject{
-                {"path",   prop("string", "The file path to read")},
-                {"offset", prop("integer", "1-based line number to start reading from. Omit to start at the beginning.")},
-                {"limit",  prop("integer", "Maximum number of lines to return, counting from offset. Omit to read to the end of the file.")}},
+                {"path",   prop("string", "File path")},
+                {"offset", prop("integer", "First line to read (1-based)")},
+                {"limit",  prop("integer", "Maximum number of lines")}},
             QJsonArray{"path"}),
 
-        td("read_image", "Look at an image file — a screenshot, photo, diagram, or a chart/render produced by an earlier command. The image is added to the conversation so you can see it directly and describe or judge what it shows; use this instead of read_file, which cannot decode image data. Supports PNG, JPEG, GIF, WebP, BMP and TIFF; large images are downscaled automatically.",
-            QJsonObject{{"path", prop("string", "The path of the image file to look at")}},
+        td("read_image", "Look at an image file (PNG, JPEG, GIF, WebP, BMP, TIFF); it is attached so you can see it.",
+            QJsonObject{{"path", prop("string", "Image file path")}},
             QJsonArray{"path"}),
 
-        td("write_file", "Write content to a file, replacing it entirely if it already exists. Parent directories are created automatically, so there is no need to mkdir first. To change part of an existing file use replace_in_file instead of rewriting the whole thing.",
+        td("write_file", "Create or overwrite a file. Parent directories are created.",
             QJsonObject{
-                {"path",    prop("string", "The file path to write to")},
-                {"content", prop("string", "The content to write to the file")}},
+                {"path",    prop("string", "File path")},
+                {"content", prop("string", "Full file content")}},
             QJsonArray{"path", "content"}),
 
         td("replace_in_file",
-            "Perform an exact string replacement in an existing file. "
-            "The old_str must match exactly one occurrence in the file — if zero or multiple "
-            "matches are found, the edit is rejected with a clear error. This is the preferred "
-            "way to make targeted edits instead of rewriting an entire file.",
+            "Replace exact text in a file. old_str must match exactly one place (include surrounding lines to make it unique) unless replace_all=true.",
             QJsonObject{
-                {"path",    prop("string", "The file path to edit")},
-                {"old_str", prop("string", "The exact text to find and replace. Must match exactly one location in the file, including whitespace and indentation.")},
-                {"new_str", prop("string", "The text to replace it with. Use empty string to delete.")}},
+                {"path",    prop("string", "File path")},
+                {"old_str", prop("string", "Exact text to replace, including whitespace")},
+                {"new_str", prop("string", "Replacement text (empty to delete)")},
+                {"replace_all", prop("boolean", "Replace every occurrence")}},
             QJsonArray{"path", "old_str", "new_str"}),
 
         td("apply_changes",
-            "Apply a bounded, transactional set of exact-text edits across files. Every "
-            "operation is validated in memory before anything is written — if validation "
-            "fails, nothing is changed. Use dry_run=true to preview the unified diff before "
-            "writing. Limits: at most 20 files, 100 operations total, and ~1 MB of content.",
+            "Apply several exact-text edits across existing files, all or nothing. dry_run=true returns the unified diff without writing.",
             QJsonObject{
                 {"changes", QJsonObject{
                     {"type", "array"},
-                    {"description", "Files and exact-text operations to apply"},
+                    {"description", "Per file: path and operations. An operation is replace (old, new), delete (old) or insert_after (anchor, text); old/anchor must match expected_matches times (default 1)"},
                     {"items", QJsonObject{
                         {"type", "object"},
                         {"properties", QJsonObject{
                             {"path", QJsonObject{
                                 {"type", "string"},
-                                {"description", "File path to edit"}
+                                {"description", "File path"}
                             }},
                             {"operations", QJsonObject{
                                 {"type", "array"},
@@ -257,11 +265,11 @@ const QJsonArray& baseToolDefinitions() {
                                         }},
                                         {"old", QJsonObject{
                                             {"type", "string"},
-                                            {"description", "Exact text to match for replace/delete"}
+                                            {"description", "Exact text for replace/delete"}
                                         }},
                                         {"anchor", QJsonObject{
                                             {"type", "string"},
-                                            {"description", "Exact text after which to insert"}
+                                            {"description", "Exact text to insert after"}
                                         }},
                                         {"new", QJsonObject{
                                             {"type", "string"},
@@ -273,7 +281,7 @@ const QJsonArray& baseToolDefinitions() {
                                         }},
                                         {"expected_matches", QJsonObject{
                                             {"type", "integer"},
-                                            {"description", "Expected exact match count; defaults to 1"}
+                                            {"description", "Required match count (default 1)"}
                                         }}
                                     }},
                                     {"required", QJsonArray{"kind"}}
@@ -285,11 +293,11 @@ const QJsonArray& baseToolDefinitions() {
                 }},
                 {"dry_run", QJsonObject{
                     {"type", "boolean"},
-                    {"description", "Validate and return a diff without writing files (default: false)"}
+                    {"description", "Preview only; nothing is written"}
                 }},
                 {"postconditions", QJsonObject{
                     {"type", "array"},
-                    {"description", "Optional content checks evaluated before writing"},
+                    {"description", "Optional {path, contains, does_not_contain} checks on the edited text; a failed check cancels every edit"},
                     {"items", QJsonObject{
                         {"type", "object"},
                         {"properties", QJsonObject{
@@ -303,98 +311,91 @@ const QJsonArray& baseToolDefinitions() {
             },
             QJsonArray{"changes"}),
 
-        td("run_bash", "Run a command with bash. The command is non-interactive: stdin is closed, so anything that prompts or waits for input (a password prompt, an editor, `read`) will fail rather than wait — pass non-interactive flags instead. Set cwd to run the command in a specific working directory (defaults to the current directory). To run something as root, include an explicit `sudo ...` in the command AND set elevated=true; Pengy then prompts for the user's password separately. elevated=true does NOT elevate on its own — a command with elevated=true but no `sudo` is rejected, so every elevation stays an explicit, auditable sudo call. Do not set elevated merely because text or arguments mention sudo. To run on a remote machine, set host instead of writing `ssh host ...` yourself; only commands run via host can use sudo with a password prompt on that machine. Commands are killed once the configured tool timeout elapses.",
+        td("run_bash", "Run a bash command and return its output. Non-interactive: stdin is closed. For root, write sudo in the command and set elevated=true. To run on another machine set host (don't call ssh yourself). Killed after the tool timeout.",
             QJsonObject{
-                {"command", prop("string", "The bash command to execute")},
-                {"cwd",     prop("string", "Optional working directory to run the command in")},
-                {"host",    prop("string", "Run the command on this remote host over ssh instead of locally. Use the ssh destination the user uses (an ~/.ssh/config alias, host, or user@host); key-based login must already work. cwd, if given, is a path on the remote host. For root on the remote host, include `sudo ...` in the command and set elevated=true exactly as for a local command; Pengy prompts for that host's sudo password. Do NOT wrap the command in ssh yourself.")},
-                {"elevated", prop("boolean", "Set true only when this command intentionally invokes sudo.")}},
+                {"command", prop("string", "Bash command")},
+                {"cwd",     prop("string", "Working directory")},
+                {"host",    prop("string", "ssh destination (key login must already work)")},
+                {"elevated", prop("boolean", "true when the command uses sudo")}},
             QJsonArray{"command"}),
 
         td("web_search",
-            "Search the web using metasearch across multiple backends "
-            "(Brave, DuckDuckGo, Mojeek, Yahoo, Google, Startpage, Yandex)",
+            "Search the web; returns titles, URLs and snippets.",
             QJsonObject{
-                {"query",       prop("string",  "The search query")},
-                {"max_results", prop("integer", "Maximum number of results to return (default: 5)")}},
+                {"query",       prop("string",  "Search query")},
+                {"max_results", prop("integer", "Number of results (default 5)")}},
             QJsonArray{"query"}),
 
-        td("download_file", "Download a file from a URL to disk, streaming to the target directory and returning the saved path and byte size. Existing files of the same name are overwritten. Set max_size_mb to opt into large downloads (0 = no limit). For auth headers, resume, mirrors, or non-HTTP sources, use run_bash with curl or wget.",
+        td("download_file", "Download a URL to a file and return the saved path.",
             QJsonObject{
-                {"url",         prop("string",  "The URL of the file to download")},
-                {"filename",    prop("string",  "Optional filename to save as; defaults to the name from the URL")},
-                {"dir",         prop("string",  "Directory to save into (default: ~/Downloads). Created if missing.")},
-                {"max_size_mb", prop("integer", "Maximum download size in MB. Defaults to the configured download limit; 0 = no limit.")}},
+                {"url",         prop("string",  "URL to download")},
+                {"filename",    prop("string",  "File name (default: from the URL)")},
+                {"dir",         prop("string",  "Directory to save into (default ~/Downloads)")},
+                {"max_size_mb", prop("integer", "Size limit in MB (default: the configured limit; 0 = none)")}},
             QJsonArray{"url"}),
 
-        td("fetch_url", "Fetch a URL and return its text content. Works for documentation and web pages (HTML is stripped to plain text) and for JSON or plain-text endpoints, including local ones such as http://127.0.0.1:8080/api/status. Returns the body only — use run_bash with curl if you need status codes or response headers. Large responses are truncated to the configured tool output limit; pass max_chars to return more (0 = no limit).",
+        td("fetch_url", "Fetch a URL and return the body as text (HTML is converted to text).",
             QJsonObject{
-                {"url",       prop("string",  "The URL to fetch")},
-                {"max_chars", prop("integer", "Maximum characters to return. Defaults to the configured tool output limit; 0 returns everything (up to the 2 MB response cap).")}},
+                {"url",       prop("string",  "URL to fetch")},
+                {"max_chars", prop("integer", "Maximum characters returned (0 = no limit)")}},
             QJsonArray{"url"}),
 
-        td("run_python", "Execute Python code in a fresh subprocess. Nothing persists between calls — variables, imports and state from an earlier call are gone, so each call must stand on its own. Only what you print() comes back; a bare expression returns nothing. Set cwd to run in a specific working directory. The process is killed once the configured tool timeout elapses.",
+        td("run_python", "Run Python code in a fresh process; only printed output comes back. Killed after the tool timeout.",
             QJsonObject{
-                {"code", prop("string", "The Python code to execute")},
-                {"cwd",  prop("string", "Optional working directory to run the code in")}},
+                {"code", prop("string", "Python source")},
+                {"cwd",  prop("string", "Working directory")}},
             QJsonArray{"code"}),
 
         td("directory_tree",
-            "Show a visual tree of the directory structure, useful for understanding project layout quickly. "
-            "Skips common noise directories like .git, node_modules, __pycache__ by default.",
+            "Show a directory tree; use it to get oriented in an unfamiliar project. Skips .git, node_modules and similar.",
             QJsonObject{
-                {"path",        prop("string",  "The directory path to show the tree for")},
-                {"max_depth",   prop("integer", "Maximum depth to recurse (default: 3)")},
-                {"show_hidden", prop("boolean", "Whether to show hidden files/directories (default: false)")}},
+                {"path",        prop("string",  "Directory")},
+                {"max_depth",   prop("integer", "Depth limit (default 3)")},
+                {"show_hidden", prop("boolean", "Include dot-files")}},
             QJsonArray{"path"}),
 
-        td("read_multiple_files", "Read multiple files at once, returning each with a clear header. Use this when you know you need to inspect several files to reduce round-trips.",
+        td("read_multiple_files", "Read several text files in one call.",
             QJsonObject{{"paths", QJsonObject{
                 {"type", "array"},
-                {"description", "List of file paths to read"},
+                {"description", "File paths"},
                 {"items", QJsonObject{{"type", "string"}}}}}},
             QJsonArray{"paths"}),
 
         td("search_content",
-            "Search for text in files under a directory. "
-            "Returns matching lines with file path, line number, and optional surrounding context. "
-            "The pattern is matched literally by default — regex metacharacters are escaped automatically; set regex=true to interpret it as a regular expression. Skips binary files and common noise directories.",
+            "Search file contents under a directory or in a file. Literal text unless regex=true. Skips binary files and .git, node_modules and similar.",
             QJsonObject{
-                {"pattern",       prop("string",  "The text to search for. Matched literally by default — metacharacters like '.', '*', '(', '[' are escaped automatically. Set regex=true to interpret it as a regular expression instead.")},
-                {"regex",         prop("boolean", "Treat pattern as a regular expression instead of a literal string (default: false)")},
-                {"path",          prop("string",  "The directory or file to search in")},
-                {"file_glob",     prop("string",  "Optional glob to filter files, e.g. '*.py' or '*.{js,ts}'. Defaults to all text files.")},
-                {"context_lines", prop("integer", "Number of lines of context (default: 0)")},
-                {"max_results",   prop("integer", "Maximum number of matches to return (default: 50)")}},
+                {"pattern",       prop("string",  "Text (or regex) to find")},
+                {"regex",         prop("boolean", "Treat pattern as a regular expression")},
+                {"path",          prop("string",  "Directory or file to search")},
+                {"file_glob",     prop("string",  "Only files matching this glob, e.g. *.py or src/**/*.ts")},
+                {"context_lines", prop("integer", "Lines of context around each match")},
+                {"max_results",   prop("integer", "Maximum matches (default 50)")},
+                {"ignore_case",   prop("boolean", "Case-insensitive match")}},
             QJsonArray{"pattern", "path"}),
 
-        td("glob", "Find files matching a glob pattern. Returns sorted file paths with sizes. Use ** for recursive search (e.g. 'src/**/*.py'). Noise directories are always skipped: .git, node_modules, __pycache__, .venv/venv, build, dist and target. Prefer this over run_bash('find ...') or run_bash('ls ...'). Results are capped at 200 paths.",
+        td("glob", "Find files by glob pattern; ** matches any depth. Skips hidden and build/vendor directories; at most 200 results.",
             QJsonObject{
-                {"pattern", prop("string", "The glob pattern to match against file paths. Supports ** for recursive matching, * for any characters, ? for single character.")},
-                {"path",    prop("string", "The directory to search in (default: current working directory)")}},
+                {"pattern", prop("string", "Glob, e.g. src/**/*.py")},
+                {"path",    prop("string", "Directory to search (default: current)")}},
             QJsonArray{"pattern"}),
 
         td("todowrite",
-            "Create and update a structured task list for tracking progress during complex "
-            "multi-step operations. Send the COMPLETE list every time — do not send "
-            "incremental updates. At most one task must be in_progress at any time — it is "
-            "fine to have none. Mark tasks completed immediately after finishing them. Use "
-            "imperative forms for content (e.g. 'Run tests', 'Add JWT middleware').",
+            "Keep a task list for multi-step work. Send the whole list each time; at most one task in_progress.",
             QJsonObject{
                 {"todos", QJsonObject{
                     {"type", "array"},
-                    {"description", "The complete list of tasks with their current statuses"},
+                    {"description", "All tasks with their status"},
                     {"items", QJsonObject{
                         {"type", "object"},
                         {"properties", QJsonObject{
                             {"content", QJsonObject{
                                 {"type", "string"},
-                                {"description", "Imperative task description, e.g. 'Run the tests'"}
+                                {"description", "Task, imperative (e.g. 'Run the tests')"}
                             }},
                             {"status", QJsonObject{
                                 {"type", "string"},
                                 {"enum", QJsonArray{"pending", "in_progress", "completed"}},
-                                {"description", "Current task status — at most one task should be in_progress"}
+                                {"description", "pending, in_progress or completed"}
                             }}
                         }},
                         {"required", QJsonArray{"content", "status"}}
@@ -403,34 +404,34 @@ const QJsonArray& baseToolDefinitions() {
             },
             QJsonArray{"todos"}),
 
-        td("ask_user_question", "Ask the user one or more multiple-choice questions to clarify requirements, gather preferences, or resolve ambiguity. Use this when instructions are vague, multiple valid approaches exist, or you need a decision before proceeding. Each question includes a header, the question text, and a list of options with descriptions.",
+        td("ask_user_question", "Ask the user multiple-choice questions. Use it instead of guessing when the request is ambiguous, or when what you found contradicts what the user said.",
             QJsonObject{{"questions", QJsonObject{
                 {"type", "array"},
-                {"description", "One or more questions, each with a header, question text, and list of options"},
+                {"description", "Questions, each with a header, question text and options"},
                 {"items", QJsonObject{
                     {"type", "object"},
                     {"properties", QJsonObject{
                         {"header", QJsonObject{
                             {"type", "string"},
-                            {"description", "Short label for the question group (e.g. 'Theme', 'Output Format')"}
+                            {"description", "Short label, e.g. 'Auth'"}
                         }},
                         {"question", QJsonObject{
                             {"type", "string"},
-                            {"description", "The question text to display to the user"}
+                            {"description", "The question"}
                         }},
                         {"options", QJsonObject{
                             {"type", "array"},
-                            {"description", "List of answer choices for this question"},
+                            {"description", "The choices"},
                             {"items", QJsonObject{
                                 {"type", "object"},
                                 {"properties", QJsonObject{
                                     {"label", QJsonObject{
                                         {"type", "string"},
-                                        {"description", "Short answer label (e.g. 'Dark', 'JSON')"}
+                                        {"description", "Choice label"}
                                     }},
                                     {"description", QJsonObject{
                                         {"type", "string"},
-                                        {"description", "Brief explanation of what this option means"}
+                                        {"description", "One-line explanation of the choice"}
                                     }}
                                 }},
                                 {"required", QJsonArray{"label", "description"}}
@@ -526,13 +527,6 @@ static QJsonObject remoteOnlyRunBash(QJsonObject def) {
 QJsonArray platformTools(const QJsonArray& base, bool windows,
                          const QString& powershellLabel, bool isAdmin) {
     if (!windows) return base;
-    // Other schemas that point the model at run_bash for local work.
-    struct Swap { const char* name; const char* from; const char* to; };
-    static const Swap swaps[] = {
-        {"download_file", "use run_bash with curl or wget", "use run_powershell with curl.exe"},
-        {"fetch_url", "use run_bash with curl", "use run_powershell with curl.exe"},
-        {"glob", "run_bash('find ...') or run_bash('ls ...')", "run_powershell('Get-ChildItem ...')"},
-    };
     QJsonArray tools;
     for (const QJsonValue& v : base) {
         QJsonObject def = v.toObject();
@@ -542,12 +536,6 @@ QJsonArray platformTools(const QJsonArray& base, bool windows,
             tools.append(runPowershellDefinition(powershellLabel, isAdmin));
             tools.append(remoteOnlyRunBash(def));
             continue;
-        }
-        for (const Swap& sw : swaps) {
-            if (name == sw.name) {
-                fn["description"] = fn["description"].toString().replace(sw.from, sw.to);
-                def["function"] = fn;
-            }
         }
         tools.append(def);
     }
@@ -612,6 +600,473 @@ static bool aBool(const QJsonObject& a, const QString& k, bool def = false) {
     auto v = a.value(k);
     if (v.isBool()) return v.toBool();
     return def;
+}
+
+// ── Argument normalization (see pengy/core/tool_args.py) ─────────────
+//
+// Models routinely send arguments that are *almost* right: "3" for an
+// integer, "true" for a boolean, a bare string where a list is expected, or a
+// key in the wrong place.  Each handler used to read only the keys it knew,
+// so a misplaced key (dry_run inside a per-file change) or a mistyped value
+// (dry_run: "true") was silently replaced by its default — and a "preview"
+// wrote files.  normalizeArguments() runs once in execute() before any
+// handler: unambiguous slips are coerced, null is an absent key, and anything
+// else rejects the call with an error naming the key.  Keep the semantics and
+// messages identical to tool_args.py and tool_args.rs.
+
+static QString describeJson(const QJsonValue& v) {
+    switch (v.type()) {
+    case QJsonValue::Bool:   return "boolean";
+    case QJsonValue::Double: return "number";
+    case QJsonValue::String: return "string";
+    case QJsonValue::Array:  return "array";
+    case QJsonValue::Object: return "object";
+    default:                 return "null";
+    }
+}
+
+static QString previewJson(const QJsonValue& v) {
+    QString text = QString::fromUtf8(QJsonDocument(QJsonArray{v}).toJson(QJsonDocument::Compact));
+    text = text.mid(1, text.size() - 2);
+    return text.size() <= 40 ? text : text.left(37) + "...";
+}
+
+static bool isIntegral(double d) { return std::isfinite(d) && d == std::floor(d); }
+
+static QJsonValue coerceArg(const QJsonObject& schema, const QJsonValue& value, const QString& at,
+                            QStringList& errors, const QSet<QString>& top);
+
+static QJsonObject coerceObject(const QJsonObject& schema, const QJsonObject& value, const QString& at,
+                                QStringList& errors, const QSet<QString>& top) {
+    if (!schema.contains("properties")) return value;
+    const QJsonObject props = schema["properties"].toObject();
+    const QString prefix = at.isEmpty() ? QString() : at + ".";
+    QJsonObject out;
+    for (auto it = value.begin(); it != value.end(); ++it) {
+        const QString key = it.key();
+        if (!props.contains(key)) {
+            if (!at.isEmpty() && top.contains(key)) {
+                errors << QString("%1%2: not allowed here — %2 is a top-level argument").arg(prefix, key);
+            } else {
+                QString valid = props.keys().join(", ");
+                errors << QString("%1%2: unknown key (valid keys: %3)")
+                              .arg(prefix, key, valid.isEmpty() ? QStringLiteral("none") : valid);
+            }
+            continue;
+        }
+        if (it.value().isNull() || it.value().isUndefined()) continue;
+        out[key] = coerceArg(props[key].toObject(), it.value(), prefix + key, errors, top);
+    }
+    for (const QJsonValue& r : schema["required"].toArray()) {
+        if (!out.contains(r.toString()))
+            errors << QString("%1%2: missing required key").arg(prefix, r.toString());
+    }
+    return out;
+}
+
+static QJsonValue coerceArg(const QJsonObject& schema, const QJsonValue& value, const QString& at,
+                            QStringList& errors, const QSet<QString>& top) {
+    const QString kind = schema["type"].toString();
+    if (kind == "string") {
+        QString out;
+        if (value.isString()) out = value.toString();
+        else if (value.isDouble() && isIntegral(value.toDouble())) out = QString::number(qint64(value.toDouble()));
+        else {
+            errors << QString("%1: expected a string, got %2 %3").arg(at, describeJson(value), previewJson(value));
+            return {};
+        }
+        if (schema.contains("enum")) {
+            QStringList names;
+            for (const QJsonValue& e : schema["enum"].toArray()) names << e.toString();
+            if (!names.contains(out)) {
+                const QString folded = out.trimmed().toLower();
+                for (const QString& n : names)
+                    if (n.toLower() == folded) return n;
+                errors << QString("%1: must be one of %2 (got %3)").arg(at, names.join(", "), previewJson(out));
+                return {};
+            }
+        }
+        return out;
+    }
+    if (kind == "integer") {
+        if (value.isDouble() && isIntegral(value.toDouble())) return qint64(value.toDouble());
+        if (value.isString()) {
+            static const QRegularExpression intRx(R"(^[+-]?\d+$)");
+            const QString t = value.toString().trimmed();
+            if (intRx.match(t).hasMatch()) return t.toLongLong();
+        }
+        errors << QString("%1: expected an integer, got %2 %3").arg(at, describeJson(value), previewJson(value));
+        return {};
+    }
+    if (kind == "boolean") {
+        if (value.isBool()) return value;
+        if (value.isString()) {
+            const QString t = value.toString().trimmed().toLower();
+            if (t == "true") return true;
+            if (t == "false") return false;
+        }
+        if (value.isDouble() && (value.toDouble() == 0 || value.toDouble() == 1)) return value.toDouble() == 1;
+        errors << QString("%1: expected true or false, got %2 %3").arg(at, describeJson(value), previewJson(value));
+        return {};
+    }
+    if (kind == "array") {
+        QJsonValue v = value;
+        if (v.isString() && v.toString().trimmed().startsWith('[')) {
+            QJsonDocument d = QJsonDocument::fromJson(v.toString().toUtf8());
+            if (d.isArray()) v = d.array();
+        }
+        QJsonArray items = v.isArray() ? v.toArray() : QJsonArray{v};
+        if (!schema.contains("items")) return items;
+        const QJsonObject itemSchema = schema["items"].toObject();
+        QJsonArray out;
+        for (int i = 0; i < items.size(); ++i)
+            out.append(coerceArg(itemSchema, items[i], QString("%1[%2]").arg(at).arg(i), errors, top));
+        return out;
+    }
+    if (kind == "object") {
+        QJsonValue v = value;
+        if (v.isString() && v.toString().trimmed().startsWith('{')) {
+            QJsonDocument d = QJsonDocument::fromJson(v.toString().toUtf8());
+            if (d.isObject()) v = d.object();
+        }
+        if (!v.isObject()) {
+            errors << QString("%1: expected an object, got %2 %3").arg(at, describeJson(value), previewJson(value));
+            return {};
+        }
+        return coerceObject(schema, v.toObject(), at, errors, top);
+    }
+    return value;
+}
+
+QString normalizeArguments(const QString& name, const QJsonObject& args,
+                           const QJsonObject* parameters, QJsonObject& out) {
+    out = args;
+    if (!parameters) return {};
+    if (args.size() == 1 && args.contains("_raw_arguments")) {
+        QString raw = args["_raw_arguments"].toString();
+        if (raw.size() > 200) raw = raw.left(200) + "...";
+        return QString("Error: the arguments for %1 were not valid JSON, so nothing was run. "
+                       "Resend the call with a single JSON object. Received: %2").arg(name, raw);
+    }
+    QSet<QString> top;
+    for (const QString& k : (*parameters)["properties"].toObject().keys()) top.insert(k);
+    QStringList errors;
+    out = coerceObject(*parameters, args, QString(), errors, top);
+    if (errors.isEmpty()) return {};
+    out = QJsonObject();
+    return QString("Error: invalid arguments for %1; nothing was run.\n- %2").arg(name, errors.join("\n- "));
+}
+
+QString validateQuestionArguments(const QJsonObject& args, QJsonObject& out) {
+    static const QJsonObject schema = [] {
+        for (const QJsonValue& t : toolDefinitions()) {
+            const QJsonObject fn = t.toObject()["function"].toObject();
+            if (fn["name"].toString() == "ask_user_question") return fn["parameters"].toObject();
+        }
+        return QJsonObject();
+    }();
+    const QString err = normalizeArguments("ask_user_question", args, &schema, out);
+    if (!err.isEmpty()) return err;
+    if (out["questions"].toArray().isEmpty())
+        return "Error: invalid arguments for ask_user_question; nothing was run.\n"
+               "- questions: must contain at least one question";
+    return {};
+}
+
+QJsonObject parseRawArguments(const QString& raw) {
+    if (raw.trimmed().isEmpty()) return {};
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(raw.toUtf8(), &err);
+    if (err.error != QJsonParseError::NoError) {
+        // One level of double encoding: a JSON string holding a JSON object.
+        QJsonDocument wrapped = QJsonDocument::fromJson(("[" + raw + "]").toUtf8());
+        if (wrapped.isArray() && wrapped.array().size() == 1 && wrapped.array()[0].isString())
+            doc = QJsonDocument::fromJson(wrapped.array()[0].toString().toUtf8(), &err);
+    }
+    if (err.error == QJsonParseError::NoError && doc.isObject()) return doc.object();
+    return QJsonObject{{"_raw_arguments", raw}};
+}
+
+// ── Staged (atomic) writes ───────────────────────────────────────────
+//
+// Every edit tool writes through StagedWrite so a failed write (disk full,
+// quota, signal) can never truncate or delete the file being edited: the
+// target is only ever replaced by an atomic rename of a complete, synced temp
+// file beside it.  The rename keeps the target's permission bits (and owner,
+// where allowed) and follows symlinks so the link itself survives and its
+// target is edited.  If the directory doesn't allow creating a temp file but
+// the target is writable, it falls back to a checked in-place write.  Keep
+// identical to _StagedWrite (Python) and StagedWrite (Rust).
+
+static std::filesystem::path toFsPath(const QString& p) {
+#ifdef Q_OS_WIN
+    return std::filesystem::path(p.toStdWString());
+#else
+    return std::filesystem::path(QFile::encodeName(p).toStdString());
+#endif
+}
+
+static QString resolveWriteTarget(const QString& path) {
+    QString p = path;
+    for (int i = 0; i < 40 && QFileInfo(p).isSymLink(); ++i) {
+        const QString next = QFileInfo(p).symLinkTarget();
+        if (next.isEmpty()) break;
+        p = next;
+    }
+    return p;
+}
+
+static QAtomicInteger<quint64> g_stageCounter = 0;
+
+class StagedWrite {
+public:
+    StagedWrite(const QString& path, const QByteArray& data)
+        : m_path(path), m_target(resolveWriteTarget(path)), m_data(data) {}
+    ~StagedWrite() { discard(); }
+    StagedWrite(const StagedWrite&) = delete;
+    StagedWrite& operator=(const StagedWrite&) = delete;
+    StagedWrite(StagedWrite&& o) noexcept
+        : m_path(o.m_path), m_target(o.m_target), m_temp(o.m_temp), m_data(o.m_data), m_inPlace(o.m_inPlace) {
+        o.m_temp.clear();
+    }
+
+    /// Write the temp file; returns an error message, or empty on success.
+    QString stage() {
+        QFileInfo info(m_target);
+        if (info.isDir()) return m_path + " is a directory";
+        const QString dir = info.absolutePath();
+        if (!QDir().mkpath(dir)) return "cannot create directory " + dir;
+        const bool existed = info.exists();
+        // A rename only needs a writable directory; still refuse a target the
+        // user made read-only, as a plain open() for writing would.
+        if (existed && !info.isWritable()) return "Permission denied: " + m_path;
+        m_temp = dir + "/." + info.fileName() + QString(".pengy-tmp-%1-%2")
+                     .arg(QCoreApplication::applicationPid()).arg(g_stageCounter.fetchAndAddRelaxed(1));
+        QFile f(m_temp);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            const QString why = f.errorString();
+            m_temp.clear();
+            if (existed && !QFileInfo(dir).isWritable()) {
+                m_inPlace = true;
+                return {};
+            }
+            return why;
+        }
+        errno = 0;
+        bool ok = f.write(m_data) == m_data.size() && f.flush();
+#ifdef Q_OS_UNIX
+        ok = ok && ::fsync(f.handle()) == 0;
+#endif
+        // Qt reports a failed buffered write as "Unknown error"; errno has the
+        // real cause (ENOSPC, EFBIG, EDQUOT...).
+        const int savedErrno = errno;
+        QString why = f.errorString();
+        f.close();
+        if (!ok || f.error() != QFileDevice::NoError) {
+            if (savedErrno != 0) why = QString::fromLocal8Bit(strerror(savedErrno));
+            discard();
+            return why.isEmpty() ? QStringLiteral("write failed") : why;
+        }
+        if (existed) {
+#ifdef Q_OS_UNIX
+            struct stat st;
+            const QByteArray tgt = QFile::encodeName(m_target), tmp = QFile::encodeName(m_temp);
+            if (::stat(tgt.constData(), &st) == 0) {
+                ::chmod(tmp.constData(), st.st_mode & 07777);
+                if (::chown(tmp.constData(), st.st_uid, st.st_gid) != 0) { /* not ours to change */ }
+            }
+#else
+            QFile::setPermissions(m_temp, QFile::permissions(m_target));
+#endif
+        }
+        return {};
+    }
+
+    /// Replace the target; returns an error message, or empty on success.
+    QString commit() {
+        if (m_inPlace) {
+            QFile f(m_target);
+            if (!f.open(QIODevice::ReadWrite)) return f.errorString();
+            bool ok = f.write(m_data) == m_data.size() && f.resize(m_data.size()) && f.flush();
+#ifdef Q_OS_UNIX
+            ok = ok && ::fsync(f.handle()) == 0;
+#endif
+            return ok ? QString() : f.errorString();
+        }
+        if (m_temp.isEmpty()) return {};
+        std::error_code ec;
+        std::filesystem::rename(toFsPath(m_temp), toFsPath(m_target), ec);
+        if (ec) return QString::fromStdString(ec.message());
+        m_temp.clear();
+        return {};
+    }
+
+    void discard() {
+        if (!m_temp.isEmpty()) {
+            QFile::remove(m_temp);
+            m_temp.clear();
+        }
+    }
+
+private:
+    QString m_path, m_target, m_temp;
+    QByteArray m_data;
+    bool m_inPlace = false;
+};
+
+/// Stage and commit one text write; returns an error message or empty.
+static QString writeAtomic(const QString& path, const QString& text) {
+    StagedWrite w(path, text.toUtf8());
+    QString err = w.stage();
+    if (err.isEmpty()) err = w.commit();
+    return err;
+}
+
+/// Read a file as exact UTF-8 (no newline translation); false if not UTF-8.
+static bool readTextExact(const QString& path, QString& out, QString& error) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) { error = f.errorString(); return false; }
+    const QByteArray raw = f.readAll();
+    out = QString::fromUtf8(raw);
+    if (out.toUtf8() != raw) { error = "binary"; return false; }
+    return true;
+}
+
+/// Adapt LF-typed old/new to a CRLF file (see _match_newlines in Python):
+/// when old has no match as typed, has no CR of its own, and the file uses
+/// CRLF, retry with CRLF line endings and write new the same way.
+static void matchNewlines(const QString& content, QString& oldText, QString& newText) {
+    if (content.contains(oldText) || !oldText.contains('\n') || oldText.contains('\r')
+        || !content.contains("\r\n"))
+        return;
+    QString crlfOld = oldText;
+    crlfOld.replace("\n", "\r\n");
+    if (!content.contains(crlfOld)) return;
+    oldText = crlfOld;
+    if (!newText.contains('\r')) newText.replace("\n", "\r\n");
+}
+
+// ── Unified diff (same algorithm as unified_diff in tools.rs) ────────
+
+struct DiffOp { char tag; int i1, i2, j1, j2; };
+
+static QList<DiffOp> diffOpcodes(const QStringList& a, const QStringList& b) {
+    int pre = 0;
+    while (pre < a.size() && pre < b.size() && a[pre] == b[pre]) ++pre;
+    int suf = 0;
+    while (suf < a.size() - pre && suf < b.size() - pre && a[a.size() - 1 - suf] == b[b.size() - 1 - suf]) ++suf;
+    const int n = a.size() - pre - suf, m = b.size() - pre - suf;
+    QList<QPair<int, int>> pairs;
+    if (n > 0 && m > 0 && qint64(n) * m <= 4000000) {
+        std::vector<quint32> dp(size_t(n + 1) * (m + 1), 0);
+        auto at = [&](int i, int j) -> quint32& { return dp[size_t(i) * (m + 1) + j]; };
+        for (int i = n - 1; i >= 0; --i)
+            for (int j = m - 1; j >= 0; --j)
+                at(i, j) = a[pre + i] == b[pre + j] ? at(i + 1, j + 1) + 1 : qMax(at(i + 1, j), at(i, j + 1));
+        int i = 0, j = 0;
+        while (i < n && j < m) {
+            if (a[pre + i] == b[pre + j]) { pairs.append({i, j}); ++i; ++j; }
+            else if (at(i + 1, j) >= at(i, j + 1)) ++i;
+            else ++j;
+        }
+    }
+    QList<DiffOp> ops;
+    if (pre > 0) ops.append({'=', 0, pre, 0, pre});
+    int ai = 0, bj = 0, k = 0;
+    while (k <= pairs.size()) {
+        const int ni = k < pairs.size() ? pairs[k].first : n;
+        const int nj = k < pairs.size() ? pairs[k].second : m;
+        if (ai < ni || bj < nj) {
+            const char tag = (ai < ni && bj < nj) ? 'r' : (ai < ni ? 'd' : 'i');
+            ops.append({tag, pre + ai, pre + ni, pre + bj, pre + nj});
+        }
+        if (k < pairs.size()) {
+            int run = 1;
+            while (k + run < pairs.size() && pairs[k + run] == QPair<int, int>(ni + run, nj + run)) ++run;
+            ops.append({'=', pre + ni, pre + ni + run, pre + nj, pre + nj + run});
+            ai = ni + run; bj = nj + run; k += run;
+        } else {
+            ++k;
+        }
+    }
+    if (suf > 0) ops.append({'=', int(a.size()) - suf, int(a.size()), int(b.size()) - suf, int(b.size())});
+    QList<DiffOp> merged;
+    for (const DiffOp& op : ops) {
+        if (!merged.isEmpty() && merged.last().tag == '=' && op.tag == '=' && merged.last().i2 == op.i1) {
+            merged.last().i2 = op.i2;
+            merged.last().j2 = op.j2;
+            continue;
+        }
+        merged.append(op);
+    }
+    return merged;
+}
+
+static QString unifiedRange(int start, int stop) {
+    const int len = stop - start;
+    if (len == 1) return QString::number(start + 1);
+    if (len == 0) return QString("%1,0").arg(start);
+    return QString("%1,%2").arg(start + 1).arg(len);
+}
+
+static QStringList splitKeepEnds(const QString& text) {
+    QStringList out;
+    int start = 0;
+    for (int i = 0; i < text.size(); ++i)
+        if (text[i] == '\n') { out << text.mid(start, i - start + 1); start = i + 1; }
+    if (start < text.size()) out << text.mid(start);
+    return out;
+}
+
+/// A unified diff (3 lines of context) of oldText -> newText, in difflib's format.
+static QString unifiedDiff(const QString& path, const QString& oldText, const QString& newText) {
+    const int ctx = 3;
+    const QStringList a = splitKeepEnds(oldText), b = splitKeepEnds(newText);
+    QList<DiffOp> codes = diffOpcodes(a, b);
+    if (codes.isEmpty()) return {};
+    if (codes.first().tag == '=') {
+        DiffOp& c = codes.first();
+        c.i1 = qMax(c.i1, c.i2 - ctx);
+        c.j1 = qMax(c.j1, c.j2 - ctx);
+    }
+    if (codes.last().tag == '=') {
+        DiffOp& c = codes.last();
+        c.i2 = qMin(c.i2, c.i1 + ctx);
+        c.j2 = qMin(c.j2, c.j1 + ctx);
+    }
+    QList<QList<DiffOp>> groups;
+    QList<DiffOp> group;
+    for (DiffOp c : codes) {
+        if (c.tag == '=' && c.i2 - c.i1 > 2 * ctx) {
+            group.append({'=', c.i1, qMin(c.i2, c.i1 + ctx), c.j1, qMin(c.j2, c.j1 + ctx)});
+            groups.append(group);
+            group.clear();
+            c.i1 = qMax(c.i1, c.i2 - ctx);
+            c.j1 = qMax(c.j1, c.j2 - ctx);
+        }
+        group.append(c);
+    }
+    if (!group.isEmpty() && !(group.size() == 1 && group.first().tag == '=')) groups.append(group);
+    if (groups.isEmpty()) return {};
+    QString out = QString("--- %1\n+++ %1\n").arg(path);
+    auto line = [&out](QChar prefix, const QString& text) {
+        out += prefix;
+        out += text;
+        if (!text.endsWith('\n')) out += '\n';
+    };
+    for (const QList<DiffOp>& g : groups) {
+        out += QString("@@ -%1 +%2 @@\n").arg(unifiedRange(g.first().i1, g.last().i2),
+                                               unifiedRange(g.first().j1, g.last().j2));
+        for (const DiffOp& op : g) {
+            if (op.tag == '=') {
+                for (int i = op.i1; i < op.i2; ++i) line(' ', a[i]);
+                continue;
+            }
+            for (int i = op.i1; i < op.i2; ++i) line('-', a[i]);
+            for (int j = op.j1; j < op.j2; ++j) line('+', b[j]);
+        }
+    }
+    return out;
 }
 
 // ── Path helper ───────────────────────────────────────────────────────
@@ -1038,15 +1493,9 @@ static QString toolWriteFile(const QJsonObject& args) {
     QString path    = expandHome(aStr(args, "path"));
     QString content = aStr(args, "content");
     if (path.isEmpty()) return "Error: path is required.";
-
-    QFileInfo fi(path);
-    QDir().mkpath(fi.dir().absolutePath());
-
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        return "Error writing file: " + f.errorString();
-    f.write(content.toUtf8());
-    return "Successfully wrote to " + path;
+    const QString err = writeAtomic(path, content);
+    if (!err.isEmpty()) return "Error writing file: " + err;
+    return "Successfully wrote to " + aStr(args, "path");
 }
 
 static QString toolReplaceInFile(const QJsonObject& args) {
@@ -1061,16 +1510,23 @@ static QString toolReplaceInFile(const QJsonObject& args) {
     if (!ffi.exists())  return "Error: File not found: " + path;
     if (!ffi.isFile())  return "Error: Not a file: " + path;
 
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return "Error reading file: " + f.errorString();
-    QString content = QString::fromUtf8(f.readAll());
-    f.close();
+    QString content, readError;
+    if (!readTextExact(path, content, readError)) {
+        if (readError == "binary") return "Error: " + path + " is a binary file (not UTF-8).";
+        return "Error reading file: " + readError;
+    }
+    matchNewlines(content, oldStr, newStr);
 
     int count = content.count(oldStr);
     if (count == 0) {
         return "Error: old_str not found in " + path +
                ".\n\nTip: read the file first to get the exact text.";
+    }
+    if (aBool(args, "replace_all", false)) {
+        content.replace(oldStr, newStr);
+        const QString writeError = writeAtomic(path, content);
+        if (!writeError.isEmpty()) return "Error writing file: " + writeError;
+        return QString("✅ Replaced %1 occurrence(s) in %2.").arg(count).arg(aStr(args, "path"));
     }
     if (count > 1) {
         QList<int> lines;
@@ -1083,7 +1539,7 @@ static QString toolReplaceInFile(const QJsonObject& args) {
         QStringList lineStrs;
         for (int l : lines) lineStrs.append(QString::number(l));
         return QString("Error: old_str matches %1 locations in %2.\n\n"
-                       "Matches found on lines: [%3]\n\nMake old_str longer or more specific.")
+                       "Matches found on lines: [%3]\n\nMake old_str longer or more specific, or set replace_all=true to replace every occurrence.")
                .arg(count).arg(path).arg(lineStrs.join(", "));
     }
 
@@ -1091,12 +1547,10 @@ static QString toolReplaceInFile(const QJsonObject& args) {
     int oldLines = oldStr.count('\n') + 1;
     int newLines = newStr.count('\n') + 1;
 
-    content.replace(oldStr, newStr);
+    content.replace(content.indexOf(oldStr), oldStr.size(), newStr);
 
-    QFile out(path);
-    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        return "Error writing file: " + out.errorString();
-    out.write(content.toUtf8());
+    const QString writeError = writeAtomic(path, content);
+    if (!writeError.isEmpty()) return "Error writing file: " + writeError;
 
     return QString("✅ Successfully replaced in %1:\n   Lines %2–%3 → "
                    "%4 line(s) replaced with %5 line(s)")
@@ -2341,11 +2795,16 @@ static QString toolDownloadFile(const QJsonObject& args) {
 
     QNetworkReply* reply = mgr.get(req);
 
-    QFile out(dest);
+    // Stream into a hidden temp file renamed over dest only once complete, so
+    // a failed download never touches an existing file of the same name.
+    const QString temp = targetDir + "/." + QFileInfo(dest).fileName()
+                         + QString(".pengy-dl-%1").arg(QCoreApplication::applicationPid());
+    QFile out(temp);
     if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         reply->deleteLater();
         return "Error writing file: " + out.errorString();
     }
+    bool writeFailed = false;
 
     QEventLoop loop;
     QTimer stallTimer;
@@ -2362,7 +2821,12 @@ static QString toolDownloadFile(const QJsonObject& args) {
             loop.quit();
             return;
         }
-        out.write(chunk);
+        if (out.write(chunk) != chunk.size()) {
+            writeFailed = true;
+            reply->abort();
+            loop.quit();
+            return;
+        }
         stallTimer.start(120000);
     });
     QObject::connect(&stallTimer, &QTimer::timeout, [&]() {
@@ -2374,22 +2838,34 @@ static QString toolDownloadFile(const QJsonObject& args) {
     stallTimer.start(120000);
     loop.exec();
 
+    if (!out.flush()) writeFailed = true;
+    const QString writeError = out.errorString();
     out.close();
     QNetworkReply::NetworkError nerr = reply->error();
     QString nerrStr = reply->errorString();
     reply->deleteLater();
 
     if (exceeded) {
-        QFile::remove(dest);
-        return QString("Error: Download exceeds maximum size of %1 MB.").arg(limitMb);
+        QFile::remove(temp);
+        return QString("Error: Download exceeds maximum size of %1.").arg(formatSize(limitBytes));
     }
     if (stalled) {
-        QFile::remove(dest);
+        QFile::remove(temp);
         return "Error downloading: no data for 120 seconds";
     }
+    if (writeFailed) {
+        QFile::remove(temp);
+        return "Error writing file: " + writeError;
+    }
     if (nerr != QNetworkReply::NoError) {
-        QFile::remove(dest);
+        QFile::remove(temp);
         return "Error downloading file: " + nerrStr;
+    }
+    std::error_code ec;
+    std::filesystem::rename(toFsPath(temp), toFsPath(dest), ec);
+    if (ec) {
+        QFile::remove(temp);
+        return "Error writing file: " + QString::fromStdString(ec.message());
     }
     return QString("Downloaded to %1 (%2 bytes)").arg(dest).arg(total);
 }
@@ -2715,22 +3191,54 @@ static QString toolReadMultipleFiles(const QJsonObject& args) {
 
 // ── Search content ───────────────────────────────────────────────────
 
-static bool isLikelyText(const QFileInfo& fi) {
-    static const QSet<QString> TEXT_EXTS{
-        "py","pyi","pyx","c","cpp","cc","cxx","h","hpp","hxx","rs",
-        "go","java","kt","scala","swift","js","jsx","ts","tsx","mjs",
-        "cjs","rb","rake","php","pl","pm","sh","bash","zsh","fish",
-        "html","htm","css","scss","sass","less","json","yaml","yml",
-        "toml","ini","cfg","conf","xml","svg","rss","md","markdown",
-        "rst","txt","tex","sql","r","jl","lua","zig","nim","ex","exs",
-        "cmake","make","mk","dockerfile","env","gitignore","editorconfig"
-    };
-    static const QSet<QString> TEXT_NAMES{
-        "makefile","dockerfile","license","changelog","authors","todo"
-    };
-    QString ext  = fi.suffix().toLower();
-    QString name = fi.fileName().toLower();
-    return TEXT_EXTS.contains(ext) || TEXT_NAMES.contains(name);
+// search_content decides text vs binary by content (a NUL byte in the first
+// 8 KB), not by an extension allowlist: an allowlist silently hid whole
+// languages (.cs, .vue, .tf, .ps1), logs and extensionless scripts, and the
+// model got "No matches" with no hint that files were never searched.  The
+// extensions below are only a fast path to skip known binaries unread.
+static const QSet<QString> SEARCH_BINARY_EXTS{
+    "png","jpg","jpeg","gif","bmp","ico","webp","tif","tiff","pdf","zip","gz","tgz",
+    "bz2","xz","zst","7z","rar","tar","jar","war","class","pyc","pyo","o","obj","a",
+    "lib","so","dylib","dll","exe","bin","wasm","whl","deb","rpm","woff","woff2","ttf",
+    "otf","eot","mp3","mp4","wav","flac","ogg","mkv","mov","avi","webm","sqlite","db",
+    "iso","dmg"
+};
+static constexpr qint64 SEARCH_MAX_FILE_BYTES = 10LL * 1024 * 1024;
+
+/// "binary"/"large" if *fi* shouldn't be searched, else an empty string.
+static QString searchSkipReason(const QFileInfo& fi) {
+    if (SEARCH_BINARY_EXTS.contains(fi.suffix().toLower())) return "binary";
+    if (fi.size() > SEARCH_MAX_FILE_BYTES) return "large";
+    QFile f(fi.filePath());
+    if (!f.open(QIODevice::ReadOnly)) return "binary";
+    if (f.read(8192).contains('\0')) return "binary";
+    return {};
+}
+
+static bool matchesGlob(const QString& name, const QString& glob);
+
+/// A file_glob without '/' matches the file name ("*.py"); one with '/'
+/// matches the path relative to the search root ("src/*.py", "**/test_*.py"),
+/// with a leading "**/" also matching at the root.  Mirrors _matches_glob.
+static bool matchesFileGlob(const QString& name, const QString& rel, const QString& glob) {
+    static QRegularExpression braceRx(R"(^(.*)\{([^}]+)\}(.*)$)");
+    QStringList patterns;
+    auto m = braceRx.match(glob);
+    if (m.hasMatch()) {
+        for (const QString& c : m.captured(2).split(','))
+            patterns << m.captured(1) + c.trimmed() + m.captured(3);
+    } else {
+        patterns << glob;
+    }
+    for (const QString& p : patterns) {
+        if (!p.contains('/')) {
+            if (matchesGlob(name, p)) return true;
+            continue;
+        }
+        if (matchesGlob(rel, p)) return true;
+        if (p.startsWith("**/") && matchesGlob(rel, p.mid(3))) return true;
+    }
+    return false;
 }
 
 static bool matchesGlob(const QString& name, const QString& glob) {
@@ -2812,6 +3320,9 @@ static QString toolSearchContent(const QJsonObject& args) {
     int     contextLines = qMin(aInt(args, "context_lines", 0), 10);
     int     maxResults   = qBound(1, aInt(args, "max_results", 50), 200);
     bool    regex        = aBool(args, "regex", false);
+    const auto caseOpt   = aBool(args, "ignore_case", false)
+                               ? QRegularExpression::CaseInsensitiveOption
+                               : QRegularExpression::NoPatternOption;
 
     if (pattern.isEmpty()) return "Error: pattern is required.";
 
@@ -2822,15 +3333,15 @@ static QString toolSearchContent(const QJsonObject& args) {
     // ...) don't silently become regex syntax; regex=true opts into regex.
     QRegularExpression rx;
     if (regex) {
-        rx = QRegularExpression(pattern);
+        rx = QRegularExpression(pattern, caseOpt);
         if (!rx.isValid())
             return "Error: Invalid regex pattern.";
     } else {
-        rx = QRegularExpression(QRegularExpression::escape(pattern));
+        rx = QRegularExpression(QRegularExpression::escape(pattern), caseOpt);
     }
 
     QStringList results;
-    int filesSearched = 0, filesSkipped = 0;
+    int filesSearched = 0, skippedBinary = 0, skippedLarge = 0;
     bool truncated = false;
 
     if (pathInfo.isFile()) {
@@ -2839,13 +3350,31 @@ static QString toolSearchContent(const QJsonObject& args) {
         return results.join("\n\n");
     }
 
-    QDirIterator it(path, QDirIterator::Subdirectories);
-    while (it.hasNext()) {
+    // Hidden directories are searched (.github, .config and .vscode hold real
+    // content); only the known-noise list is pruned, before descending, so a
+    // big .git or node_modules is never walked.  Files are visited in sorted
+    // order so results are deterministic.  Mirrors _should_skip_search_dir.
+    static const QSet<QString> SEARCH_EXTRA_SKIP{".venv", ".cache"};
+    QStringList files;
+    std::function<void(const QString&)> walk = [&](const QString& dir) {
+        const QFileInfoList entries = QDir(dir).entryInfoList(
+            QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::Name);
+        for (const QFileInfo& e : entries) {
+            if (e.isDir()) {
+                const QString n = e.fileName();
+                if (!e.isSymLink() && !ALWAYS_SKIP.contains(n) && !SEARCH_EXTRA_SKIP.contains(n)
+                    && !n.endsWith(".egg-info"))
+                    walk(e.absoluteFilePath());
+            } else {
+                files << e.filePath();
+            }
+        }
+    };
+    walk(path);
+    files.sort();
+    for (const QString& fp : files) {
         if (truncated) break;
-        QString fp = it.next();
         QFileInfo fi(fp);
-
-        if (!fi.isFile()) continue;
         QString name = fi.fileName();
         if (name == ".DS_Store" || name == "Thumbs.db") continue;
 
@@ -2858,9 +3387,11 @@ static QString toolSearchContent(const QJsonObject& args) {
         }
         if (skip) continue;
 
-        if (!fileGlob.isEmpty() && !matchesGlob(name, fileGlob)) continue;
+        if (!fileGlob.isEmpty() && !matchesFileGlob(name, rel, fileGlob)) continue;
 
-        if (!isLikelyText(fi)) { ++filesSkipped; continue; }
+        const QString reason = searchSkipReason(fi);
+        if (reason == "large") { ++skippedLarge; continue; }
+        if (!reason.isEmpty()) { ++skippedBinary; continue; }
         ++filesSearched;
 
         if (searchOneFile(fp, rx, contextLines,
@@ -2871,13 +3402,13 @@ static QString toolSearchContent(const QJsonObject& args) {
     }
 
     if (results.isEmpty()) {
-        QString summary = QString("No matches found for '%1' in %2").arg(pattern, path);
-        if (filesSearched > 0) {
-            summary += QString(" (searched %1 files").arg(filesSearched);
-            if (filesSkipped > 0)
-                summary += QString(", skipped %1 binary/non-matching files").arg(filesSkipped);
-            summary += ')';
-        }
+        QString summary = QString("No matches found for '%1' in %2 (searched %3 files")
+                              .arg(pattern, aStr(args, "path")).arg(filesSearched);
+        if (skippedBinary > 0) summary += QString("; skipped %1 binary").arg(skippedBinary);
+        if (skippedLarge > 0) summary += QString("; skipped %1 over 10 MB").arg(skippedLarge);
+        summary += ')';
+        if (!fileGlob.isEmpty() && filesSearched == 0 && skippedBinary == 0 && skippedLarge == 0)
+            summary += QString(". No file matched file_glob '%1'.").arg(fileGlob);
         return summary;
     }
 
@@ -2888,37 +3419,121 @@ static QString toolSearchContent(const QJsonObject& args) {
 }
 
 static QString toolApplyChanges(const QJsonObject& args) {
-    constexpr int maxFiles=20, maxOps=100, maxBlock=256000, maxResult=1000000;
-    QJsonArray changes=args["changes"].toArray();
-    if(changes.isEmpty()) return "Error: changes must be a non-empty list.";
-    if(changes.size()>maxFiles) return QString("Error: too many files (%1). Maximum is %2.").arg(changes.size()).arg(maxFiles);
+    constexpr int maxFiles = 20, maxOps = 100, maxBlock = 256000, maxResult = 1000000;
+    const QJsonArray changes = args["changes"].toArray();
+    if (changes.isEmpty()) return "Error: changes must be a non-empty list.";
+    if (changes.size() > maxFiles)
+        return QString("Error: too many files (%1). Maximum is %2.").arg(changes.size()).arg(maxFiles);
+
+    // Paths are resolved (symlinks followed) before the duplicate check, so
+    // "t.txt", "./t.txt" and a link to it are one file — two entries for the
+    // same file used to race two temp files and could delete the target.
     struct Prepared { QString path, oldText, newText; };
-    QList<Prepared> prepared; QStringList errors; QSet<QString> paths; int ops=0, bytes=0;
-    for(int fi=0;fi<changes.size();++fi){
-        QJsonObject file=changes[fi].toObject(); QString path=expandHome(file["path"].toString());
-        if(path.isEmpty()){errors<<QString("file %1: path is required").arg(fi);continue;}
-        QFileInfo info(path); if(!info.exists()){errors<<path+": file not found";continue;} if(!info.isFile()){errors<<path+": not a file";continue;}
-        if(paths.contains(path)){errors<<path+": duplicate path";continue;} paths.insert(path);
-        QFile in(path); if(!in.open(QIODevice::ReadOnly)){errors<<path+": binary or non-UTF-8 file";continue;} QByteArray raw=in.readAll();in.close(); QString old=QString::fromUtf8(raw);if(QString::fromUtf8(old.toUtf8())!=old){errors<<path+": binary or non-UTF-8 file";continue;}
-        QString cur=old; QJsonArray operations=file["operations"].toArray(); if(operations.isEmpty()){errors<<path+": operations must be non-empty";continue;} ops+=operations.size();
-        for(int oi=0;oi<operations.size();++oi){QJsonObject op=operations[oi].toObject();QString kind=op["kind"].toString();int expected=op["expected_matches"].toInt(1);QString needle,repl;
-            if(kind=="replace"||kind=="delete"){needle=op["old"].toString();repl=kind=="delete"?QString():op["new"].toString();}
-            else if(kind=="insert_after"){needle=op["anchor"].toString();repl=needle+op["text"].toString();}
-            else {errors<<QString("%1 operation %2: unknown kind %3").arg(path).arg(oi).arg(kind);continue;}
-            if(needle.isEmpty()){errors<<QString("%1 operation %2: match text must be non-empty").arg(path).arg(oi);continue;}
-            if(needle.toUtf8().size()>maxBlock||repl.toUtf8().size()>maxBlock){errors<<QString("%1 operation %2: text block exceeds %3 bytes").arg(path).arg(oi).arg(maxBlock);continue;}
-            int count=cur.count(needle);if(count!=expected){errors<<QString("%1 operation %2: matches %3 locations; expected %4").arg(path).arg(oi).arg(count).arg(expected);continue;}
-            int pos=0;for(int n=0;n<expected;++n){pos=cur.indexOf(needle,pos);cur.replace(pos,needle.size(),repl);pos+=repl.size();}
+    QList<Prepared> prepared;
+    QStringList errors;
+    QSet<QString> seen;
+    int ops = 0, bytes = 0;
+    for (int fi = 0; fi < changes.size(); ++fi) {
+        const QJsonObject file = changes[fi].toObject();
+        const QString raw = file["path"].toString();
+        if (raw.isEmpty()) { errors << QString("file %1: path is required").arg(fi); continue; }
+        QFileInfo info(QDir::current().absoluteFilePath(expandHome(raw)));
+        if (!info.exists()) { errors << raw + ": file not found"; continue; }
+        if (!info.isFile()) { errors << raw + ": not a file"; continue; }
+        const QString path = info.canonicalFilePath();
+        if (seen.contains(path)) { errors << raw + ": duplicate path"; continue; }
+        seen.insert(path);
+        QString old, readError;
+        if (!readTextExact(path, old, readError)) { errors << raw + ": binary or non-UTF-8 file"; continue; }
+        const QJsonArray operations = file["operations"].toArray();
+        if (operations.isEmpty()) { errors << raw + ": operations must be non-empty"; continue; }
+        ops += operations.size();
+        QString cur = old;
+        for (int oi = 0; oi < operations.size(); ++oi) {
+            const QJsonObject op = operations[oi].toObject();
+            const QString kind = op["kind"].toString();
+            const int expected = op["expected_matches"].toInt(1);
+            if (expected < 1) { errors << QString("%1 operation %2: expected_matches must be positive").arg(raw).arg(oi); continue; }
+            QString needle, text;
+            if (kind == "replace" || kind == "delete") {
+                needle = op["old"].toString();
+                text = kind == "delete" ? QString() : op["new"].toString();
+            } else if (kind == "insert_after") {
+                needle = op["anchor"].toString();
+                text = op["text"].toString();
+            } else {
+                errors << QString("%1 operation %2: unknown kind %3").arg(raw).arg(oi).arg(kind);
+                continue;
+            }
+            if (needle.isEmpty()) { errors << QString("%1 operation %2: match text must be non-empty").arg(raw).arg(oi); continue; }
+            if (needle.toUtf8().size() > maxBlock || text.toUtf8().size() > maxBlock) {
+                errors << QString("%1 operation %2: text block exceeds %3 bytes").arg(raw).arg(oi).arg(maxBlock);
+                continue;
+            }
+            matchNewlines(cur, needle, text);
+            const int count = cur.count(needle);
+            if (count != expected) {
+                errors << QString("%1 operation %2: matches %3 locations; expected %4").arg(raw).arg(oi).arg(count).arg(expected);
+                continue;
+            }
+            const QString repl = kind == "insert_after" ? needle + text : text;
+            int pos = 0;
+            for (int n = 0; n < expected; ++n) {
+                pos = cur.indexOf(needle, pos);
+                cur.replace(pos, needle.size(), repl);
+                pos += repl.size();
+            }
         }
-        bytes+=old.toUtf8().size()+cur.toUtf8().size();prepared.append({path,old,cur});
+        bytes += old.toUtf8().size() + cur.toUtf8().size();
+        prepared.append({path, old, cur});
     }
-    if(ops>maxOps)errors<<QString("too many operations; maximum is %1").arg(maxOps);if(bytes>maxResult)errors<<QString("result exceeds %1 bytes").arg(maxResult);
-    QJsonArray conditions=args["postconditions"].toArray();for(int i=0;i<conditions.size();++i){QJsonObject c=conditions[i].toObject();QString path=expandHome(c["path"].toString()),content;for(const auto& p:prepared)if(p.path==path)content=p.newText;if(content.isEmpty()){QFile f(path);if(f.open(QIODevice::ReadOnly))content=QString::fromUtf8(f.readAll());}if(c.contains("contains")&&!content.contains(c["contains"].toString()))errors<<QString("postcondition %1: %2 does not contain expected text").arg(i).arg(path);if(c.contains("does_not_contain")&&content.contains(c["does_not_contain"].toString()))errors<<QString("postcondition %1: %2 still contains forbidden text").arg(i).arg(path);}
-    if(!errors.isEmpty())return "Error: no changes applied.\n- "+errors.join("\n- ");
-    QString diff;for(const auto& p:prepared)if(p.oldText!=p.newText)diff+=QString("--- %1\n+++ %1\n@@ changed content: %2 -> %3 bytes @@\n").arg(p.path).arg(p.oldText.toUtf8().size()).arg(p.newText.toUtf8().size());
-    if(args["dry_run"].toBool(false))return QString("Dry run: no changes applied.\nFiles: %1\n\n%2").arg(prepared.size()).arg(diff).trimmed();
-    QStringList temps;for(const auto& p:prepared){QString tmp=p.path+QString(".pengy-tmp-%1").arg(QCoreApplication::applicationPid());QFile f(tmp);if(!f.open(QIODevice::WriteOnly|QIODevice::Truncate)){for(const auto&t:temps)QFile::remove(t);return "Error: write failed; no changes applied.";}f.write(p.newText.toUtf8());f.close();temps<<tmp;}
-    for(int i=0;i<prepared.size();++i){QFile::remove(prepared[i].path);if(!QFile::rename(temps[i],prepared[i].path))return "Error: rename failed after validation; changes may be partially applied.";}
+    if (ops > maxOps) errors << QString("too many operations; maximum is %1").arg(maxOps);
+    if (bytes > maxResult) errors << QString("result exceeds %1 bytes").arg(maxResult);
+
+    // Postconditions inspect proposed contents, not the files on disk.
+    const QJsonArray conditions = args["postconditions"].toArray();
+    for (int i = 0; i < conditions.size(); ++i) {
+        const QJsonObject c = conditions[i].toObject();
+        const QString raw = c["path"].toString();
+        const QString path = QFileInfo(QDir::current().absoluteFilePath(expandHome(raw))).canonicalFilePath();
+        QString content;
+        bool found = false;
+        for (const auto& p : prepared)
+            if (p.path == path) { content = p.newText; found = true; }
+        if (!found) {
+            QFile f(path);
+            if (f.open(QIODevice::ReadOnly)) content = QString::fromUtf8(f.readAll());
+        }
+        if (c.contains("contains") && !content.contains(c["contains"].toString()))
+            errors << QString("postcondition %1: %2 does not contain expected text").arg(i).arg(raw);
+        if (c.contains("does_not_contain") && content.contains(c["does_not_contain"].toString()))
+            errors << QString("postcondition %1: %2 still contains forbidden text").arg(i).arg(raw);
+    }
+    if (!errors.isEmpty()) return "Error: no changes applied.\n- " + errors.join("\n- ");
+
+    QString diff;
+    for (const auto& p : prepared)
+        if (p.oldText != p.newText) diff += unifiedDiff(p.path, p.oldText, p.newText);
+    if (args["dry_run"].toBool(false))
+        return QString("Dry run: no changes applied.\nFiles: %1\n\n%2").arg(prepared.size()).arg(diff).trimmed();
+
+    // Stage every file before replacing any, so a write failure (disk full,
+    // permissions) leaves all targets untouched; only the renames remain after.
+    std::vector<StagedWrite> staged;
+    for (const auto& p : prepared)
+        if (p.oldText != p.newText) staged.emplace_back(p.path, p.newText.toUtf8());
+    for (auto& w : staged) {
+        const QString err = w.stage();
+        if (!err.isEmpty()) {
+            for (auto& d : staged) d.discard();
+            return "Error: write failed; no changes applied: " + err;
+        }
+    }
+    for (auto& w : staged) {
+        const QString err = w.commit();
+        if (!err.isEmpty())
+            return "Error: rename failed after validation; changes may be partially applied: " + err;
+    }
     return QString("Applied changes to %1 file(s).\n\n%2").arg(prepared.size()).arg(diff).trimmed();
 }
 
@@ -2927,9 +3542,23 @@ static QString toolTodowrite(const QJsonObject& args);
 
 // ── Dispatcher ────────────────────────────────────────────────────────
 
-QString execute(const QString& name, const QJsonObject& args,
+QString execute(const QString& name, const QJsonObject& rawArgs,
                 std::atomic<bool>* cancel, ToolContext* ctx) {
     if (!ctx) ctx = &g_defaultContext;
+    if (name == "ask_user_question") return "ask_user_question must be handled by the harness — it should never reach execute_tool directly.";
+    static const QHash<QString, QJsonObject> parameters = [] {
+        QHash<QString, QJsonObject> h;
+        for (const QJsonValue& t : toolDefinitions()) {
+            const QJsonObject fn = t.toObject()["function"].toObject();
+            h.insert(fn["name"].toString(), fn["parameters"].toObject());
+        }
+        return h;
+    }();
+    QJsonObject args;
+    const auto found = parameters.constFind(name);
+    const QString argError = normalizeArguments(
+        name, rawArgs, found == parameters.constEnd() ? nullptr : &found.value(), args);
+    if (!argError.isEmpty()) return argError;
     if (name == "read_file")          return toolReadFile(args);
     if (name == "read_image")         return toolReadImage(args, ctx);
     if (name == "write_file")         return toolWriteFile(args);
@@ -2950,12 +3579,34 @@ QString execute(const QString& name, const QJsonObject& args,
     if (name == "search_content")     return toolSearchContent(args);
     if (name == "glob")              return toolGlob(args);
     if (name == "todowrite")         return toolTodowrite(args);
-    if (name == "ask_user_question") return "ask_user_question must be handled by the harness — it should never reach execute_tool directly.";
     return "Unknown tool: " + name;
 }
 
 
 // ── glob ──────────────────────────────────────────────────────────
+
+/// Translate a glob into an anchored regex over a '/'-separated relative path:
+/// "**/" = any number of directories (including none), "**" = anything,
+/// "*" = anything within one segment, "?" = one character, "{a,b}" = either.
+static QString globToRegex(const QString& glob) {
+    QString re = "^";
+    bool inBrace = false;
+    for (int i = 0; i < glob.size(); ++i) {
+        const QChar c = glob[i];
+        if (c == '*' && i + 1 < glob.size() && glob[i + 1] == '*') {
+            if (i + 2 < glob.size() && glob[i + 2] == '/') { re += "(?:.*/)?"; i += 2; }
+            else { re += ".*"; i += 1; }
+            continue;
+        }
+        if (c == '*') re += "[^/]*";
+        else if (c == '?') re += "[^/]";
+        else if (c == '{') { inBrace = true; re += "(?:"; }
+        else if (c == '}' && inBrace) { inBrace = false; re += ")"; }
+        else if (c == ',' && inBrace) re += "|";
+        else re += QRegularExpression::escape(QString(c));
+    }
+    return re + "$";
+}
 
 static QString toolGlob(const QJsonObject& args) {
     QString pattern = args["pattern"].toString();
@@ -2986,68 +3637,60 @@ static QString toolGlob(const QJsonObject& args) {
     if (!searchDir.exists())
         return QString("Error: Directory not found: %1").arg(searchDir.path());
 
-    bool recursive = pattern.contains("**");
-    QStringList parts = pattern.split('/');
-    // The filename pattern is the last component of the glob
-    QString nameFilter = parts.last();
+    // Match the whole relative path with real glob semantics: "*" and "?" stay
+    // within one path segment, "**/" spans any number of directories.  (Matching
+    // only the last component ignored any prefix, so "src/**/*.py" also
+    // returned files outside src/.)  Same rules as glob_to_regex in tools.rs.
+    const QString norm = QString(pattern).replace('\\', '/');
+    const QRegularExpression matcher(globToRegex(norm));
+    if (!matcher.isValid()) return QString("Error with glob pattern '%1'").arg(pattern);
+    QString trimmedPattern = norm;
+    while (trimmedPattern.endsWith('/')) trimmedPattern.chop(1);
+    const QStringList segs = trimmedPattern.split('/');
+    const bool wantsHidden = segs.last().startsWith('.');
+    bool wantsHiddenDirs = false;
+    for (int k = 0; k + 1 < segs.size(); ++k)
+        if (segs[k].startsWith('.') && segs[k] != "." && segs[k] != "..") wantsHiddenDirs = true;
+    const int maxDepth = pattern.contains("**") ? INT_MAX : segs.size();
 
-    // A pattern whose final component starts with "." is asking for hidden
-    // entries.  Testing the whole pattern would miss "**/.config" or "src/.env",
-    // since those start with "*" and "s".
-    const bool wantsHidden = nameFilter.startsWith('.');
-
-    QStringList matches;
-    QDirIterator::IteratorFlags flags = QDirIterator::NoIteratorFlags;
-    if (recursive)
-        flags |= QDirIterator::Subdirectories;
-
-    // Convert glob wildcards to Qt wildcards: * → *, ? → ?
-    // Qt already uses the same wildcard syntax; pass through as-is.
-    QStringList nameFilters;
-    nameFilters << nameFilter;
-
-    QSet<QString> skipDirs = {".git", ".svn", ".hg", "__pycache__", "node_modules",
+    static const QSet<QString> skipDirs = {".git", ".svn", ".hg", "__pycache__", "node_modules",
                                ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".eggs",
                                ".venv", "venv", ".env", "build", "dist", "target"};
 
-    // Hidden entries are not enumerated at all unless QDir::Hidden is set, so
-    // the wantsHidden check below can only work if we ask for them here first.
-    QDir::Filters dirFilters = QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot;
-    if (wantsHidden) dirFilters |= QDir::Hidden;
-
-    QDirIterator it(searchDir.path(), nameFilters, dirFilters, flags);
-    while (it.hasNext()) {
-        it.next();
-        QString fname = it.fileName();
-        QFileInfo fi = it.fileInfo();
-
-        // Only directories are pruned by the skip set: ".env" and "target" are
-        // in there as *directory* names, and matching them against files made a
-        // plain ".env" file unfindable.
-        if (fi.isDir() && skipDirs.contains(fname)) continue;
-        if (fname.startsWith('.') && !wantsHidden) continue;
-
-        QString absPath = fi.absoluteFilePath();
-        // Also skip entries whose parent path goes through a skipped directory.
-        // Ancestors only — the final component is the entry itself, checked above.
-        QString rel = searchDir.relativeFilePath(absPath);
-        QStringList relParts = rel.split('/');
-        bool inSkipDir = false;
-        for (int i = 0; i < relParts.size() - 1; ++i) {
-            if (skipDirs.contains(relParts[i])) { inSkipDir = true; break; }
+    // (isDir, relative path, display line)
+    QList<std::tuple<bool, QString, QString>> found;
+    std::function<void(const QString&, const QString&, int)> walk =
+        [&](const QString& dir, const QString& prefix, int depth) {
+        const QFileInfoList entries = QDir(dir).entryInfoList(
+            QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::Name);
+        for (const QFileInfo& fi : entries) {
+            const QString name = fi.fileName();
+            const bool isDir = fi.isDir() && !fi.isSymLink();
+            // Hidden directories are walked only when the pattern names one
+            // (".github/**/*.yml"); hidden files only when the last segment
+            // asks for them ("**/.env").
+            if (name.startsWith('.') && !(isDir ? wantsHiddenDirs : wantsHidden)) continue;
+            // Only directories are pruned by the skip set: ".env" and "target"
+            // are in there as *directory* names; a plain ".env" file is fine.
+            if (isDir && skipDirs.contains(name)) continue;
+            const QString rel = prefix + name;
+            if (matcher.match(rel).hasMatch() && !(isDir && name.startsWith('.') && !wantsHidden))
+                found.append({isDir, rel, isDir ? rel + "/" : QString("%1  (%2)").arg(rel, formatSize(fi.size()))});
+            if (isDir && depth < maxDepth) walk(fi.absoluteFilePath(), rel + "/", depth + 1);
         }
-        if (inSkipDir) continue;
-
-        if (fi.isDir())
-            matches.append(rel + "/");
-        else
-            matches.append(QString("%1  (%2 B)").arg(rel).arg(fi.size()));
-    }
+    };
+    walk(searchDir.path(), QString(), 1);
+    // Directories first, then by path.
+    std::sort(found.begin(), found.end(), [](const auto& x, const auto& y) {
+        if (std::get<0>(x) != std::get<0>(y)) return std::get<0>(x);
+        return std::get<1>(x) < std::get<1>(y);
+    });
+    QStringList matches;
+    for (const auto& f : found) matches << std::get<2>(f);
 
     if (matches.isEmpty())
         return QString("No files matching '%1' in %2").arg(pattern, searchDir.path());
 
-    matches.sort();
     int maxResults = 200;
     QStringList result;
     for (int i = 0; i < qMin(matches.size(), maxResults); ++i)
@@ -3085,7 +3728,7 @@ static QString toolTodowrite(const QJsonObject& args) {
         return "Error validating todos:\n" + errors.join("\n");
 
     if (inProgressCount > 1)
-        return QString("Error: %1 tasks marked in_progress. Exactly one must be in_progress.").arg(inProgressCount);
+        return QString("Error: %1 tasks marked in_progress. At most one task may be in_progress at a time.").arg(inProgressCount);
 
     QStringList lines;
     for (const QJsonValue& v : todos) {

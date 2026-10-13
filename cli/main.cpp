@@ -17,6 +17,9 @@
 #include <atomic>
 #include <cstdio>
 #include <functional>
+#ifdef Q_OS_WIN
+#  include <io.h>
+#endif
 
 #ifdef Q_OS_UNIX
 #  include <readline/readline.h>
@@ -69,6 +72,14 @@ static void outln(const QString& s = {}) { out(s + '\n'); }
 // appended to the chat history the way an assistant message is (see the
 // "error" branch in PengyCliApp::onEvent).  Colour only for a terminal, so a
 // cron log or a captured stream stays readable.
+static bool stdinIsTerminal() {
+#ifdef Q_OS_UNIX
+    return isatty(STDIN_FILENO);
+#else
+    return _isatty(_fileno(stdin));
+#endif
+}
+
 static void err(const QString& s) {
     const QByteArray text = s.toUtf8();
 #ifdef Q_OS_UNIX
@@ -716,6 +727,9 @@ private:
     // mode.  An empty return means "cancelled" to the harness.
     QStringList onQuestion(const QJsonArray& questions) {
         if (questions.isEmpty()) return QStringList();
+        // Headless (piped/scripted) run: nobody can answer, so the model is
+        // told to decide -- not handed a blank line read as "option 1".
+        if (!stdinIsTerminal()) return LlmClient::noUserAvailable();
 
         outln();
         outln(cyan(bold("--- The assistant needs your input ---")));

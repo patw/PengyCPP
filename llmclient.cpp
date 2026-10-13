@@ -741,10 +741,31 @@ void LlmClient::run(const LlmParams& params,
                 QJsonObject fn    = tc["function"].toObject();
                 QString     name  = fn["name"].toString();
                 QString     argsStr = fn["arguments"].toString();
-                QJsonObject argsObj = QJsonDocument::fromJson(argsStr.toUtf8()).object();
+                // Malformed JSON is kept (not replaced by {}) so the tool
+                // layer can tell the model its call didn't parse.
+                QJsonObject argsObj = Tools::parseRawArguments(argsStr);
 
                 // ask_user_question is handled at the harness level
                 if (name == "ask_user_question") {
+                    QJsonObject checked;
+                    const QString argError = Tools::validateQuestionArguments(argsObj, checked);
+                    if (!argError.isEmpty()) {
+                        current.append(QJsonObject{
+                            {"role",         "tool"},
+                            {"tool_call_id", tcId},
+                            {"content",      argError}
+                        });
+                        onEvent(QJsonObject{
+                            {"type",         "tool_result"},
+                            {"tool_call_id", tcId},
+                            {"name",         name},
+                            {"args",         argsObj},
+                            {"content",      argError},
+                            {"declined",     false}
+                        });
+                        continue;
+                    }
+                    argsObj = checked;
                     QJsonArray questions = argsObj["questions"].toArray();
                     onEvent(QJsonObject{
                         {"type",         "question_request"},
@@ -760,7 +781,7 @@ void LlmClient::run(const LlmParams& params,
                     QJsonObject toolMsg;
                     toolMsg["role"]         = "tool";
                     toolMsg["tool_call_id"] = tcId;
-                    if (!answers.isEmpty()) {
+                    if (!answers.isEmpty() && answers != noUserAvailable()) {
                         // Format answers as tool result
                         QStringList answerLines;
                         for (int i = 0; i < questions.size(); ++i) {
@@ -784,13 +805,18 @@ void LlmClient::run(const LlmParams& params,
                             {"content",      answerLines.join("\n")}
                         });
                     } else {
-                        toolMsg["content"] = "User cancelled the question.";
+                        // A headless run (no one to ask) is not a refusal:
+                        // tell the model to decide and say what it assumed.
+                        const QString unanswered = answers == noUserAvailable()
+                            ? QString::fromUtf8(kNoUserAnswer)
+                            : QStringLiteral("User cancelled the question.");
+                        toolMsg["content"] = unanswered;
                         onEvent(QJsonObject{
                             {"type",         "tool_result"},
                             {"tool_call_id", tcId},
                             {"name",         name},
                             {"args",         argsObj},
-                            {"content",      "User cancelled the question."},
+                            {"content",      unanswered},
                             {"declined",     true}
                         });
                     }

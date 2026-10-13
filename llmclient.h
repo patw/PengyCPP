@@ -85,13 +85,22 @@ public:
     using ConfirmFn  = std::function<std::pair<bool,bool>()>;
     using QuestionFn = std::function<QStringList(const QJsonArray&)>;
 
+    // onQuestion's reply when no user can answer; identical to NO_USER_ANSWER
+    // in the Python and Rust editions.
+    static QStringList noUserAvailable() { return {QStringLiteral("\x01pengy:no-user")}; }
+    static constexpr const char* kNoUserAnswer =
+        "No user is available to answer (non-interactive run). If what you found makes one "
+        "option clearly the most reasonable, take it and state that assumption in your reply. "
+        "If it would be a pure guess, leave that part undone and say what you need.";
+
     // Blocks the calling thread until the conversation ends or is cancelled.
     //
     // *onQuestion* is required, not defaulted: ask_user_question always pauses
     // for the user, so a frontend that omits it would call a null std::function
     // (std::bad_function_call → terminate) the first time the model asks
-    // anything.  A frontend with no way to ask returns an empty list, which the
-    // harness reports to the model as a cancelled question.
+    // anything.  An empty list is reported to the model as a cancelled
+    // question; noUserAvailable() (a headless CLI run, nobody to ask) as
+    // kNoUserAnswer, so the model decides and states its assumption.
     void run(const LlmParams& params,
              EventFn   onEvent,
              ConfirmFn onConfirm,
