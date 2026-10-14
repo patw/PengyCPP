@@ -20,7 +20,7 @@ struct TabSession {
     QJsonObject chat;
     ChatView*   chatView = nullptr;
     ChatWorker* worker   = nullptr;
-    bool        yoloThisTurn  = false;
+    bool        toolsApprovedForSession = false; // Memory-only; never saved to chat/config.
     bool        thinking      = false;
     bool        toolRunning   = false;
     int         promptTokens     = 0;

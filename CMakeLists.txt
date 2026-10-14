@@ -70,6 +70,7 @@ add_executable(pengy WIN32
     context_recovery.cpp
     chatworker.cpp
     mainwindow.cpp
+    toolconfirmdialog.cpp
     chathistory.cpp
     tasksdialog.cpp
     chatview.cpp
@@ -121,6 +122,13 @@ if(Qt6Test_FOUND)
     target_compile_definitions(pengy_chatinput_test PRIVATE PENGY_UNIT_TEST)
     target_link_libraries(pengy_chatinput_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
     add_test(NAME PengyChatInputTest COMMAND pengy_chatinput_test)
+
+    # Tool-confirmation dialog: geometry (it used to open too small to read) and
+    # the meaning of each button, including the tab-scoped "don't ask again".
+    add_executable(pengy_toolconfirm_test test_toolconfirm_dialog.cpp toolconfirmdialog.cpp)
+    target_compile_definitions(pengy_toolconfirm_test PRIVATE PENGY_UNIT_TEST)
+    target_link_libraries(pengy_toolconfirm_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
+    add_test(NAME PengyToolConfirmTest COMMAND pengy_toolconfirm_test)
 
     # Sidebar addChat()/removeChat() + model-hint-gap regression tests
     # (standalone binary, mirrors PengyR's gui/tests/test_chathistory.cpp).

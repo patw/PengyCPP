@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "toolconfirmdialog.h"
 #include "chathistory.h"
 #include "chatview.h"
 #include "chatinput.h"
@@ -583,8 +584,6 @@ void MainWindow::sendMessage(const QString& text, const QStringList& images) {
     TabSession* session = tabForChat(m_activeChatId);
     if (!session || session->chat.isEmpty()) return;
 
-    session->yoloThisTurn = false;
-
     // Import images before persisting: history owns immutable bytes, never temp paths.
     QJsonArray attachmentRefs;
     for (const QString& image : images) {
@@ -769,7 +768,7 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
 
         QString name = event["name"].toString();
         QString tc   = m_config.toolConfirmation;
-        bool skipConfirm = (tc == "all") || session->yoloThisTurn ||
+        bool skipConfirm = (tc == "all") || session->toolsApprovedForSession ||
             (tc == "safe" && Tools::isReadOnly(name));
 
         if (skipConfirm) {
@@ -779,7 +778,6 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
         }
 
     } else if (type == "assistant_tool_calls") {
-        session->yoloThisTurn = false;
         // The narration the model wrote alongside its tool calls is persisted
         // and shows on reload, so it has to render live too -- before the tool
         // cards, which is the order it was written in.
@@ -878,80 +876,28 @@ void MainWindow::handleFinalResponse(TabSession* session, const QJsonObject& res
 
 void MainWindow::handleToolConfirm(TabSession* session, const QJsonObject& req) {
     Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
-    QDialog dlg(this);
-    dlg.setWindowTitle("Confirm Tool: " + req["name"].toString());
-    dlg.setModal(true);
-    dlg.resize(480, 320);
-    dlg.setMaximumWidth(600);
-    dlg.setStyleSheet(appStyleSheet(theme, m_config.uiScale));
 
-    auto* layout = new QVBoxLayout(&dlg);
-    auto* header = new QLabel(QString("Execute tool: <b>%1</b>").arg(req["name"].toString()));
-    header->setTextFormat(Qt::RichText);
-    header->setStyleSheet(QString("color:%1; padding:8px;").arg(theme["fg"]));
-    layout->addWidget(header);
-
-    auto* argsLabel = new QLabel("Arguments:");
-    argsLabel->setStyleSheet(QString("color:%1; padding:0 8px;").arg(theme["fg"]));
-    layout->addWidget(argsLabel);
-
-    QString argsText = QJsonDocument(req["args"].toObject()).toJson(QJsonDocument::Indented);
-    static const int kMaxArgsLen = 4000;
-    if (argsText.length() > kMaxArgsLen) {
-        argsText = argsText.left(kMaxArgsLen) + QString("\n... [truncated, %1 chars total]").arg(argsText.length());
-    }
-    auto* argsEdit = new QPlainTextEdit(argsText);
-    argsEdit->setReadOnly(true);
-    argsEdit->setLineWrapMode(QPlainTextEdit::WidgetWidth);
-    argsEdit->setWordWrapMode(QTextOption::WrapAnywhere);
-    argsEdit->setStyleSheet(QString("color:%1; padding:4px;").arg(theme["fg"]));
-    layout->addWidget(argsEdit, 1);
-
-    auto* btnLayout = new QHBoxLayout;
-
-    auto* execBtn = new QPushButton("Execute");
-    execBtn->setStyleSheet(QString(
-        "QPushButton { background-color:%1; color:%2; border:none; border-radius:6px; padding:8px 18px; font-weight:bold; }"
-        "QPushButton:hover { background-color:%3; }").arg(theme["primary"], theme["primary_fg"], theme["primary_hover"]));
-
-    auto* yesAllBtn = new QPushButton("Yes to All\nThis Turn");
-    yesAllBtn->setStyleSheet(QString(
-        "QPushButton { background-color:%1; color:white; border:none; border-radius:6px; padding:8px 14px; font-weight:bold; }"
-        "QPushButton:hover { background-color:%2; }").arg(theme["warning"], theme["warning_hover"]));
-
-    auto* cancelBtn = new QPushButton("Decline");
-    cancelBtn->setStyleSheet(QString(
-        "QPushButton { background-color:%1; color:white; border:none; border-radius:6px; padding:8px 18px; font-weight:bold; }"
-        "QPushButton:hover { background-color:%2; }").arg(theme["danger"], theme["danger_hover"]));
-
-    btnLayout->addWidget(execBtn);
-    btnLayout->addWidget(yesAllBtn);
-    btnLayout->addWidget(cancelBtn);
-    layout->addLayout(btnLayout);
-
+    // Captured before the modal dialog runs: exec() spins a nested event loop,
+    // so the worker can be abandoned (Stop, a finished run) while the user is
+    // deciding. The answer still belongs to the run that asked for it.
     ChatWorker* worker = session->worker;
-    bool responded = false;
-    connect(execBtn, &QPushButton::clicked, &dlg, [&]() {
-        responded = true;
-        if (worker) worker->sendConfirmation(true, false);
-        dlg.accept();
-    });
-    connect(yesAllBtn, &QPushButton::clicked, &dlg, [&]() {
-        responded = true;
-        session->yoloThisTurn = true;
-        if (worker) worker->sendConfirmation(true, true);
-        dlg.accept();
-    });
-    connect(cancelBtn, &QPushButton::clicked, &dlg, [&]() {
-        responded = true;
-        if (worker) worker->sendConfirmation(false, false);
-        dlg.reject();
-    });
 
-    dlg.exec();
+    ToolConfirmResult result;
+    QDialog* dlg = buildToolConfirmDialog(this, req["name"].toString(),
+                                          req["args"].toObject(), theme,
+                                          m_config.uiScale, &result);
+    dlg->exec();
+    delete dlg;
 
-    if (!responded && worker)
-        worker->sendConfirmation(false, false);
+    // Approving "don't ask again" is remembered on the tab, not the run: the
+    // old per-turn flag was cleared on every model round, so the next bash call
+    // in the same chat prompted again. Held in memory only -- a tab closed and
+    // reopened, or another tab, starts asking again.
+    if (result.confirmed && result.approveSession)
+        session->toolsApprovedForSession = true;
+
+    if (worker)
+        worker->sendConfirmation(result.confirmed, false);
 }
 
 void MainWindow::onWorkerError(const QString& msg) {
