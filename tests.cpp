@@ -5307,6 +5307,48 @@ private slots:
                  qPrintable(events.last()["message"].toString()));
     }
 
+    // A headless run (cron, script, CI) has nobody to confirm a tool.  "Declined
+    // by user" reads as a refusal and stopped unattended runs cold; the model
+    // must be told the truth instead.
+    void llmHeadlessDeclineTellsTheModel() {
+        auto decline = []() { return std::make_pair(false, false); };
+        auto runWith = [&](bool noUserAvailable) {
+            StubLlmServer stub;
+            stub.statuses << 200 << 200;
+            stub.responses << llmCompletion("", QJsonArray{llmToolCall("tc1", "run_bash",
+                                         QJsonObject{{"command", "echo hi"}})})
+                           << llmCompletion("carried on");
+            LlmParams p;
+            p.baseUrl = stub.baseUrl();
+            p.model = "stub-model";
+            p.messages = QJsonArray{userMsg("go")};
+            p.toolConfirmation = "none";
+            p.noUserAvailable = noUserAvailable;
+            QList<QJsonObject> events;
+            LlmClient().run(p,
+                [&](const QJsonObject& ev) { events.append(ev); },
+                decline, []() { return false; },
+                [](const QJsonArray&) { return QStringList(); });
+            return events;
+        };
+
+        const QList<QJsonObject> headless = runWith(true);
+        QString toolResult;
+        for (const QJsonObject& ev : qAsConst(headless))
+            if (ev["type"].toString() == QLatin1String("tool_result"))
+                toolResult = ev["content"].toString();
+        QVERIFY2(toolResult.contains("No user is available"), qPrintable(toolResult));
+        QVERIFY2(!toolResult.contains("declined by user"), qPrintable(toolResult));
+
+        // Negative control: a real user decline keeps its wording.
+        const QList<QJsonObject> declined = runWith(false);
+        QString declinedResult;
+        for (const QJsonObject& ev : qAsConst(declined))
+            if (ev["type"].toString() == QLatin1String("tool_result"))
+                declinedResult = ev["content"].toString();
+        QVERIFY2(declinedResult.contains("declined by user"), qPrintable(declinedResult));
+    }
+
     // Retrying must never change what the user is told about the failure: the
     // chain started with the provider's own 500, and the retry hitting a closed
     // port must not replace that diagnosis with a transport message.

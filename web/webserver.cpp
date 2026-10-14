@@ -85,6 +85,10 @@ void WebServer::onSocketDisconnected() {
     m_sseRetrySent.remove(socket);
     for (auto it = m_sse.begin(); it != m_sse.end(); ++it)
         it->removeAll(socket);
+    // Keep the prompt lease's viewer count honest when a stream drops without a
+    // later broadcast to refresh it.
+    for (auto wit = m_workers.begin(); wit != m_workers.end(); ++wit)
+        if (auto* w = wit.value()) w->setViewers(m_sse.value(wit.key()).size());
     socket->deleteLater();
 }
 
@@ -1172,6 +1176,8 @@ void WebServer::pushSse(const QString& chatId, const QJsonObject& event) {
 
     QByteArray data = formatSseEvent(eventId, event);
     const auto& clients = m_sse.value(chatId);
+    // The worker's prompt lease keys on the attached-viewer count.
+    if (auto* w = m_workers.value(chatId)) w->setViewers(clients.size());
     for (auto* sock : clients) {
         if (sock->isOpen()) {
             if (!m_sseRetrySent.contains(sock)) {

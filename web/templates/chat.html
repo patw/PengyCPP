@@ -1109,6 +1109,15 @@ function handleEvent(ev) {
   } else if (ev.type === 'retrying') {
     showRetrying(ev);
 
+  } else if (ev.type === 'notice') {
+    // A harness notice (history not being saved, a prompt nobody is answering):
+    // shown, never an answer, and the run keeps going.
+    const notice = document.createElement('div');
+    notice.className = 'alert alert-info py-2';
+    notice.textContent = ev.message || '';
+    document.getElementById('messages').appendChild(notice);
+    scrollBottom();
+
   } else if (ev.type === 'context_compacted') {
     showContextCompacted(ev);
     if (ev.message) {

@@ -406,6 +406,7 @@ Events are reported via `std::function<void(const QJsonObject&)>` callbacks:
 | `tool_result` | `name`, `args`, `tool_call_id`, `content`, `declined` |
 | `context_compacted` | `attempt`, `max_attempts`, `chars_removed` (provider-only overflow recovery) |
 | `retrying` | `attempt`, `max_attempts`, `delay_secs`, `status_code`, `message`, `reason` (`"timeout"` 408/504/own deadline, `"server"` 500/502/503, `"unreachable"` dropped route, `"empty"` 200 with no choices; absent for 429/529) |
+| `notice` | `message` (a harness notice: history not being saved, a prompt nobody is answering — shown, never an answer, run continues) |
 | `error` | `kind` (`"credentials"` \| `"config"` \| `"truncated"` \| `"empty"` \| `"error"`), `message` (never persisted as a model reply) |
 | `final_response` | `content`, `usage` (prompt/completion tokens) |
 

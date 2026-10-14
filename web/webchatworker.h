@@ -1,5 +1,6 @@
 #pragma once
 #include <QObject>
+#include <QTimer>
 #include <QMutex>
 #include <QWaitCondition>
 #include <QJsonArray>
@@ -26,6 +27,16 @@ public:
     void sendSudoPassword(const QString& password);
     void cancelSudo();
 
+    /// Attached SSE consumers, reported by the server on each broadcast.  The
+    /// prompt lease keys on this: a confirm/question/sudo prompt waits
+    /// indefinitely while someone is watching, and is bounded when nobody is.
+    void setViewers(int viewers);
+
+    /// Prompt lease for a run nobody is watching: announced each minute, and the
+    /// run is cancelled with a notice after the lease.  A prompt never expires
+    /// out from under an attached browser (v1.11.4 removed the silent expiry).
+    void setPendingPrompt(bool pending);
+
 signals:
     void eventReady(const QJsonObject& event);
     // *host* is the remote machine the command runs on; empty = local.
@@ -37,6 +48,9 @@ signals:
 
 private:
     struct ConfirmState { int status = 0; bool yoloTurn = false; };
+
+    /// Minutes a prompt may stay unanswered with no browser attached.
+    static const int PROMPT_LEASE_MINUTES = 30;
 
     ConfirmState   m_confirmState;
     QMutex         m_mutex;
@@ -56,4 +70,9 @@ private:
     QString    m_baseUrl, m_apiKey, m_model, m_toolConfirmation, m_reasoningEffort;
     bool       m_preserveReasoning = false;
     QJsonArray m_messages;
+
+    std::atomic<int>  m_viewers{0};
+    std::atomic<bool> m_pendingPrompt{false};
+    std::atomic<int>  m_promptIdleMinutes{0};
+    QTimer* m_leaseTimer = nullptr;
 };

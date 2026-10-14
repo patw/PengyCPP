@@ -22,6 +22,17 @@ static const int    MAX_RETRIES       = 5;
 static const double BASE_DELAY_SECS   = 1.0;
 static const double MAX_DELAY_SECS    = 60.0;
 static const double JITTER            = 0.25;
+/// Sent back for a tool call that needs confirmation when the frontend has
+/// nobody to ask (a CLI run with no TTY on stdin -- cron, scripts, CI).
+/// "Declined by user" is a lie there and reads as a refusal, which made
+/// unattended runs stop with nothing done.
+/// Identical to `NO_USER_CONFIRM` in the Python and Rust editions.
+static const QString NO_USER_CONFIRM = QStringLiteral(
+    "No user is available to confirm this tool (non-interactive run). Do not treat this as "
+    "a refusal. If running this tool is clearly the right next step, say so in your reply "
+    "and continue without it; if it was optional, carry on with the rest of the task. "
+    "Never claim the tool ran.");
+
 static const QList<int> RETRYABLE_STATUSES = {429, 529};
 
 // ── Provider / transport timeouts ────────────────────────────────
@@ -1105,7 +1116,10 @@ void LlmClient::run(const LlmParams& params,
                 if (confirmed) {
                     result = Tools::execute(name, argsObj, nullptr, params.toolContext);
                 } else {
-                    result   = "Tool execution was declined by user.";
+                    // Headless run: "declined by user" is a lie there and reads
+                    // as a refusal, which stopped unattended runs cold.
+                    result   = params.noUserAvailable ? NO_USER_CONFIRM
+                                                      : QStringLiteral("Tool execution was declined by user.");
                     declined = true;
                 }
 

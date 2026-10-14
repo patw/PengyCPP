@@ -17,6 +17,33 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
     m_reasoningEffort = reasoningEffort;
     m_preserveReasoning = preserveReasoning;
     m_cancelled        = false;
+    m_promptIdleMinutes.store(0);
+    m_pendingPrompt.store(false);
+
+    // Prompt lease: announced each minute while a prompt is unanswered and no
+    // browser is attached, and the run is stopped with a notice after the lease.
+    // While a browser is attached the prompt waits indefinitely -- v1.11.4
+    // removed the silent expiry precisely so it cannot expire under a user who
+    // stepped away.
+    if (!m_leaseTimer) {
+        m_leaseTimer = new QTimer(this);
+        m_leaseTimer->setInterval(60 * 1000);
+        connect(m_leaseTimer, &QTimer::timeout, this, [this] {
+            if (m_cancelled || !m_pendingPrompt.load()) { m_promptIdleMinutes.store(0); return; }
+            if (m_viewers.load() > 0) { m_promptIdleMinutes.store(0); return; }
+            const int idle = m_promptIdleMinutes.fetch_add(1) + 1;
+            const bool expiring = idle >= PROMPT_LEASE_MINUTES;
+            const QString message = expiring
+                ? QString("No browser has been attached to this chat for %1 minutes, so the "
+                          "waiting run is being stopped. Open the chat to answer prompts, "
+                          "then send the message again.").arg(PROMPT_LEASE_MINUTES)
+                : QStringLiteral("Waiting for you to answer in this chat — no browser is "
+                                 "currently attached. Open the chat to continue, or press Stop.");
+            emit eventReady(QJsonObject{{"type", "notice"}, {"message", message}});
+            if (expiring) cancel();
+        });
+    }
+    m_leaseTimer->start();
 
     {
         QMutexLocker lk(&m_mutex);
@@ -33,6 +60,7 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
             QMutexLocker lk(&m_sudoMutex);
             m_sudoPending = true;
         }
+        m_pendingPrompt.store(true);
         emit sudoRequired(host);
         QMutexLocker lk(&m_sudoMutex);
         while (m_sudoPending && !m_cancelled)
@@ -60,6 +88,9 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
                     yoloThisTurn;
                 QJsonObject enriched = ev;
                 enriched["auto_approved"] = autoApproved;
+                // A tool request that needs an answer starts the prompt lease;
+                // an auto-approved one does not.
+                if (!autoApproved) m_pendingPrompt.store(true);
                 emit eventReady(enriched);
 
             } else if (type == "question_request") {
@@ -69,6 +100,7 @@ void WebChatWorker::start(const QString& baseUrl, const QString& apiKey,
                     m_questionAnswers.clear();
                     m_questionPending = true;
                 }
+                m_pendingPrompt.store(true);
                 emit eventReady(ev);
 
             } else if (type == "tool_result" || type == "question_result") {
@@ -159,13 +191,24 @@ void WebChatWorker::cancel() {
 }
 
 void WebChatWorker::sendConfirmation(bool confirmed, bool yoloTurn) {
+    m_pendingPrompt.store(false);
     QMutexLocker lk(&m_mutex);
     m_confirmState.status   = confirmed ? 2 : 3;
     m_confirmState.yoloTurn = yoloTurn;
     m_cond.wakeAll();
 }
 
+void WebChatWorker::setViewers(int viewers) {
+    m_viewers.store(viewers);
+}
+
+void WebChatWorker::setPendingPrompt(bool pending) {
+    m_pendingPrompt.store(pending);
+    if (!pending) m_promptIdleMinutes.store(0);
+}
+
 void WebChatWorker::sendAnswers(const QStringList& answers) {
+    m_pendingPrompt.store(false);
     QMutexLocker lk(&m_questionMutex);
     m_questionAnswers = answers;
     m_questionPending = false;
@@ -173,6 +216,7 @@ void WebChatWorker::sendAnswers(const QStringList& answers) {
 }
 
 void WebChatWorker::sendSudoPassword(const QString& password) {
+    m_pendingPrompt.store(false);
     QMutexLocker lk(&m_sudoMutex);
     m_sudoPassword = password;
     m_sudoPending  = false;

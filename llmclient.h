@@ -19,6 +19,9 @@ struct LlmParams {
     QString   reasoningEffort;  // empty = provider default / omit
     bool      preserveReasoning = false;
     int       llmTimeout        = 300;
+    // Headless run (no TTY to ask with): a declined tool is reported to the
+    // model as "no user available", not as a user refusal.
+    bool      noUserAvailable   = false;
     Tools::ToolContext* toolContext = nullptr;  // per-run sudo/subprocess scope
     ContextRecovery::Options recovery;
 };

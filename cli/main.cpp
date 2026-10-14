@@ -383,6 +383,8 @@ public:
     bool        m_noSave = false;
     /// Report a failed mid-turn save once, not per write.
     bool        m_saveWarned = false;
+    /// Report the headless-confirmation notice once, not per tool call.
+    bool        m_noUserNotice = false;
     QString     m_outputMode = "pretty";
     bool        m_truncationFailed = false;
 
@@ -540,6 +542,9 @@ private:
 
         LlmClient client;
         LlmParams params{cfg.baseUrl, cfg.apiKey, cfg.model, sendMsgs, cfg.toolConfirmation, cfg.reasoningEffort, cfg.preserveReasoning, cfg.llmTimeout};
+        // Headless run: the core tells the model "no user available" rather than
+        // "declined by user" when a tool needs confirming and there is no TTY.
+        params.noUserAvailable = !stdinIsTerminal();
         params.recovery = {cfg.autoContextRecovery, cfg.recoveryKeepTurns, m_noSave ? QString() : chat["id"].toString(), cfg.outputTokenLimit, cfg.outputTokenParameter};
         client.run(
             params,
@@ -808,6 +813,19 @@ private:
     }
 
     std::pair<bool,bool> onConfirm() {
+        if (!stdinIsTerminal()) {
+            // Headless (cron, script, CI): there is nobody to ask.  This used to
+            // fall through the empty readline result to "Execute" -- an
+            // unattended run silently approving write tools it never showed
+            // anyone.  Decline, tell the model why, and let the run carry on.
+            if (!m_noUserNotice) {
+                m_noUserNotice = true;
+                err("No terminal to confirm tool calls (non-interactive run). The "
+                    "model is being told; set tool_confirmation to all|safe to run "
+                    "tools unattended.");
+            }
+            return {false, false};
+        }
         outln();
         outln("  " + bold("[1]") + " Execute   " +
               bold("[2]") + " Yes to all this turn   " +
