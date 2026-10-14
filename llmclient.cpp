@@ -50,6 +50,46 @@ static const QList<int> TRANSIENT_STATUSES = {502, 503};
 // misconfigured endpoint.  First contact keeps failing fast: that is the case
 // the "is your server running?" help is written for.
 static const int MAX_UNREACHABLE_RETRIES = 3;
+// A 200 that carries no usable answer (no choices at all) is the shape a proxy
+// answers when it loses its upstream mid-generation, so it gets one retry --
+// the same reasoning as a 500.
+static const int MAX_EMPTY_RETRIES = 1;
+
+/// A 200 that carries no choices at all.
+static QString noChoicesHelp() {
+    return QStringLiteral(
+        "The endpoint answered with no choices in the response, so there is no answer to "
+        "deliver. Pengy retried once. This is the endpoint, not your request: the usual "
+        "causes are a proxy that lost its upstream mid-generation, an engine that died "
+        "while answering, or a model name the endpoint does not serve. "
+        "Nothing was added to the chat.");
+}
+
+/// A 200 whose message has neither content nor tool calls.  Names the causes that
+/// are actually observed: the reasoning-budget case is documented in the field
+/// (BotTalk ff4f1c1f) -- a reasoning model whose whole output allowance goes to
+/// reasoning tokens answers with empty content and finish_reason=stop.
+static QString emptyReplyHelp(const QJsonObject& message, const QString& finishReason,
+                              const QJsonObject& body) {
+    const QString reasoning = (message.contains("reasoning_content")
+        ? message["reasoning_content"].toString()
+        : message["reasoning"].toString()).trimmed();
+    const int completion = body["usage"].toObject()["completion_tokens"].toInt(-1);
+    QString help = QString(
+        "The model returned an empty reply%1: no content and no tool calls, so the turn "
+        "has no answer. Nothing was added to the chat. Usual causes: a content filter "
+        "that wiped the answer; a proxy that lost its upstream mid-generation; a "
+        "reasoning model that spent the whole output allowance on reasoning tokens.")
+        .arg(completion >= 0 ? QString(" (completion %1 tokens)").arg(completion) : QString());
+    if (!reasoning.isEmpty())
+        help += QStringLiteral(" This reply carried reasoning text and no answer, which "
+                               "points at the reasoning budget: raise the output allowance, "
+                               "lower the reasoning effort, or choose a non-reasoning model.");
+    help += QString(" The provider reported finish_reason=%1. Pengy did not retry: an empty "
+                    "answer is the endpoint's shape, not a blip.")
+                .arg(finishReason.isEmpty() ? QStringLiteral("unset") : finishReason);
+    return help;
+}
 
 namespace {
 // Endpoints that have answered at least one request in this process, keyed by
@@ -659,6 +699,41 @@ void LlmClient::run(const LlmParams& params,
                 // The endpoint is reachable and speaks our protocol.  From here
                 // on, a connection failure means it went away mid-work.
                 markEndpointAnswered(params.baseUrl);
+                if (body["choices"].toArray().isEmpty()) {
+                    // A 200 with no choices is the shape a proxy answers when it
+                    // loses its upstream mid-generation: one retry (the 500
+                    // reasoning -- ride out a blip, do not pay three full-cost
+                    // attempts for a deterministic answer), then say what happened.
+                    if (transientRetries < MAX_EMPTY_RETRIES) {
+                        const double delay = backoffDelay(transientRetries, lastResp.retryAfterHeader);
+                        ++transientRetries;
+                        onEvent(QJsonObject{
+                            {"type",         "retrying"},
+                            {"reason",       "empty"},
+                            {"attempt",      transientRetries},
+                            {"max_attempts", MAX_EMPTY_RETRIES},
+                            {"delay_secs",   qRound(delay * 10.0) / 10.0},
+                            {"status_code",  0},
+                            {"message",      QStringLiteral("The endpoint answered with no choices")},
+                        });
+                        interruptibleSleep(delay, isCancelled);
+                        if (isCancelled()) {
+                            onEvent(QJsonObject{
+                                {"type",    "final_response"},
+                                {"content", "Request cancelled during backoff."},
+                                {"usage",   accUsage},
+                            });
+                            return;
+                        }
+                        continue;
+                    }
+                    onEvent(QJsonObject{
+                        {"type",    "error"},
+                        {"kind",    "empty"},
+                        {"message", noChoicesHelp()},
+                    });
+                    return;
+                }
                 gotSuccess = true;
                 break;
             }
@@ -854,8 +929,13 @@ void LlmClient::run(const LlmParams& params,
 
         QJsonArray choices = body["choices"].toArray();
         if (choices.isEmpty()) {
-            emitTurnError(onEvent, lastResp.httpStatus,
-                          "No choices in API response.", params.baseUrl);
+            // Reached only when the request loop is bypassed; the loop itself
+            // retries this shape and reports noChoicesHelp() when it gives up.
+            onEvent(QJsonObject{
+                {"type",    "error"},
+                {"kind",    "empty"},
+                {"message", noChoicesHelp()},
+            });
             return;
         }
 
@@ -1082,7 +1162,18 @@ void LlmClient::run(const LlmParams& params,
             continue;
         }
 
-        // No tool calls — final text response
+        // No tool calls — final text response.  An empty one is not an answer:
+        // it used to end the turn as a completed reply, so the chat stored a
+        // blank assistant message that the next turn reads back as something the
+        // model said.  Report it as the provider anomaly it is.
+        if (content.trimmed().isEmpty()) {
+            onEvent(QJsonObject{
+                {"type",    "error"},
+                {"kind",    "empty"},
+                {"message", emptyReplyHelp(msg, choice["finish_reason"].toString(), body)},
+            });
+            return;
+        }
         QJsonObject finalMsg;
         finalMsg["role"] = "assistant";
         finalMsg["content"] = content;

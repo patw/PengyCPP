@@ -513,7 +513,7 @@ function showRetrying(data) {
   const delay = (data.delay_secs != null ? data.delay_secs : 0);
   // Why the request is being re-sent: provider timeout, 5xx, a route that
   // dropped mid-task; anything else on this event is 429/529 overload.
-  const labels = {timeout: 'Timeout', server: 'Server error', unreachable: 'Unreachable'};
+  const labels = {timeout: 'Timeout', server: 'Server error', unreachable: 'Unreachable', empty: 'Empty response'};
   const label = labels[data.reason] || 'Overloaded';
   thinkingEl.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div>' +
     `<span>${label} — retrying in ${delay.toFixed(1)}s (${data.attempt}/${data.max_attempts})</span>`;

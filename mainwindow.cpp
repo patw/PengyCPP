@@ -746,6 +746,7 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
             const QString label = reason == QLatin1String("timeout") ? QStringLiteral("Timeout")
                 : reason == QLatin1String("server") ? QStringLiteral("Server error")
                 : reason == QLatin1String("unreachable") ? QStringLiteral("Unreachable")
+                : reason == QLatin1String("empty") ? QStringLiteral("Empty response")
                 : QStringLiteral("Overloaded");
             m_chatHistory->setRetrying(
                 QString("%1 — retrying in %2s (%3/%4)")

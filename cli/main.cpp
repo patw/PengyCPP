@@ -611,6 +611,7 @@ private:
             const QString label = reason == QLatin1String("timeout") ? QStringLiteral("Timeout")
                 : reason == QLatin1String("server") ? QStringLiteral("Server error")
                 : reason == QLatin1String("unreachable") ? QStringLiteral("Unreachable")
+                : reason == QLatin1String("empty") ? QStringLiteral("Empty response")
                 : QStringLiteral("Overloaded");
             const QString head = (status == 0)
                 ? label : QString("%1 (HTTP %2)").arg(label).arg(status);

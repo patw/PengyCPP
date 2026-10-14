@@ -5158,6 +5158,155 @@ private slots:
                  qPrintable(events.last()["message"].toString()));
     }
 
+    // A 200 that carries no choices is the shape a proxy answers when it loses
+    // its upstream mid-generation.  Python used to raise IndexError here; C++
+    // said "No choices in API response" with no retry.  Now: one retry, then a
+    // message that says what happened and what to check.
+    void llmNoChoicesIsRetriedThenReported() {
+        for (const char* payload : {R"({"choices":[],"usage":null})",
+                                    R"({"id":"cmpl-stub","object":"chat.completions"})"}) {
+            StubLlmServer stub;
+            for (int i = 0; i < 4; ++i) { stub.statuses << 200; stub.responses << QByteArray(payload); }
+
+            LlmParams p;
+            p.baseUrl = stub.baseUrl();
+            p.model = "stub-model";
+            p.messages = QJsonArray{userMsg("go")};
+            p.toolConfirmation = "none";
+            QList<QJsonObject> events;
+            LlmClient().run(p,
+                [&](const QJsonObject& ev) { events.append(ev); },
+                []() { return std::make_pair(true, false); },
+                []() { return false; },
+                [](const QJsonArray&) { return QStringList(); });
+
+            int notices = 0;
+            for (const QJsonObject& ev : qAsConst(events)) {
+                if (ev["type"].toString() != QLatin1String("retrying")) continue;
+                QCOMPARE(ev["reason"].toString(), QString("empty"));
+                QCOMPARE(ev["max_attempts"].toInt(), 1);
+                ++notices;
+            }
+            QCOMPARE(notices, 1);
+            QCOMPARE(stub.requests.size(), 2);
+            QCOMPARE(events.last()["type"].toString(), QString("error"));
+            QCOMPARE(events.last()["kind"].toString(), QString("empty"));
+            const QString msg = events.last()["message"].toString();
+            QVERIFY2(msg.contains("no choices"), qPrintable(msg));
+            QVERIFY2(!msg.contains("index out of range"), qPrintable(msg));
+        }
+    }
+
+    // An empty answer is not an answer.  It used to end the turn as a completed
+    // reply, so the chat stored a blank assistant message that the next turn
+    // reads back as something the model said.
+    void llmEmptyReplyIsReportedNotDelivered() {
+        StubLlmServer stub;
+        stub.statuses << 200;
+        stub.responses << QByteArray(R"({"choices":[{"index":0,"message":{"role":"assistant","content":null},"finish_reason":"stop"}],"usage":null})");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("go")};
+        p.toolConfirmation = "none";
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        for (const QJsonObject& ev : qAsConst(events))
+            QVERIFY(ev["type"].toString() != QLatin1String("final_response"));
+        QCOMPARE(events.last()["kind"].toString(), QString("empty"));
+        QVERIFY2(events.last()["message"].toString().contains("empty reply"),
+                 qPrintable(events.last()["message"].toString()));
+        // An empty answer is the endpoint's shape, not a blip: no full-cost chain.
+        QCOMPARE(stub.requests.size(), 1);
+    }
+
+    // The field signature (BotTalk ff4f1c1f): a reasoning model whose whole
+    // output allowance goes to reasoning tokens answers with empty content.
+    void llmEmptyReplyWithReasoningNamesTheBudget() {
+        StubLlmServer stub;
+        stub.statuses << 200;
+        stub.responses << QByteArray(R"({"choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"thinking thinking thinking"},"finish_reason":"stop"}],"usage":{"prompt_tokens":40,"completion_tokens":1500,"total_tokens":1540}})");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("go")};
+        p.toolConfirmation = "none";
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        const QString msg = events.last()["message"].toString();
+        QCOMPARE(events.last()["kind"].toString(), QString("empty"));
+        QVERIFY2(msg.contains("reasoning"), qPrintable(msg));
+        QVERIFY2(msg.contains("output allowance"), qPrintable(msg));
+        QVERIFY2(msg.contains("1500"), qPrintable(msg));
+    }
+
+    // Negative controls: content:"" with tool calls is a normal round, and a
+    // length-truncated empty answer stays on the generation-limit path.
+    void llmEmptyAnswerWithToolCallsIsStillNormal() {
+        StubLlmServer stub;
+        stub.statuses << 200 << 200;
+        stub.responses << llmCompletion("", QJsonArray{llmToolCall("tc1", "read_file",
+                                     QJsonObject{{"path", "/does/not/exist.txt"}})})
+                       << llmCompletion("after the tool");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("go")};
+        p.toolConfirmation = "safe";
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        QVERIFY2(events.last()["content"].toString().contains("after the tool"),
+                 qPrintable(QJsonDocument(events.last()).toJson()));
+    }
+
+    void llmTruncatedEmptyAnswerKeepsTheGenerationLimitPath() {
+        StubLlmServer stub;
+        for (int i = 0; i < 4; ++i) {
+            stub.statuses << 200;
+            QJsonObject message{{"role", "assistant"}, {"content", ""}};
+            stub.responses << QJsonDocument(QJsonObject{
+                {"choices", QJsonArray{QJsonObject{
+                    {"index", 0}, {"message", message}, {"finish_reason", "length"}}}},
+                {"usage", QJsonObject{{"prompt_tokens", 10}, {"completion_tokens", 48},
+                                      {"total_tokens", 58}}},
+            }).toJson(QJsonDocument::Compact);
+        }
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("go")};
+        p.toolConfirmation = "none";
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        QCOMPARE(events.last()["kind"].toString(), QString("truncated"));
+        QVERIFY2(events.last()["message"].toString().contains("finish_reason=length"),
+                 qPrintable(events.last()["message"].toString()));
+    }
+
     // Retrying must never change what the user is told about the failure: the
     // chain started with the provider's own 500, and the retry hitting a closed
     // port must not replace that diagnosis with a transport message.
