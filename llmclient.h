@@ -31,6 +31,11 @@ struct LlmResponse {
     double      requestSeconds = 0; // per-attempt wall time, not whole turn
     QByteArray  body;
     QString     retryAfterHeader;  // "retry-after" or "retry-after-ms" value
+    // The transfer never completed: Qt's own deadline (setTransferTimeout,
+    // i.e. the configured LLM timeout) expired with no answer at all.  Kept
+    // separate from httpStatus == 0, which also covers connection refused --
+    // only a timeout is worth re-sending.
+    bool        transportTimeout = false;
 };
 
 // ── Failed turns ─────────────────────────────────────────────────────

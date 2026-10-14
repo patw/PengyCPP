@@ -20,6 +20,18 @@ static const double BASE_DELAY_SECS   = 1.0;
 static const double MAX_DELAY_SECS    = 60.0;
 static const double JITTER            = 0.25;
 static const QList<int> RETRYABLE_STATUSES = {429, 529};
+
+// ── Provider / transport timeouts ────────────────────────────────
+// A timeout usually means "the endpoint was busy", not "the request was wrong",
+// so it gets a retry budget of its own.  The budget is deliberately smaller than
+// MAX_RETRIES: this request is non-streaming, so llmTimeout is total wall clock
+// per attempt, and five retries at the 300 s default would hang a turn for
+// ~25 minutes before the user saw the timeout message.  Cancel is polled during
+// every backoff sleep.
+static const int MAX_TIMEOUT_RETRIES = 3;
+// 408 Request Timeout, and 504 Gateway Timeout -- a proxy answering for an
+// upstream that ran out of time, which is the same failure seen from the client.
+static const QList<int> TIMEOUT_STATUSES = {408, 504};
 static const int MAX_CONTEXT_RETRIES = 4;
 static const int CONTEXT_PREVIEW = 1500;
 static const QString CONTEXT_STUB = QStringLiteral("[tool output omitted from provider request to fit context; original remains in chat history]");
@@ -360,6 +372,11 @@ static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
 
     LlmResponse resp;
     resp.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    // Qt's transfer deadline (the configured LLM timeout) firing is the one
+    // transport failure worth re-sending; connection refused is not.
+    const auto qtError = reply->error();
+    resp.transportTimeout = (qtError == QNetworkReply::TimeoutError
+                             || qtError == QNetworkReply::ProxyTimeoutError);
     resp.body       = reply->readAll();
     resp.requestSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
@@ -510,8 +527,21 @@ void LlmClient::run(const LlmParams& params,
                 QJsonObject{{"role", "system"}, {"content", ContextRecovery::SummaryPrompt}},
                 QJsonObject{{"role", "user"}, {"content", chunk}}}}};
             payload[params.recovery.outputParameter] = 2048;
-            auto resp = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact), params.apiKey, params.llmTimeout * 1000);
-            if (isCancelled()) return false;
+            // The summary is part of this turn, so a provider timeout gets the
+            // same retry budget here as the turn request -- a big conversation's
+            // prefill is exactly what blows the configured timeout on a slow
+            // engine, and losing the turn there is the worst place to lose it.
+            int summaryTimeouts = 0;
+            LlmResponse resp;
+            for (;;) {
+                resp = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact), params.apiKey, params.llmTimeout * 1000);
+                if (isCancelled()) return false;
+                const bool timedOut = resp.transportTimeout || TIMEOUT_STATUSES.contains(resp.httpStatus);
+                if (!timedOut || summaryTimeouts >= MAX_TIMEOUT_RETRIES) break;
+                ++summaryTimeouts;
+                interruptibleSleep(backoffDelay(summaryTimeouts - 1, resp.retryAfterHeader), isCancelled);
+                if (isCancelled()) return false;
+            }
             auto body = QJsonDocument::fromJson(resp.body).object();
             if (body.contains("usage")) addUsage(accUsage, body["usage"].toObject());
             auto choices = body["choices"].toArray();
@@ -555,6 +585,7 @@ void LlmClient::run(const LlmParams& params,
         LlmResponse lastResp;
         bool gotSuccess = false;
         int rateRetries = 0;
+        int timeoutRetries = 0;
         for (;;) {
             if (isCancelled()) return;
 
@@ -614,6 +645,37 @@ void LlmClient::run(const LlmParams& params,
                     QString("Model context limit reached; could not fit this request after %1 tool-output reductions. The full tool outputs remain in chat history. Try a shorter request or a larger-context model.")
                         .arg(contextRetries), params.baseUrl);
                 return;
+            }
+
+            // A provider that answers "I ran out of time" (408, or 504 from a
+            // proxy), and our own transfer deadline firing with no answer at
+            // all, are both the busy-endpoint failure: re-send it.  Once the
+            // budget is spent the ordinary timeout message is reported below,
+            // unchanged.
+            if ((TIMEOUT_STATUSES.contains(code) || lastResp.transportTimeout)
+                    && timeoutRetries < MAX_TIMEOUT_RETRIES) {
+                double delay = backoffDelay(timeoutRetries, lastResp.retryAfterHeader);
+                ++timeoutRetries;
+                onEvent(QJsonObject{
+                    {"type",         "retrying"},
+                    {"reason",       "timeout"},
+                    {"attempt",      timeoutRetries},
+                    {"max_attempts", MAX_TIMEOUT_RETRIES},
+                    {"delay_secs",   qRound(delay * 10.0) / 10.0},
+                    // A transport deadline has no HTTP status to report.
+                    {"status_code",  lastResp.transportTimeout ? 0 : code},
+                    {"message",      detail},
+                });
+                interruptibleSleep(delay, isCancelled);
+                if (isCancelled()) {
+                    onEvent(QJsonObject{
+                        {"type",    "final_response"},
+                        {"content", "Request cancelled during backoff."},
+                        {"usage",   accUsage},
+                    });
+                    return;
+                }
+                continue;
             }
 
             if (RETRYABLE_STATUSES.contains(code) && rateRetries < MAX_RETRIES) {

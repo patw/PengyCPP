@@ -4878,6 +4878,163 @@ private slots:
         QVERIFY2(msg.contains("ollama serve"), qPrintable(msg));
     }
 
+    // A provider that answers "I ran out of time" -- 408, or 504 from a proxy --
+    // is a busy endpoint, not a broken request, so the turn re-sends the request.
+    // The budget is deliberately small (3, not the 5 used for 429/529): this
+    // request is non-streaming, so the configured timeout is total wall clock per
+    // attempt and a long chain is a long freeze.
+    void llmProviderTimeoutIsRetried() {
+        for (int status : {408, 504}) {
+            StubLlmServer stub;
+            stub.statuses << status << 200;
+            stub.responses << QByteArray(
+                R"({"error":{"message":"Request timed out","type":"timeout"}})")
+                           << llmCompletion("recovered");
+
+            LlmParams p;
+            p.baseUrl = stub.baseUrl();
+            p.model = "stub-model";
+            p.messages = QJsonArray{userMsg("go")};
+            p.toolConfirmation = "all";
+            QList<QJsonObject> events;
+            LlmClient().run(p,
+                [&](const QJsonObject& ev) { events.append(ev); },
+                []() { return std::make_pair(true, false); },
+                []() { return false; },
+                [](const QJsonArray&) { return QStringList(); });
+
+            QCOMPARE(stub.requests.size(), 2);
+            int notices = 0;
+            for (const QJsonObject& ev : qAsConst(events)) {
+                if (ev["type"].toString() != QLatin1String("retrying")) continue;
+                QCOMPARE(ev["reason"].toString(), QString("timeout"));
+                QCOMPARE(ev["status_code"].toInt(), status);
+                QCOMPARE(ev["max_attempts"].toInt(), 3);
+                ++notices;
+            }
+            QCOMPARE(notices, 1);
+            QCOMPARE(events.last()["type"].toString(), QString("final_response"));
+            QVERIFY2(events.last()["content"].toString().contains("recovered"),
+                     qPrintable(QJsonDocument(events.last()).toJson()));
+        }
+    }
+
+    // Our own transfer deadline firing (the configured llm_timeout, no HTTP
+    // status at all) is the same failure and gets the same treatment.
+    void llmClientSideTimeoutIsRetried() {
+        StubLlmServer stub;
+        stub.silent = true;   // accept the request, never answer
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hi")};
+        p.toolConfirmation = "none";
+        p.llmTimeout = 1;
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        int notices = 0;
+        for (const QJsonObject& ev : qAsConst(events)) {
+            if (ev["type"].toString() == QLatin1String("retrying")
+                && ev["reason"].toString() == QLatin1String("timeout")) {
+                // A transport deadline has no HTTP status to report.
+                QCOMPARE(ev["status_code"].toInt(), 0);
+                ++notices;
+            }
+        }
+        QCOMPARE(notices, 3);
+        // The give-up text is Pengy's existing unreachable/timeout help.
+        QCOMPARE(events.last()["type"].toString(), QString("error"));
+        QVERIFY2(events.last()["message"].toString().contains("Nothing answered"),
+                 qPrintable(events.last()["message"].toString()));
+    }
+
+    void llmTimeoutBudgetIsFinite() {
+        StubLlmServer stub;
+        for (int i = 0; i < 8; ++i) stub.statuses << 408;
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("go")};
+        p.toolConfirmation = "none";
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        int notices = 0;
+        for (const QJsonObject& ev : qAsConst(events))
+            if (ev["type"].toString() == QLatin1String("retrying")
+                && ev["reason"].toString() == QLatin1String("timeout")) ++notices;
+        QCOMPARE(notices, 3);
+        // 1 request + the budget, and no silent extra attempt.
+        QCOMPARE(stub.requests.size(), 4);
+        QCOMPARE(events.last()["type"].toString(), QString("error"));
+    }
+
+    // Negative controls: "the endpoint is not there" and "the request was wrong"
+    // must keep failing fast, and 429/529 must keep their own budget and label.
+    void llmTimeoutRetriesDoNotSwallowOtherFailures() {
+        struct Case { int status; const char* body; };
+        const Case cases[] = {
+            {400, R"({"error":{"message":"Invalid request"}})"},
+            {401, R"({"error":{"message":"Incorrect API key provided"}})"},
+        };
+        for (const Case& c : cases) {
+            StubLlmServer stub;
+            stub.statuses << c.status << 200 << 200 << 200 << 200;
+            stub.responses << QByteArray(c.body);
+            LlmParams p;
+            p.baseUrl = stub.baseUrl();
+            p.model = "stub-model";
+            p.messages = QJsonArray{userMsg("go")};
+            p.toolConfirmation = "none";
+            QList<QJsonObject> events;
+            LlmClient().run(p,
+                [&](const QJsonObject& ev) { events.append(ev); },
+                []() { return std::make_pair(true, false); },
+                []() { return false; },
+                [](const QJsonArray&) { return QStringList(); });
+
+            for (const QJsonObject& ev : qAsConst(events))
+                QVERIFY(ev["reason"].toString() != QLatin1String("timeout"));
+            QCOMPARE(stub.requests.size(), 1);
+        }
+
+        // 429 keeps its 5-attempt budget and no timeout reason.
+        StubLlmServer stub;
+        for (int i = 0; i < 8; ++i) stub.statuses << 429;
+        stub.responses << QByteArray(R"({"error":{"message":"Too Many Requests"}})");
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("go")};
+        p.toolConfirmation = "none";
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        int overloaded = 0;
+        for (const QJsonObject& ev : qAsConst(events)) {
+            if (ev["type"].toString() != QLatin1String("retrying")) continue;
+            QVERIFY(ev["reason"].toString() != QLatin1String("timeout"));
+            QCOMPARE(ev["max_attempts"].toInt(), 5);
+            ++overloaded;
+        }
+        QCOMPARE(overloaded, 5);
+    }
+
     // The desktop GUI has no per-call timeout argument: MainWindow passes
     // config.llmTimeout into ChatWorker::start, which is the only path the
     // setting has.  This pins the regression that ChatWorker used to build
@@ -4890,16 +5047,33 @@ private slots:
         stub.silent = true;   // accept the request, never respond
 
         ChatWorker worker;
+        QStringList events;
+        QObject::connect(&worker, &ChatWorker::eventReceived,
+                         [&events](const QString& json) { events << json; });
         QElapsedTimer timer;
         timer.start();
         worker.start(stub.baseUrl(), "", "stub-model", QJsonArray{userMsg("hi")},
                      "none", "", false, /*llmTimeout=*/1);
-        QVERIFY(worker.wait(10000));
+        QVERIFY(worker.wait(60000));
         const qint64 elapsedMs = timer.elapsed();
 
-        QVERIFY2(elapsedMs < 4000,
-                 qPrintable(QString("a 1s llm_timeout must abort before the 300s default; "
+        // Since timeout auto-retry landed, the turn spends its retry budget
+        // before reporting the timeout.  What this pins is unchanged: every
+        // attempt dies on the *configured* 1s deadline, so the chain stays
+        // bounded -- the old hardcoded 300s default would sit through the whole
+        // thing and hang the turn instead.
+        QVERIFY2(elapsedMs < 30000,
+                 qPrintable(QString("a 1s llm_timeout must bound the retry chain; "
                                     "waited %1ms").arg(elapsedMs)));
+
+        int timeoutNotices = 0;
+        for (const QString& json : qAsConst(events)) {
+            const QJsonObject ev = QJsonDocument::fromJson(json.toUtf8()).object();
+            if (ev["type"].toString() == QLatin1String("retrying")
+                && ev["reason"].toString() == QLatin1String("timeout"))
+                ++timeoutNotices;
+        }
+        QCOMPARE(timeoutNotices, 3);
     }
 
     // A fresh install with the shipped defaults: local endpoint, no key, no model.

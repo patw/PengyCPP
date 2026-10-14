@@ -739,10 +739,13 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
         }
 
     } else if (type == "retrying") {
-        // 429/529 backoff: surface it instead of hanging silently.
+        // 429/529 overload and provider timeouts: surface the wait, don't hang.
         if (session == tabForChat(m_activeChatId)) {
+            const QString label = (event["reason"].toString() == QLatin1String("timeout"))
+                ? QStringLiteral("Timeout") : QStringLiteral("Overloaded");
             m_chatHistory->setRetrying(
-                QString("Overloaded — retrying in %1s (%2/%3)")
+                QString("%1 — retrying in %2s (%3/%4)")
+                    .arg(label)
                     .arg(event["delay_secs"].toDouble(), 0, 'f', 1)
                     .arg(event["attempt"].toInt())
                     .arg(event["max_attempts"].toInt()));

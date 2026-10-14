@@ -593,9 +593,16 @@ private:
                 .arg(ev["max_attempts"].toInt())));
 
         } else if (type == "retrying") {
-            // 429/529 backoff — surface it instead of hanging silently.
-            outln(yellow(QString("Overloaded (HTTP %1) — retrying in %2s (%3/%4)")
-                .arg(ev["status_code"].toVariant().toString())
+            // 429/529 overload and provider timeouts — surface the wait instead
+            // of hanging silently.  A client-side deadline carries no HTTP
+            // status, so the label stands alone there.
+            const bool isTimeout = (ev["reason"].toString() == QLatin1String("timeout"));
+            const int status = ev["status_code"].toVariant().toInt();
+            const QString head = (isTimeout || status == 0)
+                ? (isTimeout ? QStringLiteral("Timeout") : QStringLiteral("Overloaded"))
+                : QString("Overloaded (HTTP %1)").arg(status);
+            outln(yellow(QString("%1 — retrying in %2s (%3/%4)")
+                .arg(head)
                 .arg(ev["delay_secs"].toDouble(), 0, 'f', 1)
                 .arg(ev["attempt"].toInt())
                 .arg(ev["max_attempts"].toInt())));
