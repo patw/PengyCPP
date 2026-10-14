@@ -135,6 +135,7 @@ public:
     QList<int>         statuses;    // optional per-response HTTP status
     QList<QJsonObject> requests;    // recorded request payloads
     bool               silent = false; // accept the request but never answer
+    bool               stopAfterFirst = false; // close the endpoint after one reply
 
     StubLlmServer() {
         m_server.listen(QHostAddress::LocalHost, 0);
@@ -151,6 +152,9 @@ public:
     QString baseUrl() const {
         return "http://127.0.0.1:" + QString::number(m_server.serverPort());
     }
+
+    /// Take the endpoint away: later connects are refused, as after a restart.
+    void stop() { m_server.close(); }
 
 private:
     QTcpServer m_server;
@@ -185,6 +189,7 @@ private:
         sock->write(resp);
         sock->flush();
         sock->disconnectFromHost();
+        if (stopAfterFirst) m_server.close();  // the endpoint goes away
     }
 };
 
@@ -4586,8 +4591,11 @@ private slots:
     // It is an error event now, and it stays one.
     void llmHttpErrorProducesErrorEvent() {
         StubLlmServer stub;
-        stub.responses << QByteArray(R"({"error": {"message": "boom"}})");
-        stub.statuses << 500;
+        // A 500 buys one retry, so the stub answers twice; the last provider
+        // answer is what the user gets.
+        stub.responses << QByteArray(R"({"error": {"message": "boom"}})")
+                       << QByteArray(R"({"error": {"message": "boom"}})");
+        stub.statuses << 500 << 500;
 
         LlmParams p;
         p.baseUrl = stub.baseUrl();
@@ -4602,12 +4610,17 @@ private slots:
             []() { return false; },
             [](const QJsonArray&) { return QStringList(); });
 
-        QCOMPARE(events.size(), 1);
-        QCOMPARE(events[0]["type"].toString(), QString("error"));
-        QCOMPARE(events[0]["kind"].toString(), QString("error"));
+        // A 500 now buys one retry, so the retry notice arrives first.  The
+        // contract this test pins is unchanged: the failure is an error event
+        // carrying the endpoint's own detail, never a final response.
+        QCOMPARE(events.size(), 2);
+        QCOMPARE(events[0]["type"].toString(), QString("retrying"));
+        QCOMPARE(events[0]["reason"].toString(), QString("server"));
+        QCOMPARE(events[1]["type"].toString(), QString("error"));
+        QCOMPARE(events[1]["kind"].toString(), QString("error"));
         // A genuine server fault keeps the endpoint's detail -- it is the only
         // thing that helps -- but is never dressed as an answer.
-        const QString msg = events[0]["message"].toString();
+        const QString msg = events[1]["message"].toString();
         QVERIFY2(msg.contains("API error"), qPrintable(msg));
         QVERIFY2(msg.contains("boom"), qPrintable(msg));
     }
@@ -4883,8 +4896,7 @@ private slots:
     // The budget is deliberately small (3, not the 5 used for 429/529): this
     // request is non-streaming, so the configured timeout is total wall clock per
     // attempt and a long chain is a long freeze.
-    void llmProviderTimeoutIsRetried() {
-        for (int status : {408, 504}) {
+    void llmProviderTimeoutIsRetried() {        for (int status : {408, 504}) {
             StubLlmServer stub;
             stub.statuses << status << 200;
             stub.responses << QByteArray(
@@ -5033,6 +5045,162 @@ private slots:
             ++overloaded;
         }
         QCOMPARE(overloaded, 5);
+    }
+
+    // 502/503 mean "the proxy or upstream is not available right now" -- a
+    // restart, a rolling deploy, a worker crash.  A ten-second blip used to kill
+    // a multi-hour task; now the turn rides it out.
+    void llmServerErrorIsRetried() {
+        for (int status : {502, 503}) {
+            StubLlmServer stub;
+            stub.statuses << status << 200;
+            stub.responses << QByteArray(R"({"error":{"message":"Bad gateway"}})")
+                           << llmCompletion("recovered");
+
+            LlmParams p;
+            p.baseUrl = stub.baseUrl();
+            p.model = "stub-model";
+            p.messages = QJsonArray{userMsg("go")};
+            p.toolConfirmation = "all";
+            QList<QJsonObject> events;
+            LlmClient().run(p,
+                [&](const QJsonObject& ev) { events.append(ev); },
+                []() { return std::make_pair(true, false); },
+                []() { return false; },
+                [](const QJsonArray&) { return QStringList(); });
+
+            QCOMPARE(stub.requests.size(), 2);
+            int notices = 0;
+            for (const QJsonObject& ev : qAsConst(events)) {
+                if (ev["type"].toString() != QLatin1String("retrying")) continue;
+                QCOMPARE(ev["reason"].toString(), QString("server"));
+                QCOMPARE(ev["status_code"].toInt(), status);
+                QCOMPARE(ev["max_attempts"].toInt(), 3);
+                ++notices;
+            }
+            QCOMPARE(notices, 1);
+            QCOMPARE(events.last()["type"].toString(), QString("final_response"));
+            QVERIFY2(events.last()["content"].toString().contains("recovered"),
+                     qPrintable(QJsonDocument(events.last()).toJson()));
+        }
+    }
+
+    // A 500 is often the request's own fault, so it buys one retry, not a chain.
+    void llmInternalErrorGetsOneRetryOnly() {
+        StubLlmServer stub;
+        for (int i = 0; i < 8; ++i) stub.statuses << 500;
+        stub.responses << QByteArray(R"({"error":{"message":"Internal server error"}})");
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("go")};
+        p.toolConfirmation = "none";
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        int notices = 0;
+        for (const QJsonObject& ev : qAsConst(events)) {
+            if (ev["type"].toString() != QLatin1String("retrying")) continue;
+            QCOMPARE(ev["reason"].toString(), QString("server"));
+            QCOMPARE(ev["max_attempts"].toInt(), 1);
+            ++notices;
+        }
+        QCOMPARE(notices, 1);
+        QCOMPARE(stub.requests.size(), 2);
+        QCOMPARE(events.last()["type"].toString(), QString("error"));
+    }
+
+    // A connection failure *after* this endpoint answered is a dropped route --
+    // a restart, an OOM kill, a sleep/wake, a VM's address changing -- not a bad
+    // URL.  These failures are instant, so the retries cost seconds.
+    void llmMidSessionRefusalIsRetried() {
+        StubLlmServer stub;
+        stub.responses << llmCompletion("first answer");
+        const QString base = stub.baseUrl();
+
+        LlmParams p;
+        p.baseUrl = base;
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hi")};
+        p.toolConfirmation = "none";
+        auto run = [&](void) {
+            QList<QJsonObject> evs;
+            LlmClient().run(p,
+                [&](const QJsonObject& ev) { evs.append(ev); },
+                []() { return std::make_pair(true, false); },
+                []() { return false; },
+                [](const QJsonArray&) { return QStringList(); });
+            return evs;
+        };
+
+        // First contact succeeds: the endpoint is real, and that is remembered.
+        const QList<QJsonObject> first = run();
+        QCOMPARE(first.last()["type"].toString(), QString("final_response"));
+
+        stub.stop();   // the endpoint goes away
+        const QList<QJsonObject> events = run();
+
+        int notices = 0;
+        for (const QJsonObject& ev : qAsConst(events)) {
+            if (ev["type"].toString() != QLatin1String("retrying")) continue;
+            QCOMPARE(ev["reason"].toString(), QString("unreachable"));
+            QCOMPARE(ev["status_code"].toInt(), 0);
+            ++notices;
+        }
+        QCOMPARE(notices, 3);
+        QCOMPARE(events.last()["type"].toString(), QString("error"));
+        QVERIFY2(events.last()["message"].toString().contains("Nothing answered"),
+                 qPrintable(events.last()["message"].toString()));
+    }
+
+    // Retrying must never change what the user is told about the failure: the
+    // chain started with the provider's own 500, and the retry hitting a closed
+    // port must not replace that diagnosis with a transport message.
+    void llmRetryFailureKeepsTheOriginalError() {
+        StubLlmServer stub;
+        stub.statuses << 500;
+        stub.responses << QByteArray(R"({"error":{"message":"boom"}})");
+        stub.stopAfterFirst = true;   // the retry cannot get through
+
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hi")};
+        p.toolConfirmation = "none";
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+
+        const QString msg = events.last()["message"].toString();
+        QVERIFY2(msg.contains("boom"), qPrintable(msg));
+        QVERIFY2(!msg.contains("Nothing answered"), qPrintable(msg));
+    }
+
+    // Mid-turn persistence is best effort: chatSave reports a failed write
+    // instead of throwing, so a full disk cannot end a finished turn.
+    void chatSaveReportsFailureOnUnwritableDir() {
+        const QJsonObject chat = chatCreate("Unwritable");
+        QVERIFY(chatSave(chat));   // baseline: the directory is writable
+
+        const QString chats = pengyConfigDirPath() + "/chats";
+        // Read-only directory: the atomic write cannot create its temp file.
+        // Restore permissions before asserting so teardown can clean up.
+        QVERIFY(QFile::setPermissions(chats, QFile::ReadOwner | QFile::ExeOwner));
+        const bool saved = chatSave(QJsonObject{{"id", chat["id"]},
+                                                {"title", "T"},
+                                                {"messages", QJsonArray{userMsg("x")}}});
+        QVERIFY(QFile::setPermissions(chats,
+            QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        QVERIFY2(!saved, "an unwritable chat directory must report failure, not throw");
+        chatDelete(chat["id"].toString());
     }
 
     // The desktop GUI has no per-call timeout argument: MainWindow passes

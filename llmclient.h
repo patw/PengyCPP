@@ -34,8 +34,12 @@ struct LlmResponse {
     // The transfer never completed: Qt's own deadline (setTransferTimeout,
     // i.e. the configured LLM timeout) expired with no answer at all.  Kept
     // separate from httpStatus == 0, which also covers connection refused --
-    // only a timeout is worth re-sending.
+    // only a timeout is worth re-sending on its own budget.
     bool        transportTimeout = false;
+    // Any transport failure at all (refused, DNS, TLS, timeout).  Retried only
+    // once this endpoint has answered in this session: mid-task that means a
+    // dropped route, first contact means the endpoint is not there.
+    bool        transportFailure = false;
 };
 
 // ── Failed turns ─────────────────────────────────────────────────────

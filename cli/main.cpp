@@ -381,6 +381,8 @@ public:
     QJsonObject chat;
     bool        m_firstEventDone = false;
     bool        m_noSave = false;
+    /// Report a failed mid-turn save once, not per write.
+    bool        m_saveWarned = false;
     QString     m_outputMode = "pretty";
     bool        m_truncationFailed = false;
 
@@ -557,9 +559,17 @@ private:
     }
 
     // Persist mid-run, so a crash can't take the turn's tool calls with it.
-    // One small per-chat file write; the whole store is not touched.
+    // One small per-chat file write; the whole store is not touched.  A failed
+    // write is reported once and the turn continues: the model's answer and the
+    // tool results are already real, and losing them to a full disk is the
+    // worse outcome.
     void saveProgress() {
-        if (!m_noSave) chatSave(chat);
+        if (m_noSave) return;
+        if (!chatSave(chat) && !m_saveWarned) {
+            m_saveWarned = true;
+            err("Chat history is not being saved (disk full, or the chat "
+                "directory is not writable). Continuing; the answer will still be shown.");
+        }
     }
 
     // Append a message to the live chat and persist it immediately.
@@ -593,14 +603,17 @@ private:
                 .arg(ev["max_attempts"].toInt())));
 
         } else if (type == "retrying") {
-            // 429/529 overload and provider timeouts — surface the wait instead
-            // of hanging silently.  A client-side deadline carries no HTTP
-            // status, so the label stands alone there.
-            const bool isTimeout = (ev["reason"].toString() == QLatin1String("timeout"));
+            // Backoff on a transient failure — overload, provider timeout, 5xx,
+            // or a route that dropped mid-task.  A transport failure carries no
+            // HTTP status, so the label stands alone there.
+            const QString reason = ev["reason"].toString();
             const int status = ev["status_code"].toVariant().toInt();
-            const QString head = (isTimeout || status == 0)
-                ? (isTimeout ? QStringLiteral("Timeout") : QStringLiteral("Overloaded"))
-                : QString("Overloaded (HTTP %1)").arg(status);
+            const QString label = reason == QLatin1String("timeout") ? QStringLiteral("Timeout")
+                : reason == QLatin1String("server") ? QStringLiteral("Server error")
+                : reason == QLatin1String("unreachable") ? QStringLiteral("Unreachable")
+                : QStringLiteral("Overloaded");
+            const QString head = (status == 0)
+                ? label : QString("%1 (HTTP %2)").arg(label).arg(status);
             outln(yellow(QString("%1 — retrying in %2s (%3/%4)")
                 .arg(head)
                 .arg(ev["delay_secs"].toDouble(), 0, 'f', 1)

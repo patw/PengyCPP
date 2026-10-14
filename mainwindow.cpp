@@ -739,10 +739,14 @@ void MainWindow::onWorkerEvent(const QString& eventJson) {
         }
 
     } else if (type == "retrying") {
-        // 429/529 overload and provider timeouts: surface the wait, don't hang.
+        // Backoff on a transient failure (overload, timeout, 5xx, dropped
+        // route): surface the wait, don't hang.
         if (session == tabForChat(m_activeChatId)) {
-            const QString label = (event["reason"].toString() == QLatin1String("timeout"))
-                ? QStringLiteral("Timeout") : QStringLiteral("Overloaded");
+            const QString reason = event["reason"].toString();
+            const QString label = reason == QLatin1String("timeout") ? QStringLiteral("Timeout")
+                : reason == QLatin1String("server") ? QStringLiteral("Server error")
+                : reason == QLatin1String("unreachable") ? QStringLiteral("Unreachable")
+                : QStringLiteral("Overloaded");
             m_chatHistory->setRetrying(
                 QString("%1 — retrying in %2s (%3/%4)")
                     .arg(label)

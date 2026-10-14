@@ -405,7 +405,7 @@ Events are reported via `std::function<void(const QJsonObject&)>` callbacks:
 | `tool_request` | `tool_name`, `tool_args`, `tool_call_id` |
 | `tool_result` | `name`, `args`, `tool_call_id`, `content`, `declined` |
 | `context_compacted` | `attempt`, `max_attempts`, `chars_removed` (provider-only overflow recovery) |
-| `retrying` | `attempt`, `max_attempts`, `delay_secs`, `status_code`, `message`, `reason` (`"timeout"` for a 408/504 answer or Qt's transfer deadline; absent for 429/529) |
+| `retrying` | `attempt`, `max_attempts`, `delay_secs`, `status_code`, `message`, `reason` (`"timeout"` 408/504/own deadline, `"server"` 500/502/503, `"unreachable"` dropped route; absent for 429/529) |
 | `error` | `kind`, `message` (never persisted as a model reply) |
 | `final_response` | `content`, `usage` (prompt/completion tokens) |
 

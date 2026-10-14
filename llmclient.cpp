@@ -10,6 +10,9 @@
 #include <QLocale>
 #include <QStringList>
 #include <QThread>
+#include <QSet>
+#include <QMutex>
+#include <QMutexLocker>
 #include <random>
 #include <chrono>
 #include <cmath>
@@ -32,6 +35,49 @@ static const int MAX_TIMEOUT_RETRIES = 3;
 // 408 Request Timeout, and 504 Gateway Timeout -- a proxy answering for an
 // upstream that ran out of time, which is the same failure seen from the client.
 static const QList<int> TIMEOUT_STATUSES = {408, 504};
+
+// ── Transient server errors, and routes that drop mid-task ───────
+// 502/503 say "the proxy or upstream is not available right now" -- a restart,
+// a rolling deploy, a worker crash.  That is the same busy-endpoint failure a
+// timeout is, and a ten-second blip used to kill a multi-hour task.  500 is
+// often *deterministic* (the request trips a provider bug), so it buys one
+// retry rather than three.
+static const int MAX_TRANSIENT_RETRIES = 3;
+static const int MAX_INTERNAL_RETRIES = 1;
+static const QList<int> TRANSIENT_STATUSES = {502, 503};
+// A connection failure *after* this endpoint has answered is a dropped route
+// (server restart, OOM kill, sleep/wake, a VM's address changing), not a
+// misconfigured endpoint.  First contact keeps failing fast: that is the case
+// the "is your server running?" help is written for.
+static const int MAX_UNREACHABLE_RETRIES = 3;
+
+namespace {
+// Endpoints that have answered at least one request in this process, keyed by
+// base URL so a second chat cannot inherit another's confidence.
+QSet<QString> g_answeredEndpoints;
+QMutex g_answeredMutex;
+}
+
+static bool endpointHasAnswered(const QString& baseUrl) {
+    const QMutexLocker lk(&g_answeredMutex);
+    return g_answeredEndpoints.contains(baseUrl);
+}
+
+static void markEndpointAnswered(const QString& baseUrl) {
+    const QMutexLocker lk(&g_answeredMutex);
+    g_answeredEndpoints.insert(baseUrl);
+}
+
+/// Whether to re-send a request that answered with `code`, and how many times.
+/// 400/401/404 and friends are the request's fault -- no amount of waiting
+/// makes the explanatory message arrive faster, so they must not be queued
+/// behind a backoff.
+static bool transientRetry(int code, int& budget, QString& reason) {
+    if (TIMEOUT_STATUSES.contains(code)) { budget = MAX_TIMEOUT_RETRIES; reason = "timeout"; return true; }
+    if (TRANSIENT_STATUSES.contains(code)) { budget = MAX_TRANSIENT_RETRIES; reason = "server"; return true; }
+    if (code == 500) { budget = MAX_INTERNAL_RETRIES; reason = "server"; return true; }
+    return false;
+}
 static const int MAX_CONTEXT_RETRIES = 4;
 static const int CONTEXT_PREVIEW = 1500;
 static const QString CONTEXT_STUB = QStringLiteral("[tool output omitted from provider request to fit context; original remains in chat history]");
@@ -373,10 +419,12 @@ static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
     LlmResponse resp;
     resp.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     // Qt's transfer deadline (the configured LLM timeout) firing is the one
-    // transport failure worth re-sending; connection refused is not.
+    // transport failure worth re-sending on the timeout budget; connection
+    // refused is only worth re-sending once this endpoint has answered.
     const auto qtError = reply->error();
     resp.transportTimeout = (qtError == QNetworkReply::TimeoutError
                              || qtError == QNetworkReply::ProxyTimeoutError);
+    resp.transportFailure = (qtError != QNetworkReply::NoError);
     resp.body       = reply->readAll();
     resp.requestSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
@@ -527,19 +575,24 @@ void LlmClient::run(const LlmParams& params,
                 QJsonObject{{"role", "system"}, {"content", ContextRecovery::SummaryPrompt}},
                 QJsonObject{{"role", "user"}, {"content", chunk}}}}};
             payload[params.recovery.outputParameter] = 2048;
-            // The summary is part of this turn, so a provider timeout gets the
-            // same retry budget here as the turn request -- a big conversation's
-            // prefill is exactly what blows the configured timeout on a slow
-            // engine, and losing the turn there is the worst place to lose it.
-            int summaryTimeouts = 0;
+            // The summary is part of this turn, so every transient failure shape
+            // gets the same budget here as on the turn request.
+            int summaryRetries = 0;
             LlmResponse resp;
             for (;;) {
                 resp = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact), params.apiKey, params.llmTimeout * 1000);
                 if (isCancelled()) return false;
-                const bool timedOut = resp.transportTimeout || TIMEOUT_STATUSES.contains(resp.httpStatus);
-                if (!timedOut || summaryTimeouts >= MAX_TIMEOUT_RETRIES) break;
-                ++summaryTimeouts;
-                interruptibleSleep(backoffDelay(summaryTimeouts - 1, resp.retryAfterHeader), isCancelled);
+                if (resp.httpStatus >= 200 && resp.httpStatus < 300) markEndpointAnswered(params.baseUrl);
+                int budget = 0;
+                QString reason;
+                if (!transientRetry(resp.httpStatus, budget, reason)) {
+                    if (resp.transportTimeout) budget = MAX_TIMEOUT_RETRIES;
+                    else if (resp.transportFailure && endpointHasAnswered(params.baseUrl))
+                        budget = MAX_UNREACHABLE_RETRIES;
+                }
+                if (budget == 0 || summaryRetries >= budget) break;
+                ++summaryRetries;
+                interruptibleSleep(backoffDelay(summaryRetries - 1, resp.retryAfterHeader), isCancelled);
                 if (isCancelled()) return false;
             }
             auto body = QJsonDocument::fromJson(resp.body).object();
@@ -585,7 +638,13 @@ void LlmClient::run(const LlmParams& params,
         LlmResponse lastResp;
         bool gotSuccess = false;
         int rateRetries = 0;
-        int timeoutRetries = 0;
+        int transientRetries = 0;
+        // The provider answer that started this retry chain.  Reported when a
+        // retry itself fails with nothing more informative, so the retries never
+        // change what the user is told about the failure they care about.
+        int chainStatus = 0;
+        QString chainDetail;
+        bool chainTimedOut = false;
         for (;;) {
             if (isCancelled()) return;
 
@@ -597,6 +656,9 @@ void LlmClient::run(const LlmParams& params,
 
             int code = lastResp.httpStatus;
             if (code >= 200 && code < 300) {
+                // The endpoint is reachable and speaks our protocol.  From here
+                // on, a connection failure means it went away mid-work.
+                markEndpointAnswered(params.baseUrl);
                 gotSuccess = true;
                 break;
             }
@@ -652,18 +714,43 @@ void LlmClient::run(const LlmParams& params,
             // all, are both the busy-endpoint failure: re-send it.  Once the
             // budget is spent the ordinary timeout message is reported below,
             // unchanged.
-            if ((TIMEOUT_STATUSES.contains(code) || lastResp.transportTimeout)
-                    && timeoutRetries < MAX_TIMEOUT_RETRIES) {
-                double delay = backoffDelay(timeoutRetries, lastResp.retryAfterHeader);
-                ++timeoutRetries;
+            // Transient failures -- the endpoint is busy or gone, not the request
+            // being wrong: 408/504 (out of time), 502/503 (proxy/upstream gone),
+            // 500 (one attempt, since a 500 is often the request's own fault),
+            // our own transfer deadline, and -- once this endpoint has answered
+            // in this session -- a connection that dropped mid-task.  Once the
+            // budget is spent the ordinary message is reported below, unchanged.
+            int budget = 0;
+            QString reason;
+            const bool byStatus = transientRetry(code, budget, reason);
+            const bool byTransport = !byStatus && lastResp.transportFailure;
+            if (byTransport) {
+                if (lastResp.transportTimeout) {
+                    budget = MAX_TIMEOUT_RETRIES;
+                    reason = "timeout";
+                } else if (endpointHasAnswered(params.baseUrl)) {
+                    // Refused / DNS / TLS after this endpoint answered: a restart
+                    // or a dropped route, not a bad URL.  These failures are
+                    // instant, so the retries cost seconds.  First contact still
+                    // fails fast, because that is the case the "is your server
+                    // running?" help is for.
+                    budget = MAX_UNREACHABLE_RETRIES;
+                    reason = "unreachable";
+                }
+            }
+            if ((byStatus || byTransport) && transientRetries < budget) {
+                if (byStatus && chainStatus == 0) { chainStatus = code; chainDetail = detail; }
+                if (byTransport && lastResp.transportTimeout) chainTimedOut = true;
+                double delay = backoffDelay(transientRetries, lastResp.retryAfterHeader);
+                ++transientRetries;
                 onEvent(QJsonObject{
                     {"type",         "retrying"},
-                    {"reason",       "timeout"},
-                    {"attempt",      timeoutRetries},
-                    {"max_attempts", MAX_TIMEOUT_RETRIES},
+                    {"reason",       reason},
+                    {"attempt",      transientRetries},
+                    {"max_attempts", budget},
                     {"delay_secs",   qRound(delay * 10.0) / 10.0},
-                    // A transport deadline has no HTTP status to report.
-                    {"status_code",  lastResp.transportTimeout ? 0 : code},
+                    // A transport failure has no HTTP status to report.
+                    {"status_code",  byTransport ? 0 : code},
                     {"message",      detail},
                 });
                 interruptibleSleep(delay, isCancelled);
@@ -709,6 +796,27 @@ void LlmClient::run(const LlmParams& params,
         if (!gotSuccess) {
             QJsonObject body = QJsonDocument::fromJson(lastResp.body).object();
             QString msg = errorDetail(body, lastResp.body);
+            if (lastResp.httpStatus <= 0 && chainStatus > 0) {
+                // We were retrying a provider answer (408/500/502/503) and the
+                // retry itself failed with nothing more informative.  Report the
+                // answer that started the chain: a transport failure carries no
+                // provider message, and the retries must not change what the
+                // user is told about the failure they care about.
+                emitTurnError(onEvent, chainStatus,
+                              QString("API error (HTTP %1): %2").arg(chainStatus).arg(chainDetail),
+                              params.baseUrl);
+                return;
+            }
+            if (lastResp.httpStatus <= 0 && chainTimedOut && !lastResp.transportTimeout) {
+                // We were retrying a timeout; the retry hit something else.
+                // Report the timeout -- that is the failure the retries were for.
+                onEvent(QJsonObject{
+                    {"type",    "error"},
+                    {"kind",    "error"},
+                    {"message", unreachableHelp(params.baseUrl, "timed out")},
+                });
+                return;
+            }
             if (lastResp.httpStatus <= 0) {
                 // The request never reached the endpoint -- syncPost() wrote the
                 // transport failure into an error body for us.  With a local
