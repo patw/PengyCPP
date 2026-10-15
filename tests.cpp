@@ -1373,6 +1373,77 @@ private slots:
                  qPrintable(r));
     }
 
+    // Two edits ~2000 lines apart: the region between them is too big for the
+    // LCS table, which used to report it as one replace -- a 4000-line "diff"
+    // for a 2-line edit.  It now splits on unique lines, in any size of file.
+    void hardeningDistantEditsStaySeparateHunks() {
+        const QList<QList<int>> cases{{4024, 359, 2401}, {3000, 359, 2459}, {10000, 359, 2401}};
+        for (const auto& c : cases) {
+            const int n = c[0], x = c[1], y = c[2];
+            QStringList lines;
+            for (int i = 1; i <= n; ++i) lines << QString("filler = %1\n").arg(i);
+            lines[x] = "name = \"bytes\"\n";
+            lines[x + 1] = "version = \"1.12.0\"\n";
+            lines[y] = "name = \"rayon\"\n";
+            lines[y + 1] = "version = \"1.12.0\"\n";
+            QTemporaryDir dir;
+            const QString f = dir.path() + "/Cargo.lock";
+            spit(f, lines.join("").toUtf8());
+            QString r = Tools::execute("apply_changes", QJsonObject{{"dry_run", true}, {"changes", QJsonArray{
+                QJsonObject{{"path", f}, {"operations", QJsonArray{
+                    QJsonObject{{"kind", "replace"}, {"old", "version = \"1.12.0\""}, {"new", "version = \"1.12.1\""},
+                                {"expected_matches", 2}}}}}}}});
+            QStringList hunks;
+            for (const QString& l : r.split('\n'))
+                if (l.startsWith("@@")) hunks << l;
+            QCOMPARE(hunks, QStringList({QString("@@ -%1,7 +%1,7 @@").arg(x - 1),
+                                         QString("@@ -%1,7 +%1,7 @@").arg(y - 1)}));
+            QVERIFY2(r.count('\n') < 30, qPrintable(r.left(500)));
+        }
+    }
+
+    void hardeningFailedDoesNotContainShowsTheLine() {
+        QTemporaryDir dir;
+        const QString f = dir.path() + "/t.py";
+        spit(f, "import httpx\nimport pytest\n\ndef helper():\n"
+                "    \"\"\"No longer builds an httpx.Request.\"\"\"\n    # httpx.Request was the old way\n");
+        QString r = Tools::execute("apply_changes", QJsonObject{
+            {"changes", QJsonArray{QJsonObject{{"path", f}, {"operations", QJsonArray{
+                QJsonObject{{"kind", "replace"}, {"old", "import httpx\nimport pytest"}, {"new", "import pytest"}}}}}}},
+            {"postconditions", QJsonArray{QJsonObject{{"path", f}, {"does_not_contain", "httpx.Request"}}}}});
+        QVERIFY2(r.contains("still contains forbidden text at line 4: "
+                            "\"\"\"No longer builds an httpx.Request.\"\"\" (+1 more)"), qPrintable(r));
+        // A long line is cut to a 160-character window around the match.
+        const QString longLine = QString(300, 'a') + "NEEDLE" + QString(300, 'b');
+        spit(f, ("first\n  " + longLine + "\n").toUtf8());
+        r = Tools::execute("apply_changes", QJsonObject{
+            {"changes", QJsonArray{QJsonObject{{"path", f}, {"operations", QJsonArray{
+                QJsonObject{{"kind", "replace"}, {"old", "first"}, {"new", "1st"}}}}}}},
+            {"postconditions", QJsonArray{QJsonObject{{"path", f}, {"does_not_contain", "NEEDLE"}}}}});
+        QVERIFY2(r.contains("at line 2: ..." + QString(60, 'a') + "NEEDLE" + QString(94, 'b') + "..."),
+                 qPrintable(r));
+        // An empty forbidden text still fails, and terminates.
+        r = Tools::execute("apply_changes", QJsonObject{
+            {"changes", QJsonArray{QJsonObject{{"path", f}, {"operations", QJsonArray{
+                QJsonObject{{"kind", "replace"}, {"old", "first"}, {"new", "1st"}}}}}}},
+            {"postconditions", QJsonArray{QJsonObject{{"path", f}, {"does_not_contain", ""}}}}});
+        QVERIFY2(r.contains("still contains forbidden text at line 1: 1st"), qPrintable(r));
+    }
+
+    // A timeout keeps what the command printed before it was killed: the last
+    // lines of a hung watcher are what explain the hang.
+    void hardeningTimeoutsReturnPartialOutput() {
+        Tools::setTimeout(1);
+        const QString bash = Tools::execute("run_bash", QJsonObject{{"command", "echo started; echo oops >&2; sleep 5"}});
+        const QString python = Tools::execute("run_python", QJsonObject{
+            {"code", "import time; print(\"working\", flush=True); time.sleep(5)"}});
+        const QString silent = Tools::execute("run_bash", QJsonObject{{"command", "sleep 5"}});
+        Tools::setTimeout(300);
+        QCOMPARE(bash, QString("Error: Command timed out after 1 seconds. Output before it was killed:\nstarted\n\noops\n"));
+        QCOMPARE(python, QString("Error: Python execution timed out after 1 seconds. Output before it was killed:\nworking\n"));
+        QCOMPARE(silent, QString("Error: Command timed out after 1 seconds"));
+    }
+
     void hardeningSamePathTwiceIsRejected() {
         QTemporaryDir dir;
         const QString f = dir.path() + "/t.txt";

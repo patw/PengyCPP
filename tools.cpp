@@ -297,7 +297,7 @@ const QJsonArray& baseToolDefinitions() {
                 }},
                 {"postconditions", QJsonObject{
                     {"type", "array"},
-                    {"description", "Optional {path, contains, does_not_contain} checks on the edited text; a failed check cancels every edit"},
+                    {"description", "Optional {path, contains, does_not_contain} plain-substring checks on a file's whole edited text, comments and strings included; a failed check cancels every edit"},
                     {"items", QJsonObject{
                         {"type", "object"},
                         {"properties", QJsonObject{
@@ -950,26 +950,101 @@ static void matchNewlines(const QString& content, QString& oldText, QString& new
 
 struct DiffOp { char tag; int i1, i2, j1, j2; };
 
+// Largest LCS table (lines x lines) matchLines builds for one region.
+static constexpr qint64 kLcsMaxCells = 4000000;
+
+// Exact LCS of a[a1..a2) and b[b1..b2), appended as absolute (i, j) pairs.
+static void lcsPairs(const QStringList& a, const QStringList& b, int a1, int a2, int b1, int b2,
+                     QList<QPair<int, int>>& pairs) {
+    const int n = a2 - a1, m = b2 - b1;
+    std::vector<quint32> dp(size_t(n + 1) * (m + 1), 0);
+    auto at = [&](int i, int j) -> quint32& { return dp[size_t(i) * (m + 1) + j]; };
+    for (int i = n - 1; i >= 0; --i)
+        for (int j = m - 1; j >= 0; --j)
+            at(i, j) = a[a1 + i] == b[b1 + j] ? at(i + 1, j + 1) + 1 : qMax(at(i + 1, j), at(i, j + 1));
+    int i = 0, j = 0;
+    while (i < n && j < m) {
+        if (a[a1 + i] == b[b1 + j]) { pairs.append({a1 + i, b1 + j}); ++i; ++j; }
+        else if (at(i + 1, j) >= at(i, j + 1)) ++i;
+        else ++j;
+    }
+}
+
+// Lines occurring exactly once in a[a1..a2) and once in b[b1..b2), as (i, j)
+// pairs: the longest run of them in the same order on both sides.
+static QList<QPair<int, int>> uniqueAnchors(const QStringList& a, const QStringList& b,
+                                            int a1, int a2, int b1, int b2) {
+    struct Seen { int countA = 0, indexA = 0, countB = 0, indexB = 0; };
+    QHash<QString, Seen> seen;
+    for (int i = a1; i < a2; ++i) {
+        Seen& e = seen[a[i]];
+        if (e.countA++ == 0) e.indexA = i;
+    }
+    for (int j = b1; j < b2; ++j) {
+        auto it = seen.find(b[j]);
+        if (it != seen.end()) { ++it->countB; it->indexB = j; }
+    }
+    std::vector<QPair<int, int>> cands;
+    for (const Seen& e : seen)
+        if (e.countA == 1 && e.countB == 1) cands.push_back({e.indexA, e.indexB});
+    std::sort(cands.begin(), cands.end());
+    // Longest increasing subsequence of the b indices (patience sorting).
+    std::vector<int> tails, prev(cands.size(), -1);
+    for (int k = 0; k < int(cands.size()); ++k) {
+        const int pos = int(std::partition_point(tails.begin(), tails.end(),
+                                                 [&](int t) { return cands[t].second < cands[k].second; })
+                            - tails.begin());
+        prev[k] = pos > 0 ? tails[pos - 1] : -1;
+        if (pos == int(tails.size())) tails.push_back(k);
+        else tails[pos] = k;
+    }
+    QList<QPair<int, int>> out;
+    for (int k = tails.empty() ? -1 : tails.back(); k >= 0; k = prev[k]) out.prepend(cands[k]);
+    return out;
+}
+
+// Matching (i, j) line pairs between a and b, in order.  A region small enough
+// for the LCS table gets an exact LCS.  A larger one is split on lines that
+// occur exactly once on each side (kept in order by a longest increasing
+// subsequence, as patience diff does) and its gaps are matched the same way,
+// so two edits far apart in a big file still diff as two small hunks instead
+// of one replace spanning everything between them.  Only a large region with
+// no such line is left unmatched.  Same algorithm as match_lines in tools.rs.
+static QList<QPair<int, int>> matchLines(const QStringList& a, const QStringList& b) {
+    QList<QPair<int, int>> pairs;
+    struct Region { int a1, a2, b1, b2; };
+    QList<Region> regions{{0, int(a.size()), 0, int(b.size())}};
+    while (!regions.isEmpty()) {
+        auto [a1, a2, b1, b2] = regions.takeLast();
+        while (a1 < a2 && b1 < b2 && a[a1] == b[b1]) { pairs.append({a1, b1}); ++a1; ++b1; }
+        while (a1 < a2 && b1 < b2 && a[a2 - 1] == b[b2 - 1]) { --a2; --b2; pairs.append({a2, b2}); }
+        const int n = a2 - a1, m = b2 - b1;
+        if (n == 0 || m == 0) continue;
+        if (qint64(n) * m <= kLcsMaxCells) {
+            lcsPairs(a, b, a1, a2, b1, b2, pairs);
+            continue;
+        }
+        int pa = a1, pb = b1;
+        for (const auto& [i, j] : uniqueAnchors(a, b, a1, a2, b1, b2)) {
+            pairs.append({i, j});
+            regions.append({pa, i, pb, j});
+            pa = i + 1;
+            pb = j + 1;
+        }
+        if (pa > a1) regions.append({pa, a2, pb, b2});
+    }
+    std::sort(pairs.begin(), pairs.end());
+    return pairs;
+}
+
 static QList<DiffOp> diffOpcodes(const QStringList& a, const QStringList& b) {
     int pre = 0;
     while (pre < a.size() && pre < b.size() && a[pre] == b[pre]) ++pre;
     int suf = 0;
     while (suf < a.size() - pre && suf < b.size() - pre && a[a.size() - 1 - suf] == b[b.size() - 1 - suf]) ++suf;
     const int n = a.size() - pre - suf, m = b.size() - pre - suf;
-    QList<QPair<int, int>> pairs;
-    if (n > 0 && m > 0 && qint64(n) * m <= 4000000) {
-        std::vector<quint32> dp(size_t(n + 1) * (m + 1), 0);
-        auto at = [&](int i, int j) -> quint32& { return dp[size_t(i) * (m + 1) + j]; };
-        for (int i = n - 1; i >= 0; --i)
-            for (int j = m - 1; j >= 0; --j)
-                at(i, j) = a[pre + i] == b[pre + j] ? at(i + 1, j + 1) + 1 : qMax(at(i + 1, j), at(i, j + 1));
-        int i = 0, j = 0;
-        while (i < n && j < m) {
-            if (a[pre + i] == b[pre + j]) { pairs.append({i, j}); ++i; ++j; }
-            else if (at(i + 1, j) >= at(i, j + 1)) ++i;
-            else ++j;
-        }
-    }
+    // Matching (i, j) pairs in the middle, in order.
+    const QList<QPair<int, int>> pairs = matchLines(a.mid(pre, n), b.mid(pre, m));
     QList<DiffOp> ops;
     if (pre > 0) ops.append({'=', 0, pre, 0, pre});
     int ai = 0, bj = 0, k = 0;
@@ -1000,6 +1075,37 @@ static QList<DiffOp> diffOpcodes(const QStringList& a, const QStringList& b) {
         merged.append(op);
     }
     return merged;
+}
+
+// Where needle first occurs in content, for a failed does_not_contain: "at
+// line N: <that line>", plus "(+K more)" for further matches.  The check is a
+// plain substring test, so the match is often in a comment or string the caller
+// didn't mean; showing the line makes that a one-look fix instead of a blind
+// retry.  A line longer than 160 characters is cut to a window around the
+// match.  Same text as the Python and Rust editions.
+static QString forbiddenTextLocation(const QString& content, const QString& needle) {
+    const int pos = content.indexOf(needle);
+    int more = 0;
+    for (int at = needle.isEmpty() ? -1 : int(content.indexOf(needle, pos + needle.size())); at >= 0;
+         at = content.indexOf(needle, at + needle.size()))
+        ++more;
+    const int lineNo = int(content.left(pos).count('\n')) + 1;
+    const int start = pos > 0 ? int(content.lastIndexOf('\n', pos - 1)) + 1 : 0;
+    int end = int(content.indexOf('\n', pos));
+    if (end < 0) end = content.size();
+    const QString raw = content.mid(start, end - start);
+    QString line = raw.trimmed();
+    int lead = 0;
+    while (lead < raw.size() && raw[lead].isSpace()) ++lead;
+    const int col = qBound(0, pos - start - lead, int(line.size()));
+    if (line.size() > 160) {
+        const int lo = qMax(0, qMin(col - 60, int(line.size()) - 160));
+        const int hi = qMin(lo + 160, int(line.size()));
+        line = (lo > 0 ? "..." : "") + line.mid(lo, hi - lo) + (hi < line.size() ? "..." : "");
+    }
+    QString at = QString("at line %1: %2").arg(lineNo).arg(line);
+    if (more > 0) at += QString(" (+%1 more)").arg(more);
+    return at;
 }
 
 static QString unifiedRange(int start, int stop) {
@@ -1790,6 +1896,20 @@ static QString sudoAuthFailureNote(ToolContext* ctx, const QString& host, const 
 
 // ── Bash (with temp file output & process groups) ────────────────────
 
+// A timeout's error plus whatever the command printed before it was killed:
+// the last lines of a hung watcher or build are what explain the hang, and
+// dropping them left the model with nothing to go on.  Same text as the
+// Python and Rust editions.
+static QString timedOutOutput(const QString& error, const QString& out, QString err) {
+    static const QRegularExpression sudoPromptRx("^\\[sudo[^\\]]*\\].*\\n?",
+                                                 QRegularExpression::MultilineOption);
+    err.remove(sudoPromptRx);
+    QString partial = out;
+    if (!err.isEmpty()) partial += (partial.isEmpty() ? "" : "\n") + err;
+    if (partial.trimmed().isEmpty()) return error;
+    return error + ". Output before it was killed:\n" + snipMiddle(partial);
+}
+
 // Wait for a command started in its own process group.  Returns an empty
 // string when it finished; otherwise the tool result for a timeout or cancel
 // (the process group has been killed and the output files consumed).
@@ -1818,12 +1938,8 @@ static QString waitForCommand(QProcess& proc, qint64 pid, int timeoutSecs,
                 ctx->unregisterProcess(pid);
                 QString out = readAndRemove(tmpFiles.stdoutPath);
                 QString err = readAndRemove(tmpFiles.stderrPath);
-                QString result = out;
-                if (!err.isEmpty()) {
-                    result += "\n" + err;
-                }
-                result += QString("\n\nError: Command timed out after %1 seconds.").arg(timeoutSecs);
-                return result.trimmed();
+                return timedOutOutput(QString("Error: Command timed out after %1 seconds").arg(timeoutSecs),
+                                      out, err);
             }
         }
     } else {
@@ -1832,8 +1948,10 @@ static QString waitForCommand(QProcess& proc, qint64 pid, int timeoutSecs,
             proc.kill();
             proc.waitForFinished(2000);
             ctx->unregisterProcess(pid);
-            removeOutputFiles(tmpFiles);
-            return QString("Error: Command timed out after %1 seconds.").arg(timeoutSecs);
+            QString out = readAndRemove(tmpFiles.stdoutPath);
+            QString err = readAndRemove(tmpFiles.stderrPath);
+            return timedOutOutput(QString("Error: Command timed out after %1 seconds").arg(timeoutSecs),
+                                  out, err);
         }
     }
 
@@ -3010,8 +3128,10 @@ static QString toolRunPython(const QJsonObject& args, ToolContext* ctx) {
         proc.kill();
         proc.waitForFinished(2000);
         ctx->unregisterProcess(pid);
-        removeOutputFiles(tmpFiles);
-        return "Error: Python execution timed out.";
+        QString out = readAndRemove(tmpFiles.stdoutPath);
+        QString err = readAndRemove(tmpFiles.stderrPath);
+        return timedOutOutput(QString("Error: Python execution timed out after %1 seconds").arg(toolTimeout()),
+                              out, err);
     }
 
     ctx->unregisterProcess(pid);
@@ -3507,7 +3627,8 @@ static QString toolApplyChanges(const QJsonObject& args) {
         if (c.contains("contains") && !content.contains(c["contains"].toString()))
             errors << QString("postcondition %1: %2 does not contain expected text").arg(i).arg(raw);
         if (c.contains("does_not_contain") && content.contains(c["does_not_contain"].toString()))
-            errors << QString("postcondition %1: %2 still contains forbidden text").arg(i).arg(raw);
+            errors << QString("postcondition %1: %2 still contains forbidden text %3")
+                          .arg(i).arg(raw, forbiddenTextLocation(content, c["does_not_contain"].toString()));
     }
     if (!errors.isEmpty()) return "Error: no changes applied.\n- " + errors.join("\n- ");
 

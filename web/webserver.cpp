@@ -526,6 +526,10 @@ void WebServer::routeChatStream(const QString& chatId,
 
     m_sseSockets.insert(socket);
     m_sse[chatId].append(socket);
+    // Count the viewer now: a run blocked on a prompt broadcasts nothing until
+    // the next lease notice, so a browser reopened in the lease's last minute
+    // was still counted as absent and the run stopped under it.
+    if (auto* w = m_workers.value(chatId)) w->setViewers(m_sse.value(chatId).size());
 
     // Browsers auto-reconnect after ~1s; tell them to retry faster.
     if (!m_sseRetrySent.contains(socket)) {

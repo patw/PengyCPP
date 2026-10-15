@@ -343,9 +343,14 @@ static void saveReadlineHistory() {
     write_history(g_histPath.toUtf8().constData());
 }
 
-static QString readline_qstring(const char* prompt_str) {
+// *eof (optional) reports Ctrl-D apart from an empty line: both return "".
+static QString readline_qstring(const char* prompt_str, bool* eof = nullptr) {
+    if (eof) *eof = false;
     char* raw = readline(prompt_str);
-    if (!raw) return {}; // EOF
+    if (!raw) { // EOF
+        if (eof) *eof = true;
+        return {};
+    }
     QString line = QString::fromUtf8(raw);
     QString trimmed = line.trimmed();
     if (!trimmed.isEmpty()) {
@@ -362,13 +367,17 @@ static void initReadline() {}
 
 static void saveReadlineHistory() {}
 
-static QString readline_qstring(const char* prompt_str) {
+static QString readline_qstring(const char* prompt_str, bool* eof = nullptr) {
+    if (eof) *eof = false;
     QTextStream out(stdout);
     out << prompt_str;
     out.flush();
     QTextStream in(stdin);
     QString line = in.readLine();
-    if (line.isNull()) return {}; // EOF
+    if (line.isNull()) { // EOF
+        if (eof) *eof = true;
+        return {};
+    }
     return line;
 }
 #endif
@@ -385,6 +394,8 @@ public:
     bool        m_saveWarned = false;
     /// Report the headless-confirmation notice once, not per tool call.
     bool        m_noUserNotice = false;
+    /// Set by "[4] Abort run" (or Ctrl-D) at a confirmation; LlmClient polls it.
+    bool        m_abortRun = false;
     QString     m_outputMode = "pretty";
     bool        m_truncationFailed = false;
 
@@ -546,11 +557,12 @@ private:
         // "declined by user" when a tool needs confirming and there is no TTY.
         params.noUserAvailable = !stdinIsTerminal();
         params.recovery = {cfg.autoContextRecovery, cfg.recoveryKeepTurns, m_noSave ? QString() : chat["id"].toString(), cfg.outputTokenLimit, cfg.outputTokenParameter};
+        m_abortRun = false;
         client.run(
             params,
             [this](const QJsonObject& ev) { onEvent(ev); },
             [this]() -> std::pair<bool,bool> { return onConfirm(); },
-            []() -> bool { return false; },
+            [this]() -> bool { return m_abortRun; },
             [this](const QJsonArray& questions) -> QStringList { return onQuestion(questions); }
         );
 
@@ -832,14 +844,22 @@ private:
               bold("[3]") + " Decline   " +
               bold("[4]") + " Abort run");
         for (;;) {
-            QString c = readline_qstring("Choice [1]: ").trimmed();
+            bool eof = false;
+            QString c = readline_qstring("Choice [1]: ", &eof).trimmed();
+            // Ctrl-D aborts, as in the Python edition.  It used to read as an
+            // empty line, i.e. "Execute" -- running the tool the user was
+            // trying to get away from.
+            if (eof || c == "4") {
+                outln(red("Run aborted by user."));
+                // Decline this tool, then end the run: LlmClient checks the
+                // cancel callback right after a decline.  (This used to return
+                // only the decline, so the run carried on after "aborted".)
+                m_abortRun = true;
+                return {false, false};
+            }
             if (c.isEmpty() || c == "1") return {true, false};
             if (c == "2") return {true, true};
             if (c == "3") return {false, false};
-            if (c == "4") {
-                outln(red("Run aborted by user."));
-                return {false, false};  // decline + don't yolo
-            }
             outln(red("Please enter 1, 2, 3, or 4."));
         }
     }
