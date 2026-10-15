@@ -12,6 +12,8 @@
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QEventLoop>
+#include <QTimer>
+#include <QApplication>
 #include <QPointer>
 #include <QAbstractItemView>
 #include <QTabWidget>
@@ -306,9 +308,14 @@ void SettingsDialog::fetchModels() {
     QString baseUrl = m_baseUrl->text().trimmed();
     QString apiKey  = m_apiKey->text();
 
-    QThread* thread = QThread::create([this, baseUrl, apiKey]() {
+    QPointer<SettingsDialog> self(this);
+    QThread* thread = QThread::create([self, baseUrl, apiKey]() {
         QNetworkAccessManager mgr;
         QNetworkRequest req(QUrl(baseUrl + "/models"));
+        // chatview.cpp's inline-image fetch already bounds itself this way;
+        // without it a hung endpoint leaves loop.exec() blocked forever and
+        // the Fetch button stuck disabled at "...".
+        req.setTransferTimeout(15000);
         req.setRawHeader("Authorization", ("Bearer " + apiKey).toUtf8());
         req.setRawHeader("api-key",       apiKey.toUtf8());
         req.setRawHeader("User-Agent",    "PengyAgent/1.0");
@@ -316,11 +323,11 @@ void SettingsDialog::fetchModels() {
         QNetworkReply* reply = mgr.get(req);
         QEventLoop loop;
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QTimer deadline;
+        deadline.setSingleShot(true);
+        QObject::connect(&deadline, &QTimer::timeout, reply, &QNetworkReply::abort);
+        deadline.start(15000);
         loop.exec();
-
-        QComboBox*         model = m_model;
-        QPushButton*       btn   = m_fetchBtn;
-        QPointer<SettingsDialog> self = this;
 
         if (reply->error() == QNetworkReply::NoError) {
             QJsonArray arr = QJsonDocument::fromJson(reply->readAll()).object()["data"].toArray();
@@ -334,7 +341,10 @@ void SettingsDialog::fetchModels() {
             // Persist so the dropdown stays populated across sessions.
             modelCacheSave(baseUrl, ids);
 
-            QMetaObject::invokeMethod(model, [model, btn, ids, self]() {
+            QMetaObject::invokeMethod(qApp, [ids, self]() {
+                if (!self) return;
+                auto* model = self->m_model;
+                auto* btn = self->m_fetchBtn;
                 btn->setEnabled(true);
                 btn->setText("Fetch");
                 if (ids.isEmpty()) {
@@ -349,9 +359,11 @@ void SettingsDialog::fetchModels() {
             }, Qt::QueuedConnection);
         } else {
             int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            QString err = QString("HTTP %1 from %2/models\n\nCheck your Base URL and API Key.")
-                          .arg(code).arg(baseUrl);
-            QMetaObject::invokeMethod(model, [btn, err, self]() {
+            QString err = QString("Fetch failed (HTTP %1) from %2/models: %3\n\nCheck your Base URL and API Key.")
+                          .arg(code).arg(baseUrl).arg(reply->errorString());
+            QMetaObject::invokeMethod(qApp, [err, self]() {
+                if (!self) return;
+                auto* btn = self->m_fetchBtn;
                 btn->setEnabled(true);
                 btn->setText("Fetch");
                 if (self) QMessageBox::warning(self, "Fetch Failed", err);

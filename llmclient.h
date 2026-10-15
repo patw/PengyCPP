@@ -119,3 +119,8 @@ public:
              CancelFn  isCancelled,
              QuestionFn onQuestion);
 };
+
+#ifdef PENGY_UNIT_TEST
+// Deterministic clock injection for the retry-admission boundary tests.
+bool retryChainOpenForTest(qint64& started, qint64 now);
+#endif

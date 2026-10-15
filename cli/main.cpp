@@ -613,11 +613,19 @@ private:
             appendAndSave(ev["message"].toObject());
 
         } else if (type == "context_compacted") {
-            if (!ev["message"].toString().isEmpty()) { err(ev["message"].toString()); return; }
+            if (!ev["message"].toString().isEmpty()) {
+                err(ev["message"].toString());
+                if (m_outputMode == "pretty") out(dim("Thinking..."));
+                return;
+            }
             outln(yellow(QString("Context limit — retrying with %1 fewer tool-output characters (%2/%3)")
                 .arg(ev["chars_removed"].toInt())
                 .arg(ev["attempt"].toInt())
                 .arg(ev["max_attempts"].toInt())));
+            // The reduction is followed by a full request in flight: show the
+            // in-flight indicator again, as the Python and Rust CLIs do.
+            if (m_outputMode == "pretty")
+                out(dim("Thinking..."));
 
         } else if (type == "retrying") {
             // Backoff on a transient failure — overload, provider timeout, 5xx,
@@ -637,6 +645,10 @@ private:
                 .arg(ev["delay_secs"].toDouble(), 0, 'f', 1)
                 .arg(ev["attempt"].toInt())
                 .arg(ev["max_attempts"].toInt())));
+        } else if (type == "request_started") {
+            if (m_outputMode == "pretty")
+                out(dim(ev["stage"].toString() == "summary"
+                    ? "Summarizing context..." : "Thinking..."));
 
         } else if (type == "tool_request") {
             if (m_outputMode == "json" || m_outputMode == "silent") return;
@@ -677,6 +689,10 @@ private:
                 outln(dim("--- Output ---"));
                 outln(dim(sanitizeDisplay(result)));
             }
+            // The next model round is already in flight after a tool result:
+            // show the in-flight indicator again, as the Python and Rust CLIs do.
+            if (m_outputMode == "pretty")
+                out(dim("Thinking..."));
 
         } else if (type == "error") {
             // The turn failed. This event replaced what used to be a

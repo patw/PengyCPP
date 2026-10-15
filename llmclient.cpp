@@ -1,11 +1,13 @@
 #include "llmclient.h"
 #include "config.h"
+#include "image_capabilities.h"
 #include "tools.h"
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QEventLoop>
+#include <QTimer>
 #include <QUrl>
 #include <QLocale>
 #include <QStringList>
@@ -65,6 +67,14 @@ static const int MAX_UNREACHABLE_RETRIES = 3;
 // answers when it loses its upstream mid-generation, so it gets one retry --
 // the same reasoning as a 500.
 static const int MAX_EMPTY_RETRIES = 1;
+
+// ── Retry-chain wall-clock grace ─────────────────────────────────
+// Retry decisions close 31 seconds after the first retry is approved. This
+// bounds admission of additional attempts, not an already admitted request:
+// that request still has its per-attempt wall deadline. Fast failures keep
+// their existing attempt budgets; a full-length retry at the default 300 s
+// timeout prevents admitting another. Identical policy in Rust and Python.
+static const qint64 RETRY_CHAIN_GRACE_MS = 31'000;
 
 /// A 200 that carries no choices at all.
 static QString noChoicesHelp() {
@@ -286,6 +296,29 @@ static void stripImageUrlParts(QJsonArray& messages) {
     }
 }
 
+static const QString CACHED_IMAGE_NOTICE = QStringLiteral(
+    "[Images omitted: this endpoint/model previously rejected image inputs. "
+    "Original attachments are retained; only text and file metadata are available. "
+    "This is not evidence that the underlying model lacks vision. "
+    "Do not claim to have inspected the omitted images.]");
+
+static void suppressImages(QJsonArray& messages, const QString& notice) {
+    int first = -1;
+    for (int i = 0; i < messages.size(); ++i) {
+        if (hasImageUrlParts(QJsonArray{messages[i]})) { first = i; break; }
+    }
+    stripImageUrlParts(messages);
+    if (first < 0) return;
+    auto msg = messages[first].toObject();
+    if (msg["content"].isString()) msg["content"] = msg["content"].toString() + "\n\n" + notice;
+    else {
+        auto parts = msg["content"].toArray();
+        parts.append(QJsonObject{{"type","text"},{"text",notice}});
+        msg["content"] = parts;
+    }
+    messages[first] = msg;
+}
+
 static QString errorDetail(const QJsonObject& body, const QByteArray& raw) {
     const QJsonValue error = body["error"];
     const QString message = error.toObject()["message"].toString();
@@ -425,9 +458,9 @@ static double backoffDelay(int attempt, const QString& retryAfterHeader) {
         base = qMin(BASE_DELAY_SECS * (1 << attempt), MAX_DELAY_SECS);
     }
     // ±JITTER jitter
-    static std::mt19937 rng(std::chrono::steady_clock::now().time_since_epoch().count());
+    static thread_local std::mt19937 rng(std::chrono::steady_clock::now().time_since_epoch().count());
     std::uniform_real_distribution<double> dist(-JITTER, JITTER);
-    double jitter = base * JITTER * dist(rng);
+    double jitter = base * dist(rng);
     return qMax(0.1, base + jitter);
 }
 
@@ -444,6 +477,37 @@ static void interruptibleSleep(double seconds, const std::function<bool()>& isCa
     }
 }
 
+// Whether the chain may launch another attempt: the first decision opens the
+// clock, later ones spend it.  chainStartMs == 0 means "not opened yet".
+static bool retryChainOpenAt(qint64& chainStartMs, qint64 now) {
+    if (chainStartMs == 0) { chainStartMs = now; return true; }
+    return now - chainStartMs < RETRY_CHAIN_GRACE_MS;
+}
+
+static bool retryChainOpen(qint64& chainStartMs) {
+    return retryChainOpenAt(chainStartMs,
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+#ifdef PENGY_UNIT_TEST
+bool retryChainOpenForTest(qint64& started, qint64 now) {
+    return retryChainOpenAt(started, now);
+}
+#endif
+
+// The announced pause is over and the attempt is launching.  Say so, or every
+// frontend keeps advertising "retrying in Xs" for the whole (llmTimeout-
+// bounded) in-flight attempt.  Identical event shape in the Python and Rust
+// editions.
+static void emitRequestStarted(const LlmClient::EventFn& onEvent, const char* stage, int attempt) {
+    onEvent(QJsonObject{
+        {"type",    "request_started"},
+        {"stage",   stage},
+        {"attempt", attempt},
+    });
+}
+
 std::optional<double> responseTokensPerSecond(const QJsonObject& body, double seconds) {
     const QJsonValue output = body["usage"].toObject()["completion_tokens"];
     if (!output.isDouble() || output.toDouble() < 0 || !std::isfinite(seconds) || seconds <= 0)
@@ -453,7 +517,8 @@ std::optional<double> responseTokensPerSecond(const QJsonObject& body, double se
 }
 
 static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
-                            const QString& apiKey, int timeoutMs) {
+                            const QString& apiKey, int timeoutMs,
+                            const std::function<bool()>& isCancelled) {
     QNetworkAccessManager mgr;
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -465,6 +530,21 @@ static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
     QNetworkReply* reply = mgr.post(req, body);
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    // setTransferTimeout is an inactivity timeout. A slow trickle must not
+    // extend the configured per-attempt wall deadline indefinitely.
+    bool deadlineExpired = false;
+    QTimer deadline;
+    deadline.setSingleShot(true);
+    QObject::connect(&deadline, &QTimer::timeout, reply, [&] {
+        deadlineExpired = true;
+        reply->abort();
+    });
+    deadline.start(qMax(1, timeoutMs));
+    QTimer cancelPoll;
+    QObject::connect(&cancelPoll, &QTimer::timeout, reply, [&] {
+        if (isCancelled()) reply->abort();
+    });
+    cancelPoll.start(100);
     loop.exec();
 
     LlmResponse resp;
@@ -473,7 +553,7 @@ static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
     // transport failure worth re-sending on the timeout budget; connection
     // refused is only worth re-sending once this endpoint has answered.
     const auto qtError = reply->error();
-    resp.transportTimeout = (qtError == QNetworkReply::TimeoutError
+    resp.transportTimeout = (deadlineExpired || qtError == QNetworkReply::TimeoutError
                              || qtError == QNetworkReply::ProxyTimeoutError);
     resp.transportFailure = (qtError != QNetworkReply::NoError);
     resp.body       = reply->readAll();
@@ -481,7 +561,10 @@ static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
 
     // Capture Retry-After headers
     if (reply->hasRawHeader("retry-after-ms")) {
-        resp.retryAfterHeader = QString::fromUtf8(reply->rawHeader("retry-after-ms"));
+        bool ok = false;
+        const double ms = reply->rawHeader("retry-after-ms").toDouble(&ok);
+        if (ok && std::isfinite(ms) && ms >= 0)
+            resp.retryAfterHeader = QString::number(ms / 1000.0);
     } else if (reply->hasRawHeader("retry-after")) {
         resp.retryAfterHeader = QString::fromUtf8(reply->rawHeader("retry-after"));
     }
@@ -608,8 +691,8 @@ void LlmClient::run(const LlmParams& params,
     QJsonArray current = params.messages;
     QJsonObject accUsage = usage0();
     bool yoloThisTurn = false;
-    bool imageInputRejected = false;
-    QString imageRejection;
+    bool imageInputRejected = ImageCapabilities::imagesRejected(params.baseUrl, params.model);
+    QString imageRejection = CACHED_IMAGE_NOTICE;
 
     ContextRecovery::Recovery recovery(params.messages, params.baseUrl, params.model, params.recovery);
     if (params.recovery.outputParameter != "max_tokens" && params.recovery.outputParameter != "max_completion_tokens") {
@@ -619,6 +702,9 @@ void LlmClient::run(const LlmParams& params,
         ContextRecovery::Plan plan;
         if (!recovery.plan(current, plan)) return false;
         QStringList summaries;
+        // One wall-clock grace for the whole recovery: every chunk's summary
+        // calls and their retries share it (see RETRY_CHAIN_GRACE_MS).
+        qint64 summaryChainStartMs = 0;
         for (const QString& chunk : plan.chunks) {
             if (isCancelled()) return false;
             ++recovery.summaryCalls;
@@ -631,19 +717,35 @@ void LlmClient::run(const LlmParams& params,
             int summaryRetries = 0;
             LlmResponse resp;
             for (;;) {
-                resp = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact), params.apiKey, params.llmTimeout * 1000);
+                // A summary call is an LLM request the frontends would otherwise
+                // sit through blind (up to llmTimeout each, retries included).
+                emitRequestStarted(onEvent, "summary", summaryRetries + 1);
+                resp = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact), params.apiKey, params.llmTimeout * 1000, isCancelled);
                 if (isCancelled()) return false;
-                if (resp.httpStatus >= 200 && resp.httpStatus < 300) markEndpointAnswered(params.baseUrl);
+                if (resp.httpStatus >= 200 && resp.httpStatus < 300 && !resp.transportFailure) markEndpointAnswered(params.baseUrl);
                 int budget = 0;
                 QString reason;
-                if (!transientRetry(resp.httpStatus, budget, reason)) {
-                    if (resp.transportTimeout) budget = MAX_TIMEOUT_RETRIES;
-                    else if (resp.transportFailure && endpointHasAnswered(params.baseUrl))
-                        budget = MAX_UNREACHABLE_RETRIES;
+                const bool byStatus = transientRetry(resp.httpStatus, budget, reason);
+                if (!byStatus) {
+                    if (resp.transportTimeout) { budget = MAX_TIMEOUT_RETRIES; reason = "timeout"; }
+                    else if (resp.transportFailure && endpointHasAnswered(params.baseUrl)) { budget = MAX_UNREACHABLE_RETRIES; reason = "unreachable"; }
                 }
-                if (budget == 0 || summaryRetries >= budget) break;
+                if (budget == 0 || summaryRetries >= budget || !retryChainOpen(summaryChainStartMs)) break;
+                // Same announcement the turn request's retries get: the summary
+                // retry is otherwise invisible on every frontend.
+                const double delay = backoffDelay(summaryRetries, resp.retryAfterHeader);
+                onEvent(QJsonObject{
+                    {"type",         "retrying"},
+                    {"reason",       reason},
+                    {"attempt",      summaryRetries + 1},
+                    {"max_attempts", budget},
+                    {"delay_secs",   qRound(delay * 10.0) / 10.0},
+                    // A transport failure carries no HTTP status to report.
+                    {"status_code",  byStatus ? resp.httpStatus : 0},
+                    {"message",      QStringLiteral("Context summary failed; retrying")},
+                });
                 ++summaryRetries;
-                interruptibleSleep(backoffDelay(summaryRetries - 1, resp.retryAfterHeader), isCancelled);
+                interruptibleSleep(delay, isCancelled);
                 if (isCancelled()) return false;
             }
             auto body = QJsonDocument::fromJson(resp.body).object();
@@ -651,7 +753,7 @@ void LlmClient::run(const LlmParams& params,
             auto choices = body["choices"].toArray();
             auto choice = choices.isEmpty() ? QJsonObject{} : choices[0].toObject();
             auto message = choice["message"].toObject();
-            if (resp.httpStatus < 200 || resp.httpStatus >= 300 || choice["finish_reason"] != "stop" || message["content"].toString().trimmed().isEmpty() || !message["tool_calls"].toArray().isEmpty()) {
+            if (resp.transportFailure || resp.httpStatus < 200 || resp.httpStatus >= 300 || choice["finish_reason"] != "stop" || message["content"].toString().trimmed().isEmpty() || !message["tool_calls"].toArray().isEmpty()) {
                 emitTurnError(onEvent, 0, "Context summary was incomplete or failed; original history retained.", params.baseUrl);
                 throw std::runtime_error("context summary failed");
             }
@@ -669,10 +771,8 @@ void LlmClient::run(const LlmParams& params,
         // Compact a private request copy only. Events and persisted history
         // continue to use the original current messages.
         QJsonArray requestMessages = withoutCrossModelProxyState(recovery.apply(current), params.model);
-        if (imageInputRejected) {
-            stripImageUrlParts(requestMessages);
-            requestMessages.append(QJsonObject{{"role", "user"}, {"content", imageRejection}});
-        }
+        imageInputRejected = imageInputRejected || ImageCapabilities::imagesRejected(params.baseUrl, params.model);
+        if (imageInputRejected) suppressImages(requestMessages, imageRejection);
         int contextRetries = 0;
         QJsonObject payload{
             {"model",       params.model},
@@ -696,17 +796,20 @@ void LlmClient::run(const LlmParams& params,
         int chainStatus = 0;
         QString chainDetail;
         bool chainTimedOut = false;
+        // Shared retry-admission clock across failure categories. An admitted
+        // request retains its separate per-attempt wall deadline.
+        qint64 retryChainStartMs = 0;
         for (;;) {
             if (isCancelled()) return;
 
             lastResp = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact),
-                                params.apiKey, params.llmTimeout * 1000);
+                                params.apiKey, params.llmTimeout * 1000, isCancelled);
             if (isCancelled()) return;
 
             QJsonObject body = QJsonDocument::fromJson(lastResp.body).object();
 
             int code = lastResp.httpStatus;
-            if (code >= 200 && code < 300) {
+            if (code >= 200 && code < 300 && !lastResp.transportFailure) {
                 // The endpoint is reachable and speaks our protocol.  From here
                 // on, a connection failure means it went away mid-work.
                 markEndpointAnswered(params.baseUrl);
@@ -715,7 +818,7 @@ void LlmClient::run(const LlmParams& params,
                     // loses its upstream mid-generation: one retry (the 500
                     // reasoning -- ride out a blip, do not pay three full-cost
                     // attempts for a deterministic answer), then say what happened.
-                    if (transientRetries < MAX_EMPTY_RETRIES) {
+                    if (transientRetries < MAX_EMPTY_RETRIES && retryChainOpen(retryChainStartMs)) {
                         const double delay = backoffDelay(transientRetries, lastResp.retryAfterHeader);
                         ++transientRetries;
                         onEvent(QJsonObject{
@@ -736,6 +839,7 @@ void LlmClient::run(const LlmParams& params,
                             });
                             return;
                         }
+                        emitRequestStarted(onEvent, "turn", transientRetries);
                         continue;
                     }
                     onEvent(QJsonObject{
@@ -755,11 +859,9 @@ void LlmClient::run(const LlmParams& params,
             if (isImageInputError(code, body, detail) && !isContextLimitError(code, body, detail)
                     && hasImageUrlParts(requestMessages)) {
                 imageInputRejected = true;
+                ImageCapabilities::rememberImageRejection(params.baseUrl, params.model);
                 imageRejection = imageRejectionNotice(body, detail);
-                stripImageUrlParts(requestMessages);
-                requestMessages.append(QJsonObject{
-                    {"role", "user"}, {"content", imageRejection},
-                });
+                suppressImages(requestMessages, imageRejection);
                 payload["messages"] = requestMessages;
                 continue; // bounded: this request no longer contains image parts
             }
@@ -768,7 +870,7 @@ void LlmClient::run(const LlmParams& params,
                     try {
                         if (recover()) {
                             requestMessages = withoutCrossModelProxyState(recovery.apply(current), params.model);
-                            if (imageInputRejected) { stripImageUrlParts(requestMessages); requestMessages.append(QJsonObject{{"role","user"},{"content",imageRejection}}); }
+                            if (imageInputRejected) suppressImages(requestMessages, imageRejection);
                             payload["messages"] = requestMessages; continue;
                         }
                     } catch (const std::runtime_error&) { return; }
@@ -824,7 +926,7 @@ void LlmClient::run(const LlmParams& params,
                     reason = "unreachable";
                 }
             }
-            if ((byStatus || byTransport) && transientRetries < budget) {
+            if ((byStatus || byTransport) && transientRetries < budget && retryChainOpen(retryChainStartMs)) {
                 if (byStatus && chainStatus == 0) { chainStatus = code; chainDetail = detail; }
                 if (byTransport && lastResp.transportTimeout) chainTimedOut = true;
                 double delay = backoffDelay(transientRetries, lastResp.retryAfterHeader);
@@ -848,10 +950,11 @@ void LlmClient::run(const LlmParams& params,
                     });
                     return;
                 }
+                emitRequestStarted(onEvent, "turn", transientRetries);
                 continue;
             }
 
-            if (RETRYABLE_STATUSES.contains(code) && rateRetries < MAX_RETRIES) {
+            if (RETRYABLE_STATUSES.contains(code) && rateRetries < MAX_RETRIES && retryChainOpen(retryChainStartMs)) {
                 double delay = backoffDelay(rateRetries, lastResp.retryAfterHeader);
                 ++rateRetries;
                 QString msg = errorDetail(body, lastResp.body);
@@ -872,6 +975,7 @@ void LlmClient::run(const LlmParams& params,
                     });
                     return;
                 }
+                emitRequestStarted(onEvent, "turn", rateRetries);
                 continue;
             }
 

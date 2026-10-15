@@ -103,5 +103,29 @@ limitations are not presented as proof that the model lacks vision. Invalid
 images, unsupported formats/detail, audio/options, context errors, and unrelated
 HTTP 400s are not silently converted into text-only success.
 
-Rejected images remain omitted on subsequent tool rounds of the same turn,
-without changing the stored transcript or future turns.
+Rejected images remain omitted on subsequent tool rounds without changing the
+stored transcript. The endpoint/model cache described below extends suppression
+to future turns on that same route.
+
+
+### Remembered image-input rejection
+
+When an API explicitly rejects image inputs as unsupported, Pengy remembers that
+observation for the exact endpoint + requested model. The key trims surrounding
+endpoint whitespace and trailing slashes; endpoint path and model casing remain
+significant. An alias such as `fast` is its own requested-model key.
+
+The cache is stored under `<config>/image_rejections/`, in one atomic JSON file
+per route (SHA-256 of the compact JSON `[endpoint, model]`). Its schema is shared
+by the Python, C++, and Rust editions. Only confirmed unsupported-image errors
+set it; bad URLs/formats, unrelated 400s, and transport errors do not.
+
+Known-rejected routes receive text/metadata only across future turns and
+restarts, including images loaded by `read_image`. Stored attachments and
+original transcript content are not deleted. Switching to another endpoint or
+model allows images to be sent again. The request includes one omission notice
+beside the first removed image, not a repeated message at each tool result.
+
+To retry a route after its capability or alias target changes, remove its entry
+or delete the `image_rejections` cache directory. This cache is an observation of
+a route, **not** a declaration that the underlying model has no vision.

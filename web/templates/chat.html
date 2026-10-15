@@ -1109,6 +1109,13 @@ function handleEvent(ev) {
   } else if (ev.type === 'retrying') {
     showRetrying(ev);
 
+  } else if (ev.type === 'request_started') {
+    // The announced backoff is over and the request is in flight again
+    // (a retry, or a context-recovery summary call): swap the stale
+    // "retrying in Xs" card back to the live spinner.
+    hideThinking();
+    showThinking();
+
   } else if (ev.type === 'notice') {
     // A harness notice (history not being saved, a prompt nobody is answering):
     // shown, never an answer, and the run keeps going.

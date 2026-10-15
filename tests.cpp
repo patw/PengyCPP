@@ -24,6 +24,7 @@
 #include <QImage>
 #include "tools.h"
 #include "llmclient.h"
+#include "image_capabilities.h"
 #include "chatworker.h"
 #include "sanitize.h"
 #include "web/webserver.h"
@@ -134,6 +135,7 @@ public:
     QList<QByteArray>  responses;   // JSON bodies served in order
     QList<int>         statuses;    // optional per-response HTTP status
     QList<QJsonObject> requests;    // recorded request payloads
+    bool               trickle = false; // send bytes regularly without finishing
     bool               silent = false; // accept the request but never answer
     bool               stopAfterFirst = false; // close the endpoint after one reply
 
@@ -176,6 +178,13 @@ private:
             buf.mid(headerEnd + 4, contentLength)).object());
         m_bufs[sock].clear();
         if (silent) return; // hold the connection open so the client times out
+        if (trickle) {
+            sock->write("HTTP/1.1 200 OK\r\nContent-Length: 10000\r\n\r\n");
+            auto* timer = new QTimer(sock);
+            connect(timer, &QTimer::timeout, sock, [sock] { sock->write(" "); });
+            timer->start(100);
+            return;
+        }
 
         QByteArray body = responses.isEmpty()
             ? QByteArray(R"({"error": {"message": "stub exhausted"}})")
@@ -3807,10 +3816,16 @@ private slots:
             const auto original = p.messages;
             QList<QJsonObject> events;
             LlmClient().run(p, [&](const QJsonObject &e) { events.append(e); }, []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
-            QCOMPARE(events.size(), 5);
-            QCOMPARE(events[3]["attempt"].toInt(), 4);
-            QCOMPARE(events[3]["strategy"].toString(), QString("history_summary"));
-            QCOMPARE(events[4]["type"].toString(), QString("final_response"));
+            QCOMPARE(events.size(), 6);
+            // Attempts 1-3 replay the reserved provider-only plan with no new
+            // requests; the fourth (reserved) attempt pays for the history
+            // summary, and that one summary call announces itself first.
+            QCOMPARE(events[3]["type"].toString(), QString("request_started"));
+            QCOMPARE(events[3]["stage"].toString(), QString("summary"));
+            QCOMPARE(events[3]["attempt"].toInt(), 1);
+            QCOMPARE(events[4]["attempt"].toInt(), 4);
+            QCOMPARE(events[4]["strategy"].toString(), QString("history_summary"));
+            QCOMPARE(events[5]["type"].toString(), QString("final_response"));
             QCOMPARE(stub.requests.size(), 6);
             QVERIFY(!stub.requests[4].contains("tools"));
             auto outgoing = stub.requests[5]["messages"].toArray();
@@ -3878,7 +3893,10 @@ private slots:
         LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=messages;
         QList<QJsonObject> events;
         LlmClient().run(p,[&](const QJsonObject& e){events.append(e);},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
-        QCOMPARE(events.size(),2);QCOMPARE(events[0]["strategy"].toString(),QString("history_summary"));QCOMPARE(events[1]["type"].toString(),QString("final_response"));
+        QCOMPARE(events.size(),3);
+        // The summary call announces itself before the plan is committed.
+        QCOMPARE(events[0]["type"].toString(),QString("request_started"));QCOMPARE(events[0]["stage"].toString(),QString("summary"));
+        QCOMPARE(events[1]["strategy"].toString(),QString("history_summary"));QCOMPARE(events[2]["type"].toString(),QString("final_response"));
         QCOMPARE(stub.requests.size(),3);QVERIFY(!stub.requests[1].contains("tools"));
         QCOMPARE(stub.requests[1]["messages"].toArray()[0].toObject()["content"].toString(),ContextRecovery::SummaryPrompt);
         QCOMPARE(p.messages,messages);
@@ -3908,9 +3926,12 @@ private slots:
         QList<QJsonObject> events;
         LlmClient().run(p, [&](const QJsonObject& e) { events.append(e); },
             []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
-        QCOMPARE(events.size(), 2);
-        QCOMPARE(events[0]["type"].toString(), QString("context_compacted"));
-        QCOMPARE(events[1]["content"].toString(), QString("recovered"));
+        QCOMPARE(events.size(), 3);
+        // The summary call announces itself before the plan is committed.
+        QCOMPARE(events[0]["type"].toString(), QString("request_started"));
+        QCOMPARE(events[0]["stage"].toString(), QString("summary"));
+        QCOMPARE(events[1]["type"].toString(), QString("context_compacted"));
+        QCOMPARE(events[2]["content"].toString(), QString("recovered"));
         QCOMPARE(stub.requests.size(), 3);
         for (int i = 1; i < stub.requests.size(); ++i)
             QVERIFY(!QJsonDocument(stub.requests[i]).toJson().contains(leadIn.toUtf8()));
@@ -3929,9 +3950,12 @@ private slots:
         QList<QJsonObject> events;
         LlmClient().run(p, [&](const QJsonObject& e) { events.append(e); },
             []() { return std::make_pair(true, false); }, []() { return false; }, nullptr);
-        QCOMPARE(events.size(), 2);
-        QCOMPARE(events[0]["type"].toString(), QString("context_compacted"));
-        QCOMPARE(events[1]["content"].toString(), QString("recovered"));
+        QCOMPARE(events.size(), 3);
+        // The summary call announces itself before the plan is committed.
+        QCOMPARE(events[0]["type"].toString(), QString("request_started"));
+        QCOMPARE(events[0]["stage"].toString(), QString("summary"));
+        QCOMPARE(events[1]["type"].toString(), QString("context_compacted"));
+        QCOMPARE(events[2]["content"].toString(), QString("recovered"));
         QVERIFY(!QFile::exists(target));
     }
 
@@ -4374,10 +4398,86 @@ private slots:
             []() { return std::make_pair(true, false); }, []() { return false; },
             [](const QJsonArray&) { return QStringList(); });
         QCOMPARE(stub.requests.size(), 2);
-        QCOMPARE(stub.requests[1]["messages"].toArray()[0].toObject()["content"].toString(), QString("attachment"));
+        QVERIFY(stub.requests[1]["messages"].toArray()[0].toObject()["content"].toString().startsWith("attachment\n\n"));
         QCOMPARE(p.messages, outgoing); QCOMPARE(persisted, original);
         QCOMPARE(events.last()["type"].toString(), QString("error"));
         QVERIFY(events.last()["message"].toString().contains("Cannot translate pictures"));
+    }
+
+    void llmRejectedRouteIsRememberedAcrossRunsAndModelSwitches() {
+        StubLlmServer stub;
+        stub.statuses << 400 << 200 << 200 << 200 << 200 << 200;
+        stub.responses << QByteArray(R"({"error":{"message":"This model does not support image inputs"}})");
+        for (int i = 0; i < 5; ++i) stub.responses << llmCompletion("done");
+        LlmParams p; p.baseUrl = stub.baseUrl(); p.model = "text";
+        p.messages = QJsonArray{QJsonObject{{"role","user"},{"content",QJsonArray{
+            QJsonObject{{"type","text"},{"text","look"}},
+            QJsonObject{{"type","image_url"},{"image_url",QJsonObject{{"url","data:image/png;base64,aW1hZ2U="}}}}
+        }}}};
+        const auto original = p.messages;
+        auto run = [&] {
+            QList<QJsonObject> events;
+            LlmClient().run(p, [&](const QJsonObject& ev) { events.append(ev); },
+                [] { return std::make_pair(true,false); }, [] { return false; }, nullptr);
+            QCOMPARE(events.last()["type"].toString(), QString("final_response"));
+        };
+        run(); // reject once, recover
+        p.baseUrl += "/"; run(); // new client/run, same canonical route
+        p.baseUrl = stub.baseUrl(); p.model = "vision"; run();
+        p.model = "text"; p.baseUrl += "/other"; run();
+        p.baseUrl = stub.baseUrl();
+        QVERIFY(ImageCapabilities::imagesRejected(p.baseUrl, "text"));
+        QVERIFY(!ImageCapabilities::imagesRejected(p.baseUrl, "Text"));
+        QVERIFY(QFile::remove(ImageCapabilities::pathFor(p.baseUrl, "text")));
+        QVERIFY(!ImageCapabilities::imagesRejected(p.baseUrl, "text"));
+        run(); // explicit reset permits sending images again
+        QCOMPARE(stub.requests.size(), 6);
+        auto hasImage = [](const QJsonObject& request) {
+            for (const auto& msg : request["messages"].toArray())
+                for (const auto& part : msg.toObject()["content"].toArray())
+                    if (part.toObject()["type"].toString() == "image_url") return true;
+            return false;
+        };
+        QVERIFY(hasImage(stub.requests[0]));
+        QVERIFY(!hasImage(stub.requests[1])); QVERIFY(!hasImage(stub.requests[2]));
+        QVERIFY(stub.requests[2]["messages"].toArray()[0].toObject()["content"].toString().contains("previously rejected"));
+        for (int i = 3; i < 6; ++i) QVERIFY(hasImage(stub.requests[i]));
+        QCOMPARE(p.messages, original);
+    }
+
+    void llmCachedRejectionOmitsNewReadImageResult() {
+        QTemporaryDir dir;
+        const QString file = dir.path() + "/new.png";
+        QImage image(32,32,QImage::Format_RGB32); image.fill(Qt::blue); QVERIFY(image.save(file));
+        StubLlmServer stub;
+        ImageCapabilities::rememberImageRejection(stub.baseUrl(),"text");
+        stub.responses << llmCompletion("",QJsonArray{llmToolCall("tc1","read_image",{{"path",file}})})
+            << llmCompletion("metadata only");
+        LlmParams p; p.baseUrl = stub.baseUrl(); p.model = "text";
+        p.messages = QJsonArray{userMsg("look")}; p.toolConfirmation = "all";
+        Tools::ToolContext ctx; p.toolContext = &ctx;
+        LlmClient().run(p, [](const QJsonObject&) {}, [] { return std::make_pair(true,false); }, [] { return false; }, nullptr);
+        QCOMPARE(stub.requests.size(),2);
+        for (const auto& request : stub.requests)
+            for (const auto& msg : request["messages"].toArray())
+                for (const auto& part : msg.toObject()["content"].toArray())
+                    QVERIFY(part.toObject()["type"].toString() != "image_url");
+        QVERIFY(stub.requests.last()["messages"].toArray().last().toObject()["content"].toString().contains("new.png"));
+    }
+
+    void llmMalformedImageDoesNotRememberRouteRejection() {
+        StubLlmServer stub; stub.statuses << 400 << 200;
+        stub.responses << QByteArray(R"({"error":{"message":"Invalid image URL"}})") << llmCompletion("done");
+        LlmParams p; p.baseUrl = stub.baseUrl(); p.model = "m";
+        p.messages = QJsonArray{QJsonObject{{"role","user"},{"content",QJsonArray{
+            QJsonObject{{"type","image_url"},{"image_url",QJsonObject{{"url","data:image/png;base64,aW1hZ2U="}}}}
+        }}}};
+        for (int i = 0; i < 2; ++i) {
+            LlmClient().run(p, [](const QJsonObject&) {}, [] { return std::make_pair(true,false); }, [] { return false; }, nullptr);
+            QVERIFY(!ImageCapabilities::imagesRejected(p.baseUrl,p.model));
+        }
+        QCOMPARE(stub.requests.size(), 2);
+        QCOMPARE(stub.requests[1]["messages"].toArray()[0].toObject()["content"].toArray()[0].toObject()["type"].toString(),QString("image_url"));
     }
 
     void llmRejectedImagesStayOmittedInLaterToolRounds() {
@@ -4404,8 +4504,12 @@ private slots:
         QCOMPARE(stub.requests.size(), 3); QCOMPARE(p.messages, original);
         for (int i = 1; i < 3; ++i) {
             const QJsonArray messages = stub.requests[i]["messages"].toArray();
-            QCOMPARE(messages[0].toObject()["content"].toString(), QString("look"));
-            QVERIFY(messages.last().toObject()["content"].toString().contains("not evidence"));
+            QVERIFY(messages[0].toObject()["content"].toString().startsWith("look\n\n"));
+            QVERIFY(messages[0].toObject()["content"].toString().contains("not evidence"));
+            int notices = 0;
+            for (const auto& msg : messages)
+                if (msg.toObject()["content"].toString().contains("not evidence")) ++notices;
+            QCOMPARE(notices, 1);
         }
         QCOMPARE(events.last()["type"].toString(), QString("final_response"));
     }
@@ -4684,16 +4788,128 @@ private slots:
         // A 500 now buys one retry, so the retry notice arrives first.  The
         // contract this test pins is unchanged: the failure is an error event
         // carrying the endpoint's own detail, never a final response.
-        QCOMPARE(events.size(), 2);
+        QCOMPARE(events.size(), 3);
         QCOMPARE(events[0]["type"].toString(), QString("retrying"));
         QCOMPARE(events[0]["reason"].toString(), QString("server"));
-        QCOMPARE(events[1]["type"].toString(), QString("error"));
-        QCOMPARE(events[1]["kind"].toString(), QString("error"));
+        // The retry's launch notice sits between the announcement and the
+        // second failure that spends the 500's single-retry budget.
+        QCOMPARE(events[1]["type"].toString(), QString("request_started"));
+        QCOMPARE(events[1]["stage"].toString(), QString("turn"));
+        QCOMPARE(events[1]["attempt"].toInt(), 1);
+        QCOMPARE(events[2]["type"].toString(), QString("error"));
+        QCOMPARE(events[2]["kind"].toString(), QString("error"));
         // A genuine server fault keeps the endpoint's detail -- it is the only
         // thing that helps -- but is never dressed as an answer.
-        const QString msg = events[1]["message"].toString();
+        const QString msg = events[2]["message"].toString();
         QVERIFY2(msg.contains("API error"), qPrintable(msg));
         QVERIFY2(msg.contains("boom"), qPrintable(msg));
+    }
+
+    // A surface that has just shown "retrying in Xs" must hear when the pause
+    // is over and the attempt is in flight, or it advertises a finished
+    // backoff for the whole (llmTimeout-bounded) attempt -- the frozen
+    // "retrying in 0.9s" hang. Each launch notice carries the same attempt
+    // number its announcement promised, and follows it, never precedes it.
+    // Mirrors every_retry_announcement_is_followed_by_a_launch_notice in the
+    // Rust edition's tests/ffi_event_contract.rs.
+    void llmRetryAdmissionClockClosesAtBoundary() {
+        qint64 started = 0;
+        QVERIFY(retryChainOpenForTest(started, 1000));
+        QCOMPARE(started, qint64(1000));
+        QVERIFY(retryChainOpenForTest(started, 31999));
+        QVERIFY(!retryChainOpenForTest(started, 32000));
+        QVERIFY(!retryChainOpenForTest(started, 33000));
+        QCOMPARE(started, qint64(1000)); // never silently reopen a spent chain
+    }
+
+    void llmSlowTrickleCannotExtendWallDeadline() {
+        StubLlmServer stub;
+        stub.trickle = true;
+        LlmParams p; p.baseUrl = stub.baseUrl(); p.model = "stub";
+        p.messages = QJsonArray{userMsg("hi")}; p.llmTimeout = 1;
+        bool cancelled = false;
+        QList<QJsonObject> events;
+        QElapsedTimer elapsed; elapsed.start();
+        LlmClient().run(p, [&](const QJsonObject& ev) {
+            events.append(ev);
+            if (ev["type"].toString() == "retrying") cancelled = true;
+        }, [] { return std::make_pair(true, false); }, [&] { return cancelled; }, nullptr);
+        QVERIFY2(elapsed.elapsed() < 3000, "regular incoming bytes must not reset the wall deadline");
+        QVERIFY(!events.isEmpty());
+        QCOMPARE(events[0]["type"].toString(), QString("retrying"));
+        QCOMPARE(events[0]["reason"].toString(), QString("timeout"));
+        QCOMPARE(stub.requests.size(), 1);
+    }
+
+    void llmStopAbortsInFlightRequest() {
+        StubLlmServer stub; stub.silent = true;
+        LlmParams p; p.baseUrl = stub.baseUrl(); p.model = "stub";
+        p.messages = QJsonArray{userMsg("hi")}; p.llmTimeout = 30;
+        bool cancelled = false;
+        QTimer::singleShot(200, [&] { cancelled = true; });
+        QElapsedTimer elapsed; elapsed.start();
+        QList<QJsonObject> events;
+        LlmClient().run(p, [&](const QJsonObject& ev) { events.append(ev); },
+            [] { return std::make_pair(true, false); }, [&] { return cancelled; }, nullptr);
+        QVERIFY(elapsed.elapsed() < 2000);
+        QVERIFY(events.isEmpty());
+        QCOMPARE(stub.requests.size(), 1);
+    }
+
+    void llmSummaryRetriesAnnounceLiveProgress() {
+        StubLlmServer stub;
+        stub.statuses << 413 << 408 << 200 << 200;
+        stub.responses << QByteArray(R"({"error":{"code":"context_length_exceeded","message":"context length exceeded"}})")
+            << QByteArray(R"({"error":{"message":"timeout"}})")
+            << llmCompletion("HARBOR_17 requirements retained") << llmCompletion("done");
+        LlmParams p; p.baseUrl = stub.baseUrl(); p.model = "stub";
+        p.messages = recoverableHistory();
+        QList<QJsonObject> events;
+        QList<int> counts;
+        LlmClient().run(p, [&](const QJsonObject& ev) {
+            events.append(ev); counts.append(stub.requests.size());
+        }, [] { return std::make_pair(true, false); }, [] { return false; }, nullptr);
+        QCOMPARE(events.size(), 5);
+        QCOMPARE(events[0]["type"].toString(), QString("request_started"));
+        QCOMPARE(events[0]["stage"].toString(), QString("summary"));
+        QCOMPARE(counts[0], 1);
+        QCOMPARE(events[1]["type"].toString(), QString("retrying"));
+        QCOMPARE(events[1]["reason"].toString(), QString("timeout"));
+        QCOMPARE(events[2]["type"].toString(), QString("request_started"));
+        QCOMPARE(events[2]["stage"].toString(), QString("summary"));
+        QCOMPARE(counts[2], 2);
+        QCOMPARE(events.last()["type"].toString(), QString("final_response"));
+    }
+
+    void llmEveryRetryAnnouncementIsFollowedByALaunchNotice() {
+        StubLlmServer stub;
+        stub.statuses << 408 << 408 << 200;
+        stub.responses << QByteArray(R"({"error":{"message":"Request timed out","type":"timeout"}})")
+                       << QByteArray(R"({"error":{"message":"Request timed out","type":"timeout"}})")
+                       << llmCompletion("recovered");
+        LlmParams p;
+        p.baseUrl = stub.baseUrl();
+        p.model = "stub-model";
+        p.messages = QJsonArray{userMsg("hi")};
+        p.toolConfirmation = "none";
+        QList<QJsonObject> events;
+        LlmClient().run(p,
+            [&](const QJsonObject& ev) { events.append(ev); },
+            []() { return std::make_pair(true, false); },
+            []() { return false; },
+            [](const QJsonArray&) { return QStringList(); });
+        QCOMPARE(events.size(), 5);
+        QCOMPARE(events[0]["type"].toString(), QString("retrying"));
+        QCOMPARE(events[0]["reason"].toString(), QString("timeout"));
+        QCOMPARE(events[1]["type"].toString(), QString("request_started"));
+        QCOMPARE(events[1]["stage"].toString(), QString("turn"));
+        QCOMPARE(events[1]["attempt"].toInt(), events[0]["attempt"].toInt());
+        QCOMPARE(events[2]["type"].toString(), QString("retrying"));
+        QCOMPARE(events[3]["type"].toString(), QString("request_started"));
+        QCOMPARE(events[3]["attempt"].toInt(), events[2]["attempt"].toInt());
+        QCOMPARE(events[4]["type"].toString(), QString("final_response"));
+        QCOMPARE(events[4]["content"].toString(), QString("recovered"));
+        QCOMPARE(stub.requests.size(), 3);
     }
 
     // A fresh install, no usable credentials: this is the case that started the
