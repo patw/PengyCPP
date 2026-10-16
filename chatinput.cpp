@@ -338,6 +338,11 @@ void ChatInputWidget::addChip(const QString& path) {
 
 void ChatInputWidget::removeChip(const QString& path, QWidget* chip) {
     m_attachments.removeAll(path);
+    // Detach from the parent before the deferred delete: deleteLater() alone
+    // leaves the chip in m_chipsRow's child list, so a later teardown can walk a
+    // freed QObject (QObject::~QObject -> setParent_helper) and crash before
+    // DeferredDelete is delivered (matches the Python edition).
+    chip->setParent(nullptr);
     chip->deleteLater();
     if (m_attachments.isEmpty()) {
         m_chipsRow->hide();
@@ -349,6 +354,10 @@ void ChatInputWidget::clearChips() {
     while (cl->count() > 1) {
         QLayoutItem* item = cl->takeAt(0);
         if (item->widget()) {
+            // takeAt() removes the layout item, not the child: detach from
+            // m_chipsRow too, or the deferred delete leaves a dangling child
+            // that a later widget teardown crashes on (see removeChip).
+            item->widget()->setParent(nullptr);
             item->widget()->deleteLater();
         }
         delete item;
