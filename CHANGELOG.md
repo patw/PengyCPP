@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.12.3
 
 - **A removed or submitted file chip no longer leaves a dangling Qt child.** `removeChip`/`clearChips` called `deleteLater()` on the chip without detaching it from the chips row, so the widget stayed in the row's child list until the deferred delete ran. With no event loop delivering `DeferredDelete` (a pytest run), a later widget teardown walked the freed chip inside `QObject::~QObject` and segfaulted -- the single-process full-suite crash in the Python edition's `test_tabs`. Each chip is now detached with `setParent(nullptr)` before the deferred delete.
 
