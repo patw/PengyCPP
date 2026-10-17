@@ -110,6 +110,9 @@ QString    execute(const QString& name, const QJsonObject& args,
 // Operates on the default context (CLI/Web).  The tabbed GUI uses a per-run
 // ToolContext instead.
 void       killActiveProcesses();
+/// Remove every askpass helper still on disk (the CLI's signal path, before
+/// it re-raises the signal and skips the helpers' destructors).
+void       cleanupAskpassHelpers();
 void setSudoPasswordProvider(SudoPasswordFn fn);
 void clearSudoPasswordProvider();
 

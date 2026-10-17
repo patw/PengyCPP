@@ -175,7 +175,9 @@ static QString systemRoot() {
 
 static void terminateProcessGroup(qint64 pid) {
 #ifdef Q_OS_UNIX
-    QProcess::execute("kill", {"-9", QString("-%1").arg(pid)});
+    // kill(2), not a spawned `kill -9`: the CLI's signal watcher calls this
+    // from a plain std::thread, where starting a QProcess is not safe.
+    if (pid > 0) ::kill(static_cast<pid_t>(-pid), SIGKILL);
 #else
     // taskkill /T walks the parent-PID tree (Windows has no process group to
     // signal).  Absolute path so a taskkill.exe earlier on PATH can't stand in
@@ -1678,13 +1680,41 @@ static QString toolReplaceInFile(const QJsonObject& args) {
 // else in the command touched stdin: a pipeline (`echo x | sudo tee f`), a
 // redirect (`sudo cmd < /dev/null`), an earlier command that reads stdin, or a
 // second sudo after the single piped password had been consumed.
+// Every askpass directory not yet removed.  The destructor removes a helper
+// when its command exits, but a CLI dying on SIGTERM/SIGINT re-raises the
+// signal without running destructors, which would leave the 0600 password file
+// in the temp directory.
+static QMutex        g_askpassMutex;
+static QSet<QString> g_liveAskpass;
+
+static void removeAskpassDir(const QString& dir) {
+    QFile::remove(dir + "/askpass.sh");
+    QFile::remove(dir + "/pw");
+    QDir().rmdir(dir);
+    QMutexLocker lock(&g_askpassMutex);
+    g_liveAskpass.remove(dir);
+}
+
+void cleanupAskpassHelpers() {
+    QSet<QString> dirs;
+    {
+        QMutexLocker lock(&g_askpassMutex);
+        dirs = g_liveAskpass;
+    }
+    for (const QString& dir : dirs) removeAskpassDir(dir);
+}
+
 class AskpassHelper {
 public:
     AskpassHelper(const QString& password) {
         qint64 nanos = QDateTime::currentMSecsSinceEpoch();
         qint64 pid   = QCoreApplication::applicationPid();
         m_dir = QDir::tempPath() + QString("/pengy-askpass-%1-%2").arg(pid).arg(nanos);
-        if (!QDir().mkpath(m_dir)) return;
+        if (!QDir().mkpath(m_dir)) { m_dir.clear(); return; }
+        {
+            QMutexLocker lock(&g_askpassMutex);
+            g_liveAskpass.insert(m_dir);
+        }
         m_pwPath = m_dir + "/pw";
         QFile pwf(m_pwPath);
         if (!pwf.open(QIODevice::WriteOnly)) return;
@@ -1705,9 +1735,7 @@ public:
     }
 
     ~AskpassHelper() {
-        if (!m_path.isEmpty())  QFile::remove(m_path);
-        if (!m_pwPath.isEmpty()) QFile::remove(m_pwPath);
-        if (!m_dir.isEmpty())   QDir().rmdir(m_dir);
+        if (!m_dir.isEmpty()) removeAskpassDir(m_dir);
     }
 
     AskpassHelper(const AskpassHelper&) = delete;

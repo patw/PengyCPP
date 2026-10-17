@@ -556,7 +556,9 @@ static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
     resp.transportTimeout = (deadlineExpired || qtError == QNetworkReply::TimeoutError
                              || qtError == QNetworkReply::ProxyTimeoutError);
     resp.transportFailure = (qtError != QNetworkReply::NoError);
-    resp.body       = reply->readAll();
+    // abort() (cancel, deadline) closes the reply; reading it then only
+    // prints a Qt "device not open" warning to stderr.
+    if (reply->isOpen()) resp.body = reply->readAll();
     resp.requestSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
     // Capture Retry-After headers

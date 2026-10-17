@@ -40,6 +40,10 @@
 #include <signal.h>
 #ifdef Q_OS_UNIX
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <memory>
 #endif
 
 // ── Test helpers ────────────────────────────────────────────────────
@@ -260,6 +264,95 @@ static QString runCli(const QStringList& commands, int timeoutMs = 5000,
     if (stderrOut) *stderrOut = QString::fromUtf8(proc.readAllStandardError());
     return QString::fromUtf8(proc.readAllStandardOutput());
 }
+
+#ifdef Q_OS_UNIX
+// Answers /chat/completions from its own threads, so the test thread can block
+// on a CLI subprocess (QProcess::waitFor* does not pump an in-process
+// StubLlmServer).  An empty *response* holds every request open.
+class ThreadedStub {
+public:
+    explicit ThreadedStub(QByteArray response)
+        : m_response(std::move(response)),
+          m_stop(std::make_shared<std::atomic<bool>>(false)),
+          m_received(std::make_shared<std::atomic<bool>>(false)) {
+        m_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr{};
+        addr.sin_family      = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        ::bind(m_fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr);
+        ::listen(m_fd, 8);
+        socklen_t len = sizeof addr;
+        ::getsockname(m_fd, reinterpret_cast<sockaddr*>(&addr), &len);
+        m_port = ntohs(addr.sin_port);
+        m_accept = std::thread([fd = m_fd, response = m_response, stop = m_stop, received = m_received] {
+            for (;;) {
+                const int client = ::accept(fd, nullptr, nullptr);
+                if (client < 0) return;
+                std::thread([client, response, stop, received] {
+                    serve(client, response, *stop, *received);
+                }).detach();
+            }
+        });
+    }
+    ~ThreadedStub() {
+        *m_stop = true;
+        ::shutdown(m_fd, SHUT_RDWR);
+        ::close(m_fd);
+        m_accept.join();
+    }
+    QString baseUrl() const { return "http://127.0.0.1:" + QString::number(m_port) + "/v1"; }
+    /// True once a request has arrived.
+    bool received() const { return *m_received; }
+
+private:
+    static void serve(int client, const QByteArray& response, const std::atomic<bool>& stop,
+                      std::atomic<bool>& received) {
+        QByteArray buf;
+        char chunk[4096];
+        for (;;) {
+            const ssize_t n = ::read(client, chunk, sizeof chunk);
+            if (n <= 0) { ::close(client); return; }
+            buf.append(chunk, n);
+            const int end = buf.indexOf("\r\n\r\n");
+            if (end < 0) continue;
+            int length = 0;
+            for (const QByteArray& line : buf.left(end).split('\n'))
+                if (line.toLower().startsWith("content-length:"))
+                    length = line.mid(15).trimmed().toInt();
+            if (buf.size() >= end + 4 + length) break;
+        }
+        received = true;
+        if (response.isEmpty()) {
+            while (!stop) ::usleep(50000);
+        } else {
+            const QByteArray reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                "Content-Length: " + QByteArray::number(response.size()) +
+                "\r\nConnection: close\r\n\r\n" + response;
+            const ssize_t w = ::write(client, reply.constData(), reply.size());
+            (void)w;
+        }
+        ::close(client);
+    }
+
+    QByteArray m_response;
+    std::shared_ptr<std::atomic<bool>> m_stop;
+    std::shared_ptr<std::atomic<bool>> m_received;
+    int m_fd = -1;
+    int m_port = 0;
+    std::thread m_accept;
+};
+
+// True once *pid* no longer exists (a killed child is reaped by init).
+static bool processGone(qint64 pid, int withinMs) {
+    QElapsedTimer t;
+    t.start();
+    for (;;) {
+        if (::kill(static_cast<pid_t>(pid), 0) != 0) return true;
+        if (t.elapsed() >= withinMs) return false;
+        QThread::msleep(20);
+    }
+}
+#endif
 
 // ── Test class ──────────────────────────────────────────────────────
 
@@ -5751,6 +5844,111 @@ private slots:
     // of it. base_url is pointed at a closed port instead of a StubLlmServer
     // because QProcess::waitForFinished() does not reliably pump an in-process
     // stub's event loop (see CLAUDE.md) -- a transport failure needs no server.
+    // SIGTERM / SIGINT / SIGHUP during a one-shot run.  pengy-cli is mostly run
+    // by other programs as a subagent, and a parent that gives up on it sends
+    // one of these.  Each must kill the running tool's process group (its own
+    // session, so the signal never reaches it), repair and save the chat, keep
+    // --output json stdout a valid document, and die by that same signal,
+    // promptly -- never exit 0.  The Python and Rust editions carry the same
+    // cases (tests/test_cli_signals.py, cli/tests/signals.rs).  "Promptly" is
+    // under 3s: the CLI takes tens of milliseconds, but the bound must hold on
+    // a loaded machine, and waiting for the model or the 60s tool still blows it.
+    void cliSignalCleansUpAndDiesBySignal_data() {
+        QTest::addColumn<int>("sig");
+        QTest::addColumn<bool>("inTool");
+#ifdef Q_OS_UNIX
+        QTest::newRow("SIGTERM mid-tool")    << int(SIGTERM) << true;
+        QTest::newRow("SIGINT mid-tool")     << int(SIGINT)  << true;
+        QTest::newRow("SIGHUP mid-tool")     << int(SIGHUP)  << true;
+        QTest::newRow("SIGTERM mid-request") << int(SIGTERM) << false;
+#endif
+    }
+
+    void cliSignalCleansUpAndDiesBySignal() {
+#ifndef Q_OS_UNIX
+        QSKIP("POSIX signals");
+#else
+        if (!QFile::exists(cliBin()))
+            QSKIP("pengy-cli not built yet");
+        QFETCH(int, sig);
+        QFETCH(bool, inTool);
+
+        QTemporaryDir work;
+        const QString pidFile = work.path() + "/tool.pid";
+        ThreadedStub stub(inTool
+            ? llmCompletion("", QJsonArray{llmToolCall("call_1", "run_bash", QJsonObject{
+                  {"command", QString("echo $$ > '%1'; exec sleep 60").arg(pidFile)}})})
+            : QByteArray());
+
+        const Config original = configLoad();
+        Config cfg = original;
+        cfg.baseUrl = stub.baseUrl();
+        cfg.apiKey  = "test";
+        cfg.model   = "stub-model";
+        cfg.toolConfirmation = "all";
+        QVERIFY(configSave(cfg));
+
+        QProcess proc;
+        proc.setProgram(cliBin());
+        proc.setArguments({"--output", "json", "run it"});
+        proc.setProcessEnvironment(QProcessEnvironment::systemEnvironment());
+        proc.setStandardInputFile(QProcess::nullDevice());
+        proc.start();
+        QVERIFY(proc.waitForStarted(2000));
+
+        qint64 toolPid = 0;
+        QElapsedTimer started;
+        started.start();
+        while (started.elapsed() < 15000) {
+            if (inTool) {
+                QFile f(pidFile);
+                if (f.open(QIODevice::ReadOnly) && (toolPid = f.readAll().trimmed().toLongLong()) > 0)
+                    break;
+            } else if (stub.received()) {
+                break;  // the request is in flight
+            }
+            QThread::msleep(20);
+        }
+        if (inTool) QVERIFY2(toolPid > 0, "the tool never started");
+        else        QVERIFY2(stub.received(), "the request never arrived");
+
+        QElapsedTimer sent;
+        sent.start();
+        ::kill(static_cast<pid_t>(proc.processId()), sig);
+        const bool finished = proc.waitForFinished(10000);
+        const qint64 took = sent.elapsed();
+        if (!finished) proc.kill();
+        const bool toolGone = !inTool || processGone(toolPid, 1000);
+        if (!toolGone) ::kill(static_cast<pid_t>(toolPid), SIGKILL);
+        QVERIFY(configSave(original));   // before asserting, so nothing leaks
+
+        QVERIFY(finished);
+        QCOMPARE(proc.exitStatus(), QProcess::CrashExit);  // killed by a signal...
+        QCOMPARE(proc.exitCode(), sig);                     // ...this one
+        QVERIFY2(took < 3000, qPrintable(QString("took %1 ms").arg(took)));
+        QVERIFY2(toolGone, "the tool's process outlived the CLI");
+
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(proc.readAllStandardOutput(), &parseError);
+        QCOMPARE(parseError.error, QJsonParseError::NoError);
+        QCOMPARE(doc.object()["error"].toObject()["type"].toString(), QString("interrupted"));
+
+        // No assistant tool_calls left without a result.
+        const QJsonArray chats = chatsLoadIndex();
+        QVERIFY(!chats.isEmpty());
+        for (const QJsonValue& entry : chats) {
+            const QJsonArray msgs = chatGet(entry.toObject()["id"].toString())["messages"].toArray();
+            QSet<QString> answered;
+            for (const QJsonValue& m : msgs)
+                if (m.toObject()["role"].toString() == "tool")
+                    answered.insert(m.toObject()["tool_call_id"].toString());
+            for (const QJsonValue& m : msgs)
+                for (const QJsonValue& call : m.toObject()["tool_calls"].toArray())
+                    QVERIFY2(answered.contains(call.toObject()["id"].toString()), "dangling tool call");
+        }
+#endif
+    }
+
     void cliFailedTurnGoesToStderrAndIsNotStored() {
         if (!QFile::exists(cliBin()))
             QSKIP("pengy-cli not built yet");

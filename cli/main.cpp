@@ -15,6 +15,9 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <atomic>
+#include <chrono>
+#include <mutex>
+#include <thread>
 #include <cstdio>
 #include <functional>
 #ifdef Q_OS_WIN
@@ -27,6 +30,9 @@
 #  include <termios.h>
 #  include <unistd.h>
 #  include <sys/ioctl.h>
+#  include <csignal>
+#  include <fcntl.h>
+#  include <poll.h>
 #endif
 
 #include "../config.h"
@@ -324,6 +330,184 @@ static QStringList lastMessageLines(const QString& content, int maxLines = 10) {
     return result;
 }
 
+// ── Signals during a turn ────────────────────────────────────────────
+//
+// pengy-cli is mostly run by other programs as a one-shot subagent, and a
+// parent that gives up on it sends SIGTERM (or SIGINT/SIGHUP).  With the
+// default actions the process died on the spot: the running tool's process
+// group (its own session, so the signal never reached it) kept running, a sudo
+// askpass password file stayed in the temp directory, and the dangling
+// tool_calls repair never ran.  Ctrl-C in the REPL killed the CLI too.
+//
+// While a turn runs, SigWatch::TurnGuard routes those signals here instead:
+//  - the handler only records the signal and writes a byte to a pipe;
+//  - a watcher thread then kills the tool's process group (which also unblocks
+//    the main thread, waiting on that tool), removes askpass files, and -- when
+//    the signal ends the process -- re-raises it if the main thread has not
+//    finished within kGraceMs (it can be blocked in a sudo prompt or a
+//    network-only tool);
+//  - LlmClient polls the cancel callback, readline gives up (turnGetc), and
+//    runLlm repairs and saves the chat, then prints "Interrupted." (interactive
+//    Ctrl-C) or calls die().
+// die() re-raises the signal with its default action, so the parent sees
+// exactly what it saw before this existed (killed by SIGTERM, status 143).  A
+// second signal while the first is handled ends the process at once.  Keep
+// identical in the Python and Rust editions.
+
+namespace SigWatch {
+
+static std::atomic<int>  g_pending{0};
+static std::atomic<bool> g_sigintTerminates{false};
+
+static int pending() { return g_pending.load(); }
+
+#ifdef Q_OS_UNIX
+
+static constexpr int kSignals[] = {SIGINT, SIGTERM, SIGHUP};
+static constexpr int kGraceMs   = 1000;
+static int            g_pipeWr  = -1;
+static std::once_flag g_watcherOnce;
+// The terminal as the turn found it.  Dying from the watcher while a sudo
+// prompt has echo off must not leave the user's shell that way.
+static termios           g_savedTermios{};
+static std::atomic<bool> g_haveTermios{false};
+
+static bool terminates(int sig) { return sig != SIGINT || g_sigintTerminates.load(); }
+
+static QString name(int sig) {
+    switch (sig) {
+    case SIGINT:  return "SIGINT";
+    case SIGTERM: return "SIGTERM";
+    case SIGHUP:  return "SIGHUP";
+    default:      return QString("signal %1").arg(sig);
+    }
+}
+
+[[noreturn]] static void die(int sig) {
+    Tools::cleanupAskpassHelpers();
+    if (g_haveTermios.load()) tcsetattr(STDIN_FILENO, TCSANOW, &g_savedTermios);
+    fflush(stdout);
+    fflush(stderr);
+    ::signal(sig, SIG_DFL);
+    ::raise(sig);
+    _exit(128 + sig);
+}
+
+static void onSignal(int sig) {
+    // Async-signal-safe only: an atomic, write(2), signal(2), raise(3).
+    int expected = 0;
+    if (!g_pending.compare_exchange_strong(expected, sig)) {
+        ::signal(sig, SIG_DFL);
+        ::raise(sig);
+        return;
+    }
+    if (g_pipeWr >= 0) {
+        const unsigned char byte = static_cast<unsigned char>(sig);
+        const ssize_t n = ::write(g_pipeWr, &byte, 1);
+        (void)n;
+    }
+}
+
+static void startWatcher() {
+    std::call_once(g_watcherOnce, [] {
+        int fds[2];
+        if (::pipe(fds) != 0) return;
+        for (int fd : fds) ::fcntl(fd, F_SETFD, FD_CLOEXEC);  // not into tool children
+        g_pipeWr = fds[1];
+        std::thread([rd = fds[0]] {
+            for (;;) {
+                unsigned char byte = 0;
+                const ssize_t n = ::read(rd, &byte, 1);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) return;
+                const int sig = g_pending.load();
+                if (!sig) continue;
+                Tools::killActiveProcesses();
+                Tools::cleanupAskpassHelpers();
+                if (terminates(sig)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(kGraceMs));
+                    die(sig);
+                }
+            }
+        }).detach();
+    });
+}
+
+// readline's input function while a turn runs: end of input once a signal is
+// pending, so a confirmation or question prompt returns instead of waiting for
+// Enter.  Polls rather than relying on EINTR, which only reaches the main
+// thread if the kernel happens to deliver the signal there.
+static int turnGetc(FILE* stream) {
+    const int fd = fileno(stream);
+    for (;;) {
+        if (g_pending.load()) return EOF;
+        pollfd pfd{fd, POLLIN, 0};
+        const int ready = ::poll(&pfd, 1, 100);
+        if (ready < 0 && errno != EINTR) return EOF;
+        if (ready <= 0) continue;
+        unsigned char c = 0;
+        const ssize_t n = ::read(fd, &c, 1);
+        if (n == 1) return c;
+        if (n == 0 || errno != EINTR) return EOF;
+    }
+}
+
+// Installs the turn's signal handlers; the destructor restores the previous ones.
+class TurnGuard {
+public:
+    explicit TurnGuard(bool singleShot) {
+        startWatcher();
+        g_sigintTerminates = singleShot;
+        g_pending = 0;
+        g_haveTermios = isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &g_savedTermios) == 0;
+        struct sigaction action{};
+        action.sa_handler = onSignal;
+        action.sa_flags   = SA_RESTART;
+        sigemptyset(&action.sa_mask);
+        for (int i = 0; i < 3; ++i) sigaction(kSignals[i], &action, &m_old[i]);
+        // readline would otherwise install its own handlers over ours for the
+        // length of each prompt.
+        m_oldCatch     = rl_catch_signals;
+        m_oldGetc      = rl_getc_function;
+        rl_catch_signals = 0;
+        rl_getc_function = turnGetc;
+    }
+    ~TurnGuard() {
+        rl_getc_function = m_oldGetc;
+        rl_catch_signals = m_oldCatch;
+        for (int i = 0; i < 3; ++i) sigaction(kSignals[i], &m_old[i], nullptr);
+        // Back at the REPL: readline_qstring must not read a later line as
+        // interrupted.
+        g_pending = 0;
+    }
+    TurnGuard(const TurnGuard&) = delete;
+    TurnGuard& operator=(const TurnGuard&) = delete;
+
+private:
+    struct sigaction m_old[3]{};
+    int              m_oldCatch = 1;
+    rl_getc_func_t*  m_oldGetc  = nullptr;
+};
+
+#else
+
+static bool terminates(int) { return true; }
+static QString name(int sig) { return QString("signal %1").arg(sig); }
+[[noreturn]] static void die(int sig) {
+    Tools::cleanupAskpassHelpers();
+    fflush(stdout);
+    fflush(stderr);
+    _exit(128 + sig);
+}
+class TurnGuard {
+public:
+    explicit TurnGuard(bool) {}
+};
+
+#endif
+
+} // namespace SigWatch
+
 // ── Readline history ─────────────────────────────────────────────────
 
 static QString g_histPath;
@@ -347,6 +531,12 @@ static void saveReadlineHistory() {
 static QString readline_qstring(const char* prompt_str, bool* eof = nullptr) {
     if (eof) *eof = false;
     char* raw = readline(prompt_str);
+    if (raw && SigWatch::pending()) {
+        // A signal mid-prompt (turnGetc ended the input): whatever was typed
+        // is not an answer -- "1" must not run the tool.
+        free(raw);
+        raw = nullptr;
+    }
     if (!raw) { // EOF
         if (eof) *eof = true;
         return {};
@@ -396,6 +586,8 @@ public:
     bool        m_noUserNotice = false;
     /// Set by "[4] Abort run" (or Ctrl-D) at a confirmation; LlmClient polls it.
     bool        m_abortRun = false;
+    /// One-shot run: any SIGINT/SIGTERM/SIGHUP ends the process, never just the turn.
+    bool        m_singleShot = false;
     QString     m_outputMode = "pretty";
     bool        m_truncationFailed = false;
 
@@ -431,6 +623,7 @@ public:
         }
 
         if (singleShot) {
+            m_singleShot = true;
             runLlm(singleShotMsg, noSave);
             return;
         }
@@ -558,13 +751,15 @@ private:
         params.noUserAvailable = !stdinIsTerminal();
         params.recovery = {cfg.autoContextRecovery, cfg.recoveryKeepTurns, m_noSave ? QString() : chat["id"].toString(), cfg.outputTokenLimit, cfg.outputTokenParameter};
         m_abortRun = false;
+        SigWatch::TurnGuard signalGuard(m_singleShot);
         client.run(
             params,
             [this](const QJsonObject& ev) { onEvent(ev); },
             [this]() -> std::pair<bool,bool> { return onConfirm(); },
-            [this]() -> bool { return m_abortRun; },
+            [this]() -> bool { return m_abortRun || SigWatch::pending() != 0; },
             [this](const QJsonArray& questions) -> QStringList { return onQuestion(questions); }
         );
+        const int interrupted = SigWatch::pending();
 
         Tools::clearSudoPasswordProvider();
 
@@ -573,6 +768,21 @@ private:
         // on that next request) -- repair before the final write.
         chat["messages"] = cleanDanglingToolCalls(chat["messages"].toArray());
         saveProgress();
+
+        if (interrupted) {
+            if (m_outputMode == "pretty" && !m_firstEventDone) out("\r\033[K");
+            if (SigWatch::terminates(interrupted)) {
+                // Die by the signal rather than exiting 0: a caller that
+                // stopped us must not read the run as a success.
+                const QString message = "Interrupted by " + SigWatch::name(interrupted) + ".";
+                if (m_outputMode == "json")
+                    outln(QJsonDocument(QJsonObject{{"error", QJsonObject{
+                        {"type", "interrupted"}, {"message", message}}}}).toJson(QJsonDocument::Compact));
+                err("\n" + message);
+                SigWatch::die(interrupted);
+            }
+            outln(dim("Interrupted."));
+        }
     }
 
     // Persist mid-run, so a crash can't take the turn's tool calls with it.
