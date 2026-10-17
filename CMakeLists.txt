@@ -32,6 +32,16 @@ add_executable(pengy-cli
 target_link_libraries(pengy-cli PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
 if(UNIX AND NOT WIN32)
     target_link_libraries(pengy-cli PRIVATE readline)
+    # macOS links libedit's readline emulation, which has neither
+    # rl_catch_signals nor rl_getc_func_t.  Its header does define
+    # RL_READLINE_VERSION, so check the symbol itself rather than a macro.
+    include(CheckSymbolExists)
+    set(CMAKE_REQUIRED_LIBRARIES readline)
+    check_symbol_exists(rl_catch_signals "readline/readline.h" PENGY_HAVE_RL_CATCH_SIGNALS)
+    unset(CMAKE_REQUIRED_LIBRARIES)
+    if(PENGY_HAVE_RL_CATCH_SIGNALS)
+        target_compile_definitions(pengy-cli PRIVATE PENGY_GNU_READLINE=1)
+    endif()
 endif()
 target_include_directories(pengy-cli PRIVATE ${CMAKE_BINARY_DIR})
 

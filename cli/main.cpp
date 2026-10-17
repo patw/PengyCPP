@@ -442,7 +442,7 @@ static void startWatcher() {
 // readline.  macOS links libedit's readline emulation, which has neither, so
 // there readline keeps its own handlers and a Ctrl-C at a prompt is its to
 // handle; SIGTERM/SIGHUP still reach the watcher.
-#ifdef RL_READLINE_VERSION
+#ifdef PENGY_GNU_READLINE
 static int turnGetc(FILE* stream) {
     const int fd = fileno(stream);
     for (;;) {
@@ -472,7 +472,7 @@ public:
         action.sa_flags   = SA_RESTART;
         sigemptyset(&action.sa_mask);
         for (int i = 0; i < 3; ++i) sigaction(kSignals[i], &action, &m_old[i]);
-#ifdef RL_READLINE_VERSION
+#ifdef PENGY_GNU_READLINE
         // readline would otherwise install its own handlers over ours for the
         // length of each prompt.
         m_oldCatch     = rl_catch_signals;
@@ -482,7 +482,7 @@ public:
 #endif
     }
     ~TurnGuard() {
-#ifdef RL_READLINE_VERSION
+#ifdef PENGY_GNU_READLINE
         rl_getc_function = m_oldGetc;
         rl_catch_signals = m_oldCatch;
 #endif
@@ -496,7 +496,7 @@ public:
 
 private:
     struct sigaction m_old[3]{};
-#ifdef RL_READLINE_VERSION
+#ifdef PENGY_GNU_READLINE
     int              m_oldCatch = 1;
     rl_getc_func_t*  m_oldGetc  = nullptr;
 #endif
