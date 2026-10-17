@@ -437,6 +437,12 @@ static void startWatcher() {
 // pending, so a confirmation or question prompt returns instead of waiting for
 // Enter.  Polls rather than relying on EINTR, which only reaches the main
 // thread if the kernel happens to deliver the signal there.
+//
+// These two hooks (`rl_getc_function`, `rl_catch_signals`) exist only in GNU
+// readline.  macOS links libedit's readline emulation, which has neither, so
+// there readline keeps its own handlers and a Ctrl-C at a prompt is its to
+// handle; SIGTERM/SIGHUP still reach the watcher.
+#ifdef RL_READLINE_VERSION
 static int turnGetc(FILE* stream) {
     const int fd = fileno(stream);
     for (;;) {
@@ -451,6 +457,7 @@ static int turnGetc(FILE* stream) {
         if (n == 0 || errno != EINTR) return EOF;
     }
 }
+#endif
 
 // Installs the turn's signal handlers; the destructor restores the previous ones.
 class TurnGuard {
@@ -465,16 +472,20 @@ public:
         action.sa_flags   = SA_RESTART;
         sigemptyset(&action.sa_mask);
         for (int i = 0; i < 3; ++i) sigaction(kSignals[i], &action, &m_old[i]);
+#ifdef RL_READLINE_VERSION
         // readline would otherwise install its own handlers over ours for the
         // length of each prompt.
         m_oldCatch     = rl_catch_signals;
         m_oldGetc      = rl_getc_function;
         rl_catch_signals = 0;
         rl_getc_function = turnGetc;
+#endif
     }
     ~TurnGuard() {
+#ifdef RL_READLINE_VERSION
         rl_getc_function = m_oldGetc;
         rl_catch_signals = m_oldCatch;
+#endif
         for (int i = 0; i < 3; ++i) sigaction(kSignals[i], &m_old[i], nullptr);
         // Back at the REPL: readline_qstring must not read a later line as
         // interrupted.
@@ -485,8 +496,10 @@ public:
 
 private:
     struct sigaction m_old[3]{};
+#ifdef RL_READLINE_VERSION
     int              m_oldCatch = 1;
     rl_getc_func_t*  m_oldGetc  = nullptr;
+#endif
 };
 
 #else
