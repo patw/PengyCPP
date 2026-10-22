@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.12.5
 
 - **The CLI's readline prompt hooks are GNU readline's, detected by symbol.** The signal-aware prompt of v1.12.4 uses `rl_getc_function` and `rl_catch_signals`, which GNU readline has and the readline emulation on macOS (libedit, which is what `readline` means there) does not: the v1.12.4 macOS DMG build failed on both. `RL_READLINE_VERSION`, the obvious guard, does not tell them apart — libedit's `readline.h` defines it too. CMake now runs `check_symbol_exists(rl_catch_signals)` against the headers the build actually links and defines `PENGY_GNU_READLINE` only when the symbol is there; without it `cli/main.cpp` leaves readline's own prompt handling alone, so a prompt still waits for Enter but SIGTERM/SIGHUP still reach the watcher. The fallback branch was built with the check forced off to verify it.
 
