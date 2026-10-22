@@ -85,10 +85,43 @@ else
     fi
 fi
 
+# ── 6b. Generated version.h — catches a stale build/ ────────────────
+# "Binaries already built" above skips the rebuild, so a dirty build/ from an
+# older tree can look fine while reporting the old version.
+echo "--- Generated version.h ---"
+if [ -f build/version.h ]; then
+    VH=$(sed -n 's/^#define PENGY_VERSION "\(.*\)"/\1/p' build/version.h | head -1)
+    echo "  build/version.h: $VH   (CMakeLists: $CMAKE_VER)"
+    if [ "$VH" = "$CMAKE_VER" ]; then
+        ok "version.h matches CMakeLists.txt"
+    else
+        fail "build/version.h says $VH but CMakeLists.txt says $CMAKE_VER — stale build dir: rm -rf build && ./build_linux.sh"
+    fi
+else
+    warn "build/version.h missing"
+fi
+
+# ── 6c. GNU readline detection ─────────────────────────────────────
+# v1.12.4's macOS DMG failed because the signal-aware prompt's hooks are GNU
+# readline only. CMake decides by probing the symbol; if the probe fails here the
+# CLI silently loses the signal-aware prompt, so say so out loud.
+echo "--- GNU readline detection ---"
+if [ -f build/CMakeCache.txt ]; then
+    if grep -q 'PENGY_HAVE_RL_CATCH_SIGNALS:INTERNAL=1' build/CMakeCache.txt; then
+        ok "GNU readline found (PENGY_GNU_READLINE on — signal-aware prompts enabled)"
+    else
+        warn "GNU readline NOT detected — CLI falls back to readline's own prompt handling (its prompts wait for Enter; SIGTERM/SIGHUP still reach the watcher). Install libreadline-dev"
+    fi
+else
+    warn "build/CMakeCache.txt missing — cannot check readline detection"
+fi
+
 # ── 7. Verify binaries (existence + --version/--help smoke test) ───
 echo "--- Verify binaries ---"
 ls -lh build/pengy build/pengy-cli build/pengy-web build/pengy_tests 2>/dev/null
-file build/pengy | grep -q "ELF" && ok "pengy is a valid ELF binary" || warn "pengy doesn't look like an ELF"
+if command -v file >/dev/null 2>&1; then
+    file build/pengy | grep -q "ELF" && ok "pengy is a valid ELF binary" || warn "pengy doesn't look like an ELF"
+fi
 for bin in build/pengy build/pengy-cli build/pengy-web; do
     name=$(basename "$bin")
     if [ ! -f "$bin" ]; then warn "$name not found"; continue; fi
@@ -103,6 +136,20 @@ for bin in build/pengy build/pengy-cli build/pengy-web; do
         warn "$name --help failed (stale binary?)"
     fi
 done
+
+# ── 7b. Test suite (QTest, headless) ───────────────────────────────
+# The suite never ran in this pre-flight before; it takes ~80 s here.
+echo "--- Test suite ---"
+if [ -x build/pengy_tests ]; then
+    if QT_QPA_PLATFORM=offscreen timeout 900 ./build/pengy_tests > /tmp/pengycpp_tests.log 2>&1; then
+        ok "pengy_tests: $(grep -o 'Totals: .*' /tmp/pengycpp_tests.log | head -1)"
+    else
+        warn "pengy_tests failed — check /tmp/pengycpp_tests.log"
+        grep -E "^FAIL|Totals:" /tmp/pengycpp_tests.log | head -10
+    fi
+else
+    warn "build/pengy_tests not found — skipping the suite (build_linux.sh builds it)"
+fi
 
 # ── 8. .deb package ─────────────────────────────────────────────────
 echo "--- .deb package ---"
