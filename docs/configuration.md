@@ -67,3 +67,16 @@ All three interfaces read from and write to the same file. You can switch betwee
 The GUI sidebar’s **Effort** dropdown overrides `reasoning_effort` for that chat only and applies to the next message. **Global setting** follows the saved default; **Provider default** explicitly sends no reasoning hint. Offered levels are Off / none, Low, Medium, High, Extra high, and Max; support depends on the model/provider. Minimal is no longer offered, though legacy raw configuration remains readable.
 
 **Last: … tok/s** is the final API response’s output tokens divided by its successful request wall time. It includes network latency, prompt processing, and reasoning, but excludes earlier tool calls, tool execution, confirmation waits, and retry backoff. It is not pure decoding speed. Missing usage shows `—`; the last measurement is saved with the chat, separately from cumulative token totals.
+
+## Context pressure and reply recovery (all editions)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `context_window` | uint | `0` | Explicit combined window in tokens. Zero is off unless discovery is explicitly opted in. |
+| `context_windows` | map<string,uint> | `{}` | Per-model override, including zero to disable that model. Examples: local 262144, fast 1048576, constrained local 131072. |
+| `context_window_auto` | bool | `false` | Opt into bounded, route-cached discovery when no explicit override applies. |
+| `compact_at_percent` | uint | `75` | Proactive prompt threshold percentage, 1–100. An explicit output reserve may lower it. |
+| `empty_reply_thinking_off` | string | `""` | One reasoning-only empty-stop retry: `reasoning_effort` or `enable_thinking`, only when supported. Empty disables. |
+| `empty_reply_thinking_off_models` | map<string,string> | `{}` | Per-model thinking-off mechanism override; empty disables that model. |
+
+These advanced fields are edited in JSON; no model table or legacy context-window default is used. Without valid reported usage, the first request stays reactive. Full policy, bootstrap, hysteresis, budget and parity caveats: [context recovery](context-recovery.md).

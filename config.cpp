@@ -5,6 +5,8 @@
 #include <QJsonArray>
 #include <QDateTime>
 #include <QSysInfo>
+#include <cmath>
+#include <limits>
 
 /* Resolve the pengy config directory.
  *
@@ -63,7 +65,7 @@ static void backupCorruptFile(const QString& path) {
 }
 
 QJsonObject Config::toJson() const {
-    QJsonObject o;
+    QJsonObject o = extraSettings;
     o["base_url"]           = baseUrl;
     o["api_key"]            = apiKey;
     o["model"]              = model;
@@ -76,6 +78,12 @@ QJsonObject Config::toJson() const {
     o["recovery_keep_turns"] = recoveryKeepTurns;
     o["output_token_limit"] = outputTokenLimit;
     o["output_token_parameter"] = outputTokenParameter;
+    o["context_window"] = qint64(contextWindow);
+    o["context_windows"] = contextWindows;
+    o["context_window_auto"] = contextWindowAuto;
+    o["compact_at_percent"] = compactAtPercent;
+    o["empty_reply_thinking_off"] = emptyReplyThinkingOff;
+    o["empty_reply_thinking_off_models"] = emptyReplyThinkingOffModels;
     o["attachment_context_keep_turns"] = attachmentContextKeepTurns;
     o["ui_scale"]           = uiScale;
     o["theme_mode"]         = themeMode;
@@ -96,6 +104,10 @@ QJsonObject Config::toJson() const {
 
 Config Config::fromJson(const QJsonObject& o) {
     Config c;
+    const QJsonObject known = c.toJson();
+    for (auto it = o.begin(); it != o.end(); ++it) {
+        if (!known.contains(it.key())) c.extraSettings.insert(it.key(), it.value());
+    }
     if (o.contains("base_url"))           c.baseUrl           = o["base_url"].toString(c.baseUrl);
     if (o.contains("api_key"))            c.apiKey            = o["api_key"].toString();
     if (o.contains("model"))              c.model             = o["model"].toString(c.model);
@@ -107,6 +119,15 @@ Config Config::fromJson(const QJsonObject& o) {
     if (o.contains("recovery_keep_turns")) c.recoveryKeepTurns = qMax(0, o["recovery_keep_turns"].toInt(3));
     if (o.contains("output_token_limit")) c.outputTokenLimit = qMax(0, o["output_token_limit"].toInt(0));
     if (o.contains("output_token_parameter")) c.outputTokenParameter = o["output_token_parameter"].toString("max_tokens");
+    const double window = o["context_window"].toDouble(-1);
+    if (o["context_window"].isDouble() && std::isfinite(window) && window >= 0
+        && std::floor(window) == window && window < double(std::numeric_limits<quint64>::max()))
+        c.contextWindow = quint64(window);
+    if (o.contains("context_windows")) c.contextWindows = o["context_windows"].toObject();
+    if (o.contains("context_window_auto")) c.contextWindowAuto = o["context_window_auto"].toBool(false);
+    if (o.contains("compact_at_percent")) c.compactAtPercent = o["compact_at_percent"].toInt(75);
+    if (o.contains("empty_reply_thinking_off")) c.emptyReplyThinkingOff = o["empty_reply_thinking_off"].toString();
+    if (o.contains("empty_reply_thinking_off_models")) c.emptyReplyThinkingOffModels = o["empty_reply_thinking_off_models"].toObject();
     if (o.contains("context_keep_turns")) c.contextKeepTurns  = qMax(0, o["context_keep_turns"].toInt(0));
     if (o.contains("attachment_context_keep_turns")) c.attachmentContextKeepTurns = qMax(0, o["attachment_context_keep_turns"].toInt(4));
     if (o.contains("ui_scale"))           c.uiScale           = o["ui_scale"].toInt(100);

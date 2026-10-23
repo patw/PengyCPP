@@ -762,7 +762,7 @@ private:
         // Headless run: the core tells the model "no user available" rather than
         // "declined by user" when a tool needs confirming and there is no TTY.
         params.noUserAvailable = !stdinIsTerminal();
-        params.recovery = {cfg.autoContextRecovery, cfg.recoveryKeepTurns, m_noSave ? QString() : chat["id"].toString(), cfg.outputTokenLimit, cfg.outputTokenParameter};
+        params.recovery = ContextRecovery::Options::configured(cfg, m_noSave ? QString() : chat["id"].toString());
         m_abortRun = false;
         SigWatch::TurnGuard signalGuard(m_singleShot);
         client.run(

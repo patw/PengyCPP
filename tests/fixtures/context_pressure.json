@@ -1,0 +1,52 @@
+{
+  "windows": [
+    131072,
+    262144,
+    1048576
+  ],
+  "percent": 75,
+  "cases": [
+    {
+      "name": "cold_start",
+      "sample": null,
+      "next_chars": 100000,
+      "expected": null
+    },
+    {
+      "name": "logs_measured",
+      "sample": [
+        400000,
+        200000
+      ],
+      "next_chars": 450000,
+      "expected": 225000
+    },
+    {
+      "name": "prose_measured",
+      "sample": [
+        400000,
+        100000
+      ],
+      "next_chars": 450000,
+      "expected": 112500
+    },
+    {
+      "name": "shrink",
+      "sample": [
+        400000,
+        200000
+      ],
+      "next_chars": 300000,
+      "expected": 150000
+    },
+    {
+      "name": "ceil",
+      "sample": [
+        400000,
+        200000
+      ],
+      "next_chars": 400001,
+      "expected": 200001
+    }
+  ]
+}

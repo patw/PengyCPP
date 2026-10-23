@@ -4,6 +4,7 @@
 #include <QString>
 #include <functional>
 
+struct Config;
 namespace ContextRecovery {
 extern const QString SummaryPrompt;
 struct Options {
@@ -12,6 +13,13 @@ struct Options {
     QString chatId;
     int outputLimit = 0;
     QString outputParameter = "max_tokens";
+    quint64 contextWindow = 0;
+    QJsonObject contextWindows;
+    bool windowAuto = false;
+    int compactAtPercent = 75;
+    QString thinkingOff;
+    QJsonObject thinkingOffModels;
+    static Options configured(const Config& config, const QString& chatId);
 };
 struct Plan {
     QJsonObject state;
@@ -29,6 +37,7 @@ class Recovery {
     Recovery(const QJsonArray &messages, const QString &endpoint, const QString &model,
              const Options &options);
     QJsonArray apply(const QJsonArray &messages) const;
+    QJsonObject state() const { return m_state; }
     bool plan(const QJsonArray &messages, Plan &result) const;
     QJsonObject commit(Plan plan, const QStringList &summaries, const QJsonArray &messages,
                        QString &error);

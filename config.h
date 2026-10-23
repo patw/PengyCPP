@@ -24,6 +24,12 @@ struct Config {
     int recoveryKeepTurns = 3;
     int outputTokenLimit = 0;
     QString outputTokenParameter = "max_tokens";
+    quint64 contextWindow = 0;
+    QJsonObject contextWindows;
+    bool contextWindowAuto = false;
+    int compactAtPercent = 75;
+    QString emptyReplyThinkingOff;
+    QJsonObject emptyReplyThinkingOffModels;
     int  attachmentContextKeepTurns = 4;
     int  uiScale             = 100;
     QString themeMode        = "system"; // "system" | "light" | "dark"
@@ -38,6 +44,8 @@ struct Config {
     int  imageQuality        = 85;
 
     QStringList openTabs;   // persisted list of open chat IDs
+
+    QJsonObject extraSettings; // Preserve keys owned by newer/other editions.
 
     QJsonObject toJson() const;
     static Config fromJson(const QJsonObject& obj);

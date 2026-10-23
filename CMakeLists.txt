@@ -27,6 +27,8 @@ add_executable(pengy-cli
     attachments.cpp
     provider_messages.cpp
     context_recovery.cpp
+    context_pressure.cpp
+    context_windows.cpp
 )
 # Qt6::Gui (not Widgets) for QImage — read_image decodes and rescales in tools.cpp.
 target_link_libraries(pengy-cli PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
@@ -60,6 +62,8 @@ add_executable(pengy-web
     attachments.cpp
     provider_messages.cpp
     context_recovery.cpp
+    context_pressure.cpp
+    context_windows.cpp
 )
 target_link_libraries(pengy-web PRIVATE Qt6::Core Qt6::Gui Qt6::Network)
 target_include_directories(pengy-web PRIVATE ${CMAKE_BINARY_DIR})
@@ -78,6 +82,8 @@ add_executable(pengy WIN32
     attachments.cpp
     provider_messages.cpp
     context_recovery.cpp
+    context_pressure.cpp
+    context_windows.cpp
     chatworker.cpp
     mainwindow.cpp
     toolconfirmdialog.cpp
@@ -164,6 +170,8 @@ if(Qt6Test_FOUND)
         attachments.cpp
         provider_messages.cpp
         context_recovery.cpp
+        context_pressure.cpp
+        context_windows.cpp
         chatworker.cpp
         web/webserver.cpp
         web/webchatworker.cpp

@@ -658,7 +658,7 @@ void MainWindow::processResponse(TabSession* session, const QJsonArray& apiMessa
 
     QString toolConfirmation = m_config.toolConfirmation;
     auto* worker = new ChatWorker(this);
-    worker->recoveryOptions = {m_config.autoContextRecovery, m_config.recoveryKeepTurns, session->chat["id"].toString(), m_config.outputTokenLimit, m_config.outputTokenParameter};
+    worker->recoveryOptions = ContextRecovery::Options::configured(m_config, session->chat["id"].toString());
     m_workerToChat[worker] = session->chat["id"].toString();
 
     connect(worker, &ChatWorker::eventReceived, this, &MainWindow::onWorkerEvent,

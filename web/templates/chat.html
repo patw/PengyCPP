@@ -502,7 +502,7 @@ function showContextCompacted(data) {
   showThinking();
   const el = document.createElement('div');
   el.className = 'alert alert-info py-2';
-  el.textContent = `Context limit — retrying with ${Number(data.chars_removed).toLocaleString()} fewer tool-output characters (${data.attempt}/${data.max_attempts})`;
+  el.textContent = data.message || `Context limit — retrying with ${Number(data.chars_removed).toLocaleString()} fewer tool-output characters (${data.attempt}/${data.max_attempts})`;
   appendToArea(el);
 }
 
@@ -1127,12 +1127,6 @@ function handleEvent(ev) {
 
   } else if (ev.type === 'context_compacted') {
     showContextCompacted(ev);
-    if (ev.message) {
-      const notice = document.createElement('div');
-      notice.className = 'alert alert-info py-2';
-      notice.textContent = ev.message;
-      document.getElementById('messages').appendChild(notice);
-    }
 
   } else if (ev.type === 'final_response') {
     hideThinking();

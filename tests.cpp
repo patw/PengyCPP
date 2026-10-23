@@ -1,3 +1,6 @@
+#include "context_pressure.h"
+#include "context_windows.h"
+#include <QUuid>
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QLocale>
@@ -546,6 +549,18 @@ private slots:
         QCOMPARE(c2.uiScale, c.uiScale);
         QCOMPARE(c2.userAgent, c.userAgent);
         QCOMPARE(c2.toolTimeout, c.toolTimeout);
+    }
+
+    void configPreservesOtherEditionSettings() {
+        QJsonObject o{{"context_window", 262144},
+            {"context_windows", QJsonObject{{"fast", 1048576}, {"constrained", 131072}}},
+            {"compact_at_percent", 75}, {"empty_reply_thinking_off", "reasoning_effort"},
+            {"future_setting", QJsonObject{{"keep", true}}}};
+        Config c = Config::fromJson(o);
+        c.model = "local";
+        const auto saved = c.toJson();
+        for (auto it = o.begin(); it != o.end(); ++it) QCOMPARE(saved[it.key()], it.value());
+        QCOMPARE(saved["model"].toString(), QString("local"));
     }
 
     void configFromJsonPartial() {
@@ -4010,6 +4025,179 @@ private slots:
         return QJsonDocument(reply).toJson();
     }
 
+    void proactiveSharedArithmeticAndHysteresis() {
+        QFile f(QString(PENGY_SOURCE_DIR)+"/tests/fixtures/context_pressure.json");QVERIFY(f.open(QIODevice::ReadOnly));
+        auto fixture=QJsonDocument::fromJson(f.readAll()).object();
+        for(auto v:fixture["cases"].toArray()){
+            auto c=v.toObject();ContextPressure::Pressure p;p.window=262144;
+            auto a=c["sample"].toArray();if(!a.isEmpty())p.record(quint64(a[0].toDouble()),quint64(a[1].toDouble()));
+            auto result=p.estimate(quint64(c["next_chars"].toDouble()));
+            if(c["expected"].isNull())QVERIFY(!result);else {QVERIFY(result);QCOMPARE(*result,quint64(c["expected"].toDouble()));}
+        }
+        ContextPressure::Pressure p;p.window=262144;auto [at,hard]=ContextPressure::budgets(p.window,75,0);
+        QCOMPARE(at,quint64(196608));QVERIFY(!p.shouldCompact(at-1,at,hard));QVERIFY(p.shouldCompact(at,at,hard));
+        p.compacted(at-1,at);QVERIFY(!p.shouldCompact(at,at,hard));QVERIFY(!p.shouldCompact(at+13107,at,hard));QVERIFY(p.shouldCompact(at+13108,at,hard));QVERIFY(p.shouldCompact(hard,at,hard));
+        p.compacted(at,at);QVERIFY(p.shouldCompact(at,at,hard));
+        auto reserve=ContextPressure::budgets(262144,75,100000);QCOMPARE(reserve.first,quint64(162144));
+        auto m=QJsonArray{QJsonObject{{"role","user"},{"content",QString::fromUtf8("🐧\n")}}};
+        QCOMPARE(*ContextPressure::inputChars(m,QJsonValue(QJsonValue::Null)),quint64(17));
+        QVERIFY(!ContextPressure::inputChars(QJsonArray{QJsonObject{{"image_url",QJsonObject{{"url","data:base64"}}}}},QJsonArray{}));
+    }
+
+    static void seedPressure(const LlmParams& p,quint64 tokens){
+        ContextRecovery::Recovery r(p.messages,p.baseUrl,p.model,p.recovery);
+        QString base=p.baseUrl;while(base.endsWith('/'))base.chop(1);
+        auto key=QString::fromUtf8(QJsonDocument(QJsonArray{base,p.model,p.recovery.chatId}).toJson(QJsonDocument::Compact));
+        auto pressure=ContextPressure::Pressure::load(key,p.messages,ContextPressure::identity(r.state()),p.recovery.contextWindow);
+        pressure.record(ContextPressure::inputChars(p.messages,Tools::toolDefinitions()),tokens);
+        pressure.save(key,p.messages,ContextPressure::identity(r.state()));
+    }
+
+    void proactiveThresholdUnknownAndFast() {
+        for(int scenario=0;scenario<4;++scenario){
+            StubLlmServer stub;
+            bool reduce=scenario==0;
+            if(reduce)stub.responses<<llmCompletion("checkpoint");
+            stub.responses<<llmCompletion("answer");
+            LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=recoverableHistory();
+            p.recovery.contextWindow=scenario==2?0:(scenario==3?1048576:262144);
+            p.recovery.chatId=QUuid::createUuid().toString();
+            seedPressure(p,scenario==1?196607:196608);
+            auto original=p.messages;QList<QJsonObject> events;
+            LlmClient().run(p,[&](const QJsonObject& e){events<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+            int compact=0;for(auto e:events)if(e["type"]=="context_compacted"){++compact;QCOMPARE(e["reason"].toString(),QString("proactive"));QCOMPARE(e["attempt"].toInt(),1);}
+            QCOMPARE(compact,reduce?1:0);QCOMPARE(events.last()["content"].toString(),QString("answer"));
+            QCOMPARE(p.messages,original);QCOMPARE(stub.requests.size(),reduce?2:1);
+            if(reduce)QCOMPARE(stub.requests.last()["messages"].toArray().last(),p.messages.last());
+        }
+    }
+
+    void proactiveColdStartToolRoundPreservesFullResult() {
+        Tools::setToolOutputMaxChars(250000);
+        QTemporaryDir dir;QString path=dir.path()+"/logs.txt";QString text=QString("log id=1234567890\n").repeated(10000);
+        QFile f(path);QVERIFY(f.open(QIODevice::WriteOnly));f.write(text.toUtf8());f.close();
+        StubLlmServer stub;stub.responses<<llmCompletion("",QJsonArray{llmToolCall("one","read_file",{{"path",path}})},180000,5)<<llmCompletion("answer");
+        LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=QJsonArray{userMsg("read")};p.toolConfirmation="all";p.recovery.contextWindow=262144;
+        QList<QJsonObject> events;LlmClient().run(p,[&](const QJsonObject& e){events<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        QStringList types;for(auto e:events)types<<e["type"].toString();
+        QCOMPARE(types,(QStringList{"assistant_tool_calls","tool_request","tool_result","context_compacted","final_response"}));
+        QCOMPARE(events[2]["content"].toString(),text);QCOMPARE(events[3]["reason"].toString(),QString("proactive"));
+        QVERIFY(stub.requests[1]["messages"].toArray().last().toObject()["content"].toString().size()<4000);
+    }
+
+    void proactiveCalibrationSurvivesUserTurns() {
+        for(quint64 window:{quint64(262144),quint64(1048576)}){
+            StubLlmServer stub;stub.responses<<llmCompletion("first",{},200000,5);
+            if(window==262144)stub.responses<<llmCompletion("checkpoint");stub.responses<<llmCompletion("second");
+            LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=recoverableHistory();p.recovery.contextWindow=window;p.recovery.chatId=QUuid::createUuid().toString();
+            QList<QJsonObject> first;LlmClient().run(p,[&](const QJsonObject& e){first<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+            QCOMPARE(first.size(),1);p.messages.append(first.last()["message"]);p.messages.append(userMsg("continue"));
+            QList<QJsonObject> second;LlmClient().run(p,[&](const QJsonObject& e){second<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+            int compact=0;for(auto e:second)if(e["type"]=="context_compacted")++compact;
+            QCOMPARE(compact,window==262144?1:0);QCOMPARE(second.last()["content"].toString(),QString("second"));
+        }
+    }
+
+    void proactiveNoPlanAndImpossibleReserve() {
+        StubLlmServer stub;stub.responses<<llmCompletion("answer");
+        LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=QJsonArray{userMsg("protected")};p.recovery.contextWindow=262144;p.recovery.chatId=QUuid::createUuid().toString();seedPressure(p,200000);
+        QList<QJsonObject> events;LlmClient().run(p,[&](const QJsonObject& e){events<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        QCOMPARE(events.size(),1);QCOMPARE(events.last()["content"].toString(),QString("answer"));
+        p.recovery.outputLimit=262144;events.clear();LlmClient().run(p,[&](const QJsonObject& e){events<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        QCOMPARE(events.last()["type"].toString(),QString("error"));QVERIFY(events.last()["message"].toString().contains("must be smaller"));QCOMPARE(stub.requests.size(),1);
+    }
+
+    void proactiveFailedSummaryStillSendsOriginal() {
+        StubLlmServer stub;stub.responses<<llmCompletion("")<<llmCompletion("answer");
+        LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=recoverableHistory();p.recovery.contextWindow=262144;p.recovery.chatId=QUuid::createUuid().toString();seedPressure(p,200000);
+        QList<QJsonObject> events;LlmClient().run(p,[&](const QJsonObject& e){events<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        QCOMPARE(events.size(),2);QCOMPARE(events.first()["type"].toString(),QString("request_started"));QCOMPARE(events.last()["content"].toString(),QString("answer"));
+        QCOMPARE(stub.requests.last()["messages"].toArray(),p.messages);
+    }
+
+    void proactiveLongLengthOneAttemptWithoutTruncatedTools() {
+        for(bool success:{true,false}){
+            StubLlmServer stub;stub.responses<<lengthStop("partial",QJsonArray{llmToolCall("unsafe","write_file",{{"path","must-not-exist"},{"content","no"}})},393216)<<llmCompletion("checkpoint")<<(success?llmCompletion("answer"):lengthStop("partial again",{},393216));
+            LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=recoverableHistory();p.toolConfirmation="all";
+            QList<QJsonObject> events;LlmClient().run(p,[&](const QJsonObject& e){events<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+            QCOMPARE(events.size(),3);QCOMPARE(events[1]["type"].toString(),QString("context_compacted"));
+            QCOMPARE(events.last()["type"].toString(),QString(success?"final_response":"error"));QCOMPARE(stub.requests.size(),3);
+        }
+    }
+
+    void proactiveReasoningOnlyRetryAndSummaryControls() {
+        for(QString mechanism:{QString(""),QString("reasoning_effort"),QString("enable_thinking")}){
+            for(bool success:{true,false}){
+                StubLlmServer stub;auto empty=QJsonDocument::fromJson(llmCompletion("",{},100,200)).object();auto choice=empty["choices"].toArray()[0].toObject();auto msg=choice["message"].toObject();msg["reasoning_content"]="thoughts";choice["message"]=msg;empty["choices"]=QJsonArray{choice};
+                stub.responses<<QJsonDocument(empty).toJson();if(!mechanism.isEmpty())stub.responses<<(success?llmCompletion("ok",{},100,2):QJsonDocument(empty).toJson());
+                LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=QJsonArray{userMsg("answer")};p.reasoningEffort="high";p.recovery.thinkingOff=mechanism;
+                QList<QJsonObject> events;LlmClient().run(p,[&](const QJsonObject& e){events<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+                QCOMPARE(stub.requests.size(),mechanism.isEmpty()?1:2);
+                if(!mechanism.isEmpty()){
+                    QCOMPARE(stub.requests[0]["messages"],stub.requests[1]["messages"]);
+                    if(mechanism=="reasoning_effort")QCOMPARE(stub.requests[1]["reasoning_effort"].toString(),QString("none"));
+                    else{QVERIFY(!stub.requests[1].contains("reasoning_effort"));QCOMPARE(stub.requests[1]["chat_template_kwargs"].toObject()["enable_thinking"].toBool(),false);}
+                    if(success)QCOMPARE(events.last()["usage"].toObject()["completion_tokens"].toInt(),202);
+                }
+                QCOMPARE(events.last()["type"].toString(),QString(!mechanism.isEmpty()&&success?"final_response":"error"));
+            }
+            StubLlmServer stub;stub.responses<<llmCompletion("first",{},200000,5)<<llmCompletion("checkpoint")<<llmCompletion("answer");
+            LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=recoverableHistory();p.recovery.contextWindow=262144;p.recovery.chatId=QUuid::createUuid().toString();p.recovery.thinkingOff=mechanism;
+            QList<QJsonObject> first;LlmClient().run(p,[&](const QJsonObject& e){first<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+            p.messages.append(first.last()["message"]);p.messages.append(userMsg("continue"));
+            LlmClient().run(p,[](const QJsonObject&){},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+            if(mechanism=="reasoning_effort")QCOMPARE(stub.requests[1]["reasoning_effort"].toString(),QString("none"));
+            else if(mechanism=="enable_thinking")QCOMPARE(stub.requests[1]["chat_template_kwargs"].toObject()["enable_thinking"].toBool(),false);
+            else QVERIFY(!stub.requests[1].contains("reasoning_effort"));
+        }
+    }
+
+
+    void proactiveBudgetLeavesTwoReactiveAttempts() {
+        QFile f(QString(PENGY_SOURCE_DIR)+"/tests/fixtures/context_recovery_reserve.json");QVERIFY(f.open(QIODevice::ReadOnly));
+        auto c=QJsonDocument::fromJson(f.readAll()).array()[0].toObject();
+        StubLlmServer stub;auto call=llmToolCall("one","read_file",{{"path","/file/that/does/not/exist"}});
+        stub.responses<<llmCompletion("",QJsonArray{call},260000,5);
+        call["id"]="two";stub.responses<<llmCompletion("",QJsonArray{call},260000,5)
+            <<QByteArray(R"({"error":{"code":"context_length_exceeded","message":"context length exceeded"}})")
+            <<QByteArray(R"({"error":{"code":"context_length_exceeded","message":"context length exceeded"}})")
+            <<llmCompletion("checkpoint")<<llmCompletion("answer");
+        stub.statuses<<200<<200<<400<<400<<200<<200;
+        LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=c["messages"].toArray();p.toolConfirmation="all";p.recovery.contextWindow=262144;p.recovery.chatId=QUuid::createUuid().toString();seedPressure(p,260000);
+        QList<QJsonObject> events;LlmClient().run(p,[&](const QJsonObject& e){events<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        int compact=0,proactive=0,tools=0;
+        for(auto e:events){if(e["type"]=="context_compacted"){++compact;QCOMPARE(e["attempt"].toInt(),compact);if(e["reason"]=="proactive")++proactive;}if(e["type"]=="tool_request")++tools;}
+        QCOMPARE(compact,4);QCOMPARE(proactive,2);QCOMPARE(tools,2);QCOMPARE(stub.requests.size(),6);QCOMPARE(events.last()["content"].toString(),QString("answer"));
+    }
+
+    void proactiveMissingUsageDoesNotCalibrate() {
+        StubLlmServer stub;auto reply=QJsonDocument::fromJson(llmCompletion("first")).object();reply.remove("usage");
+        stub.responses<<QJsonDocument(reply).toJson()<<llmCompletion("second");
+        LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=recoverableHistory();p.recovery.contextWindow=262144;p.recovery.chatId=QUuid::createUuid().toString();
+        QList<QJsonObject> events;LlmClient().run(p,[&](const QJsonObject& e){events<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        p.messages.append(events.last()["message"]);p.messages.append(userMsg("continue"));events.clear();
+        LlmClient().run(p,[&](const QJsonObject& e){events<<e;},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        QCOMPARE(events.size(),1);QCOMPARE(events.last()["content"].toString(),QString("second"));
+    }
+
+    void proactiveDiscoveryCacheAndNoSidecar() {
+        StubLlmServer stub;stub.responses<<QByteArray(R"({"data":[{"id":"local","meta":{"n_ctx":262144}}]})");
+        ContextRecovery::Options opts;auto base=stub.baseUrl();
+        QVERIFY(!ContextWindows::resolve(base,"local","",opts,[](){return false;}));QCOMPARE(stub.requests.size(),0);
+        opts.windowAuto=true;
+        auto window=ContextWindows::resolve(base,"local","",opts,[](){return false;});QVERIFY(window);QCOMPARE(window->tokens,quint64(262144));QCOMPARE(stub.requests.size(),1);
+        window=ContextWindows::resolve(base,"local","",opts,[](){return false;});QVERIFY(window);QCOMPARE(stub.requests.size(),1);
+    }
+
+    void proactiveWindowFormatsAndExplicitPrecedence() {
+        auto body=QJsonObject{{"data",QJsonArray{QJsonObject{{"id","fast"},{"context_window",1048576}},QJsonObject{{"id","local"},{"meta",QJsonObject{{"n_ctx",262144}}}},QJsonObject{{"id","limited"},{"max_input_tokens",131072}}}}};
+        QCOMPARE(ContextWindows::modelWindow(body,"fast")->tokens,quint64(1048576));QVERIFY(ContextWindows::modelWindow(body,"limited")->inputOnly);
+        QCOMPARE(ContextWindows::errorWindow("prompt (405835 tokens) leaves no room to answer in the context (262144)")->tokens,quint64(262144));QVERIFY(!ContextWindows::errorWindow("maximum output tokens 393216"));
+        ContextRecovery::Options o;o.contextWindow=262144;o.windowAuto=true;
+        QCOMPARE(ContextWindows::resolve("http://host/v1","m","",o,[](){return false;})->tokens,quint64(262144));
+        o.contextWindows["m"]=0;QVERIFY(!ContextWindows::resolve("http://host/v1","m","",o,[](){return false;}));
+    }
+
     void recoveryShortPartialLengthRecoversAndDiscardsLeadIn() {
         const QString leadIn = QString::fromUtf8("The mutations never applied — redoing it properly:");
         StubLlmServer stub;
@@ -4054,7 +4242,7 @@ private slots:
 
     void recoveryCappedOrUnreportedPartialLengthStillFailsSafely() {
         struct Case { int completion; int limit; bool reported; };
-        for (const Case& c : {Case{4096, 0, true}, Case{256, 256, true}, Case{0, 0, false}}) {
+        for (const Case& c : {Case{4096, 4096, true}, Case{256, 256, true}, Case{0, 4096, false}}) {
             QJsonObject reply = QJsonDocument::fromJson(lengthStop("A long partial answer", {}, c.completion)).object();
             if (!c.reported) reply.remove("usage");
             StubLlmServer stub;

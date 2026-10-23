@@ -1,3 +1,5 @@
+#include "context_pressure.h"
+#include "context_windows.h"
 #include "llmclient.h"
 #include "config.h"
 #include "image_capabilities.h"
@@ -597,7 +599,7 @@ static QJsonArray withoutCrossModelProxyState(const QJsonArray& messages, const 
     QJsonArray result;
     for (const QJsonValue& value : messages) {
         QJsonObject message = value.toObject();
-        const QJsonValue details = message["reasoning_details"];
+        const QJsonValue details = message.value("reasoning_details");
         if (isProxyReasoning(details) && details.toObject()["proxy_model"].toString() != model)
             message.remove("reasoning_details");
         result.append(message);
@@ -666,6 +668,13 @@ static QString generationLimitMessage(const QString& content, bool hasToolCalls,
     return message;
 }
 
+static void applyThinkingOff(QJsonObject& payload, const QString& mechanism) {
+    if (mechanism=="reasoning_effort") payload["reasoning_effort"]="none";
+    else if (mechanism=="enable_thinking") {
+        payload.remove("reasoning_effort");payload["chat_template_kwargs"]=QJsonObject{{"enable_thinking",false}};
+    }
+}
+
 void LlmClient::run(const LlmParams& params,
                     EventFn   onEvent,
                     ConfirmFn onConfirm,
@@ -700,9 +709,18 @@ void LlmClient::run(const LlmParams& params,
     if (params.recovery.outputParameter != "max_tokens" && params.recovery.outputParameter != "max_completion_tokens") {
         emitConfigError(onEvent, "output_token_parameter must be max_tokens or max_completion_tokens"); return;
     }
-    auto recover = [&]() -> bool {
+    auto window=ContextWindows::resolve(params.baseUrl,params.model,params.apiKey,params.recovery,isCancelled);
+    if(params.recovery.compactAtPercent<1||params.recovery.compactAtPercent>100){emitConfigError(onEvent,"compact_at_percent must be between 1 and 100");return;}
+    if(window&&!window->inputOnly&&quint64(params.recovery.outputLimit)>=window->tokens){emitConfigError(onEvent,"output_token_limit must be smaller than the combined context_window");return;}
+    QString thinkingOff=params.recovery.thinkingOffModels.contains(params.model)?params.recovery.thinkingOffModels[params.model].toString():params.recovery.thinkingOff;
+    if(thinkingOff!=""&&thinkingOff!="reasoning_effort"&&thinkingOff!="enable_thinking"){emitConfigError(onEvent,"empty_reply_thinking_off must be empty, reasoning_effort, or enable_thinking");return;}
+    QString pressureKey=params.recovery.chatId.isEmpty()?QString():QString::fromUtf8(QJsonDocument(QJsonArray{baseUrl,params.model,params.recovery.chatId}).toJson(QJsonDocument::Compact));
+    auto pressure=ContextPressure::Pressure::load(pressureKey,current,ContextPressure::identity(recovery.state()),window?window->tokens:0);
+    int proactiveCommits=0;bool proactiveFailed=false,longLengthRetried=false,thinkingDisabled=false;
+    auto recover = [&](bool proactive=false) -> bool {
         ContextRecovery::Plan plan;
         if (!recovery.plan(current, plan)) return false;
+        if(proactive&&recovery.summaryCalls+plan.chunks.size()>8)return false;
         QStringList summaries;
         // One wall-clock grace for the whole recovery: every chunk's summary
         // calls and their retries share it (see RETRY_CHAIN_GRACE_MS).
@@ -714,6 +732,7 @@ void LlmClient::run(const LlmParams& params,
                 QJsonObject{{"role", "system"}, {"content", ContextRecovery::SummaryPrompt}},
                 QJsonObject{{"role", "user"}, {"content", chunk}}}}};
             payload[params.recovery.outputParameter] = 2048;
+            applyThinkingOff(payload,thinkingOff);
             // The summary is part of this turn, so every transient failure shape
             // gets the same budget here as on the turn request.
             int summaryRetries = 0;
@@ -756,15 +775,16 @@ void LlmClient::run(const LlmParams& params,
             auto choice = choices.isEmpty() ? QJsonObject{} : choices[0].toObject();
             auto message = choice["message"].toObject();
             if (resp.transportFailure || resp.httpStatus < 200 || resp.httpStatus >= 300 || choice["finish_reason"] != "stop" || message["content"].toString().trimmed().isEmpty() || !message["tool_calls"].toArray().isEmpty()) {
-                emitTurnError(onEvent, 0, "Context summary was incomplete or failed; original history retained.", params.baseUrl);
+                if(!proactive) emitTurnError(onEvent, 0, "Context summary was incomplete or failed; original history retained.", params.baseUrl);
                 throw std::runtime_error("context summary failed");
             }
             summaries << message["content"].toString();
         }
         QString error;
         auto event = recovery.commit(plan, summaries, current, error);
-        if (!error.isEmpty()) { emitTurnError(onEvent, 0, error, params.baseUrl); throw std::runtime_error("context checkpoint failed"); }
+        if (!error.isEmpty()) { if(!proactive) emitTurnError(onEvent, 0, error, params.baseUrl); throw std::runtime_error("context checkpoint failed"); }
         if (event.isEmpty()) return false;
+        if(proactive){event["reason"]="proactive";event["message"]=QString("Compacting before the window fills — %1 fewer characters. Full history retained.").arg(event["chars_removed"].toInt());}
         onEvent(event); return true;
     };
     for (;;) {
@@ -775,17 +795,31 @@ void LlmClient::run(const LlmParams& params,
         QJsonArray requestMessages = withoutCrossModelProxyState(recovery.apply(current), params.model);
         imageInputRejected = imageInputRejected || ImageCapabilities::imagesRejected(params.baseUrl, params.model);
         if (imageInputRejected) suppressImages(requestMessages, imageRejection);
+        const auto toolDefinitions=Tools::toolDefinitions();
+        if(params.recovery.enabled&&window&&!proactiveFailed&&proactiveCommits<2&&recovery.attempts<2){
+            auto [threshold,hard]=ContextPressure::budgets(window->tokens,params.recovery.compactAtPercent,params.recovery.outputLimit,window->inputOnly);
+            auto estimate=pressure.estimate(ContextPressure::inputChars(requestMessages,toolDefinitions));
+            if(pressure.shouldCompact(estimate,threshold,hard)){
+                bool reduced=false;try{reduced=recover(true);}catch(const std::runtime_error&){}
+                if(isCancelled())return;
+                if(reduced){++proactiveCommits;requestMessages=withoutCrossModelProxyState(recovery.apply(current),params.model);if(imageInputRejected)suppressImages(requestMessages,imageRejection);
+                    pressure.compacted(pressure.estimate(ContextPressure::inputChars(requestMessages,toolDefinitions)),threshold);
+                }else proactiveFailed=true;
+            }
+        }
         int contextRetries = 0;
         QJsonObject payload{
             {"model",       params.model},
             {"messages",    requestMessages},
-            {"tools",       Tools::toolDefinitions()},
+            {"tools",       toolDefinitions},
             {"tool_choice", "auto"},
         };
         if (params.recovery.outputLimit > 0) payload[params.recovery.outputParameter] = params.recovery.outputLimit;
         if (!params.reasoningEffort.isEmpty()) {
             payload["reasoning_effort"] = params.reasoningEffort;
         }
+
+        if(thinkingDisabled)applyThinkingOff(payload,thinkingOff);
 
         // ── API call with 429 / 529 exponential backoff ──────────
         LlmResponse lastResp;
@@ -868,6 +902,9 @@ void LlmClient::run(const LlmParams& params,
                 continue; // bounded: this request no longer contains image parts
             }
             if (isContextLimitError(code, body, detail)) {
+                if(params.recovery.enabled&&params.recovery.windowAuto&&!params.recovery.contextWindow&&!params.recovery.contextWindows.contains(params.model)){
+                    if(auto w=ContextWindows::rememberError(params.baseUrl,params.model,detail)){window=w;pressure.setWindow(w->tokens);}
+                }
                 if (params.recovery.enabled) {
                     try {
                         if (recover()) {
@@ -1056,6 +1093,12 @@ void LlmClient::run(const LlmParams& params,
             return;
         }
 
+        if(params.recovery.enabled&&window){
+            const QJsonValue value=body["usage"].toObject().value("prompt_tokens");
+            std::optional<quint64> tokens;if(value.isDouble()&&value.toDouble()>0)tokens=quint64(value.toDouble());
+            pressure.record(ContextPressure::inputChars(payload["messages"],payload["tools"]),tokens);
+            pressure.save(pressureKey,current,ContextPressure::identity(recovery.state()));
+        }
         // Accumulate usage
         if (body.contains("usage")) {
             addUsage(accUsage, body["usage"].toObject());
@@ -1072,8 +1115,10 @@ void LlmClient::run(const LlmParams& params,
             const QJsonObject usage = body["usage"].toObject();
             // The truncated reply is discarded unexecuted; a retry regenerates
             // it against a smaller provider view.
-            if (lengthSuggestsContextPressure(content, !toolCalls.isEmpty(), usage,
-                                              params.recovery.outputLimit)) {
+            bool shortOrEmpty=lengthSuggestsContextPressure(content,!toolCalls.isEmpty(),usage,params.recovery.outputLimit);
+            bool extraLong=!shortOrEmpty&&params.recovery.outputLimit==0&&!longLengthRetried;
+            if (shortOrEmpty||extraLong) {
+                if(extraLong)longLengthRetried=true;
                 try { if (recover()) continue; } catch (const std::runtime_error&) { return; }
             }
             onEvent(QJsonObject{
@@ -1287,10 +1332,18 @@ void LlmClient::run(const LlmParams& params,
         // blank assistant message that the next turn reads back as something the
         // model said.  Report it as the provider anomaly it is.
         if (content.trimmed().isEmpty()) {
+            bool hasReasoning=!msg["reasoning"].toString().trimmed().isEmpty()||!msg["reasoning_content"].toString().trimmed().isEmpty();
+            if(choice["finish_reason"]=="stop"&&hasReasoning&&!thinkingDisabled&&!thinkingOff.isEmpty()){
+                thinkingDisabled=true;
+                onEvent(QJsonObject{{"type","retrying"},{"reason","empty"},{"attempt",1},{"max_attempts",1},{"delay_secs",0},{"status_code",200},{"message","Reasoning-only empty reply; retrying once with thinking off"}});
+                emitRequestStarted(onEvent,"turn",2);continue;
+            }
+            QString help=emptyReplyHelp(msg,choice["finish_reason"].toString(),body);
+            if(thinkingDisabled)help.replace("Pengy did not retry", "Pengy retried once with thinking off but still received no answer");
             onEvent(QJsonObject{
                 {"type",    "error"},
                 {"kind",    "empty"},
-                {"message", emptyReplyHelp(msg, choice["finish_reason"].toString(), body)},
+                {"message", help},
             });
             return;
         }
