@@ -2,7 +2,7 @@
 
 ## v1.13.0 — 2026-10-23
 
-Source version for local testing; not tagged or published yet.
+Opt-in proactive context compaction and bounded reply recovery, shipped across the Python, Rust and C++ editions.
 
 - **Opt-in proactive context compaction in Python, Rust and C++.** Set `context_window` or per-model `context_windows`, or explicitly opt into bounded discovery with `context_window_auto`. Defaults remain off; `compact_at_percent` defaults to 75. No legacy model-window table or fixed characters/token divisor.
 - **Settings and CLI controls.** Qt LLM Settings and web Settings expose per-model Off / Auto-discover / Explicit window, with a shared threshold. `/auto-compact [off|auto|tokens] [percent]` shows/changes the same policy. Other models, reactive recovery, saved windows and checkpoints are preserved.
