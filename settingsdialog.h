@@ -8,6 +8,8 @@
 #include <QPushButton>
 #include <QCheckBox>
 
+class CompactionSettings;
+
 class SettingsDialog : public QDialog {
     Q_OBJECT
 public:
@@ -18,6 +20,7 @@ private slots:
     void fetchModels();
 
 private:
+    CompactionSettings* m_compaction;
     Config      m_config;
     QLineEdit*  m_baseUrl;
     QLineEdit*  m_apiKey;

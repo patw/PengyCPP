@@ -1194,6 +1194,23 @@ private:
             else { cfg.userAgent = arg; Tools::setUserAgent(arg); configSave(cfg);
                    outln(dim("User agent updated.")); }
 
+        } else if (cmd == "/auto-compact") {
+            const QString selectedModel=chat["model"].toString().isEmpty()?cfg.model:chat["model"].toString();
+            if(!arg.isEmpty()){
+                auto parts=arg.split(' ',Qt::SkipEmptyParts);bool valid=true;
+                QString mode=parts[0]=="off"||parts[0]=="auto"?parts[0]:"explicit";
+                quint64 window=mode=="explicit"?parts[0].toULongLong(&valid):0;
+                int percent=cfg.compactAtPercent;
+                if(parts.size()>2){outln("Usage: /auto-compact [off|auto|tokens] [percent]");return true;}
+                if(parts.size()==2){bool ok;percent=parts[1].toInt(&ok);valid=valid&&ok;}
+                QString error;
+                if(!valid||!setCompactionPolicy(cfg,selectedModel,mode,window,percent,error)){outln(error.isEmpty()?"Invalid window or threshold":error);return true;}
+                configSave(cfg);
+            }
+            auto policy=compactionPolicy(cfg,selectedModel);
+            QString label=policy.first=="explicit"?QString("explicit %1 tokens").arg(policy.second):policy.first;
+            outln(QString("Proactive compaction for %1: %2; threshold %3%. Reactive recovery unchanged.").arg(selectedModel.isEmpty()?"(no model selected)":selectedModel,label).arg(cfg.compactAtPercent));
+
         } else if (cmd == "/context-keep") {
             bool ok; int n = arg.toInt(&ok);
             if (!ok || n < 0) outln("Usage: /context-keep <n>  (0 = keep all)");
@@ -1540,6 +1557,7 @@ private:
             {"/timeout <n>",         "Set tool execution timeout in seconds"},
             {"/download-max <mb>",    "Set default download size limit in MB (0 = no limit)"},
             {"/agent [str]",         "Show or set user agent string"},
+            {"/auto-compact [off|auto|tokens] [percent]", "Show/set selected-model proactive compaction; percent is shared"},
             {"/compact",             "Elide old tool results in current chat"},
             {"/redact [n]",          "Delete the last n messages (default 1) — repeatable up to the top"},
             {"/tasks",               "List saved prompt-template Tasks"},

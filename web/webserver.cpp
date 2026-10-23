@@ -1105,6 +1105,15 @@ void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {
         if (f.contains("download_max_mb"))       cfg.downloadMaxMb       = f["download_max_mb"].toInt();
         if (f.contains("context_keep_turns")) cfg.contextKeepTurns = qMax(0, f["context_keep_turns"].toInt());
         if (f.contains("attachment_context_keep_turns")) cfg.attachmentContextKeepTurns = qMax(0, f["attachment_context_keep_turns"].toInt());
+        if(f.contains("compaction_mode")){
+            QString selected=f.value("compaction_model",f.value("model"));bool ok=true;
+            quint64 window=f["compaction_mode"]=="explicit"?f.value("compaction_window").toULongLong(&ok):0;
+            bool percentOk;int percent=f.value("compact_at_percent",QString::number(cfg.compactAtPercent)).toInt(&percentOk);
+            QString error;
+            if(selected!=cfg.model||!ok||!percentOk||!setCompactionPolicy(cfg,selected,f["compaction_mode"],window,percent,error)){
+                sendResponse(socket,400,"text/plain; charset=utf-8",error.isEmpty()?QByteArray("Invalid compaction settings or model mismatch"):error.toUtf8());return;
+            }
+        }
         configSave(cfg);
         sendRedirect(socket, "/settings?saved=1");
     } else {
@@ -1247,6 +1256,9 @@ QByteArray WebServer::renderSettingsPage() {
     Config cfg = configLoad();
     QJsonArray chats = chatsLoadIndex();
 
+    QJsonObject policy{{"context_window",qint64(cfg.contextWindow)},{"context_windows",cfg.contextWindows},{"context_window_modes",cfg.contextWindowModes},{"context_window_auto",cfg.contextWindowAuto}};
+    html.replace("{{COMPACTION_JSON}}",safeJs(QJsonDocument(policy).toJson(QJsonDocument::Compact)));
+    html.replace("{{COMPACT_PERCENT}}",QString::number(cfg.compactAtPercent));
     html.replace("{{BASE_URL}}",         cfg.baseUrl.toHtmlEscaped());
     html.replace("{{API_KEY_STATUS}}",   cfg.apiKey.isEmpty() ? "not set" : "set");
     html.replace("{{MODEL}}",            cfg.model.toHtmlEscaped());

@@ -80,6 +80,7 @@ QJsonObject Config::toJson() const {
     o["output_token_parameter"] = outputTokenParameter;
     o["context_window"] = qint64(contextWindow);
     o["context_windows"] = contextWindows;
+    o["context_window_modes"] = contextWindowModes;
     o["context_window_auto"] = contextWindowAuto;
     o["compact_at_percent"] = compactAtPercent;
     o["empty_reply_thinking_off"] = emptyReplyThinkingOff;
@@ -124,6 +125,7 @@ Config Config::fromJson(const QJsonObject& o) {
         && std::floor(window) == window && window < double(std::numeric_limits<quint64>::max()))
         c.contextWindow = quint64(window);
     if (o.contains("context_windows")) c.contextWindows = o["context_windows"].toObject();
+    if (o.contains("context_window_modes")) c.contextWindowModes = o["context_window_modes"].toObject();
     if (o.contains("context_window_auto")) c.contextWindowAuto = o["context_window_auto"].toBool(false);
     if (o.contains("compact_at_percent")) c.compactAtPercent = o["compact_at_percent"].toInt(75);
     if (o.contains("empty_reply_thinking_off")) c.emptyReplyThinkingOff = o["empty_reply_thinking_off"].toString();
@@ -273,4 +275,18 @@ QString configRenderSystemMessage(const QString& tmpl) {
     result.replace("{hostname}", hostname);
     result.replace("{osinfo}",   osinfo);
     return result;
+}
+
+std::pair<QString,quint64> compactionPolicy(const Config& c,const QString& model) {
+    auto window=c.contextWindows.contains(model)?quint64(c.contextWindows[model].toDouble()):c.contextWindow;
+    QString mode=c.contextWindowModes[model].toString();
+    if(mode!="off"&&mode!="auto"&&mode!="explicit")mode=window?"explicit":(c.contextWindows.contains(model)||!c.contextWindowAuto?"off":"auto");
+    return {mode,window};
+}
+bool setCompactionPolicy(Config& c,const QString& model,const QString& mode,quint64 window,int percent,QString& error){
+    if(model.trimmed().isEmpty()){error="Select a model before changing proactive compaction";return false;}
+    if(mode!="off"&&mode!="auto"&&mode!="explicit"){error="Mode must be off, auto, or explicit";return false;}
+    if(mode=="explicit"&&(window==0||window>2147483647)){error="Explicit window must be 1–2147483647 tokens";return false;}
+    if(percent<1||percent>100){error="Threshold must be 1–100 percent";return false;}
+    c.contextWindowModes[model]=mode;if(mode=="explicit")c.contextWindows[model]=qint64(window);c.compactAtPercent=percent;return true;
 }

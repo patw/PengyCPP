@@ -902,7 +902,9 @@ void LlmClient::run(const LlmParams& params,
                 continue; // bounded: this request no longer contains image parts
             }
             if (isContextLimitError(code, body, detail)) {
-                if(params.recovery.enabled&&params.recovery.windowAuto&&!params.recovery.contextWindow&&!params.recovery.contextWindows.contains(params.model)){
+                auto mode=params.recovery.contextWindowModes[params.model].toString();
+                bool discoveryOn=mode=="auto"||(mode!="off"&&params.recovery.windowAuto&&!params.recovery.contextWindow&&!params.recovery.contextWindows.contains(params.model));
+                if(params.recovery.enabled&&discoveryOn){
                     if(auto w=ContextWindows::rememberError(params.baseUrl,params.model,detail)){window=w;pressure.setWindow(w->tokens);}
                 }
                 if (params.recovery.enabled) {

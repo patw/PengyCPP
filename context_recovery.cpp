@@ -10,7 +10,7 @@ namespace ContextRecovery {
 Options Options::configured(const Config& c,const QString& id) {
     Options o;o.enabled=c.autoContextRecovery;o.keepTurns=c.recoveryKeepTurns;o.chatId=id;
     o.outputLimit=c.outputTokenLimit;o.outputParameter=c.outputTokenParameter;
-    o.contextWindow=c.contextWindow;o.contextWindows=c.contextWindows;o.windowAuto=c.contextWindowAuto;
+    o.contextWindow=c.contextWindow;o.contextWindows=c.contextWindows;o.contextWindowModes=c.contextWindowModes;o.windowAuto=c.contextWindowAuto;
     o.compactAtPercent=c.compactAtPercent;o.thinkingOff=c.emptyReplyThinkingOff;o.thinkingOffModels=c.emptyReplyThinkingOffModels;return o;
 }
 const QString SummaryPrompt =

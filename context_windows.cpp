@@ -107,13 +107,17 @@ std::optional<Window> resolve(const QString &base, const QString &model,
                               const QString &key,
                               const ContextRecovery::Options &opts,
                               const std::function<bool()> &cancelled) {
+  const QString mode=opts.contextWindowModes[model].toString();
+  if(mode=="off")return {};
+  if(mode!="auto") {
   if (opts.contextWindows.contains(model)) {
     auto n = number(opts.contextWindows[model]);
     return n ? std::optional<Window>(Window{*n, false}) : std::nullopt;
   }
   if (opts.contextWindow)
     return Window{opts.contextWindow, false};
-  if (!opts.enabled || !opts.windowAuto)
+  }
+  if (!opts.enabled || (!opts.windowAuto && mode!="auto"))
     return {};
   QFile f(path(base, model));
   if (f.open(QIODevice::ReadOnly)) {

@@ -2,6 +2,14 @@
 
 All editions use the same settings and checkpoint/cache formats. The feature is **off by default**. Build/run from `main`, source version **1.13.0**; installed release apps do not acquire the feature merely because source was pulled. This source version is intentionally **untagged and unpublished** pending local testing.
 
+## Turn it on from the interface
+
+- **Qt:** Settings → LLM → Proactive compaction. Select Off, Auto-discover, or Explicit window; enter the window for the selected model. Switch models to configure them separately, then Save.
+- **Web:** Settings → Proactive context compaction. Controls follow the selected model. Save applies that model's policy; other models remain unchanged.
+- **CLI:** `/auto-compact` reports the selected model's mode and threshold. Examples: `/auto-compact 262144 75`, `/auto-compact auto`, `/auto-compact off`. An optional second argument changes the shared threshold (1–100).
+
+Off disables proactive checks only, preserving reactive overflow recovery and existing checkpoints. Off/Auto do not erase your numeric window overrides; `context_window_modes` stores the per-model mode. Existing JSON configuration remains supported.
+
 ## Safe settings
 
 For the existing proxy aliases, add this fragment to the test config (retain your endpoint/key/model settings):

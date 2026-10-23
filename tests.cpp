@@ -4189,6 +4189,32 @@ private slots:
         window=ContextWindows::resolve(base,"local","",opts,[](){return false;});QVERIFY(window);QCOMPARE(stub.requests.size(),1);
     }
 
+
+
+    void compactionWebSettingsAndCliPersistPerModel() {
+        Config c;c.model="local";c.contextWindows["fast"]=1048576;configSave(c);
+        WebServer server("127.0.0.1",0);QVERIFY(server.start());
+        auto page=webRequest("GET",server.port(),"/settings");QVERIFY(page.body.contains("compaction_mode"));QVERIFY(page.body.contains("Auto-discover"));
+        QByteArray form="model=local&compaction_model=local&compaction_mode=explicit&compaction_window=262144&compact_at_percent=80";
+        auto reply=webRequest("POST",server.port(),"/settings",form,"application/x-www-form-urlencoded");QVERIFY(reply.status==302||reply.status==303);
+        auto saved=configLoad();QCOMPARE(saved.contextWindows["fast"].toInt(),1048576);QCOMPARE(saved.contextWindows["local"].toInt(),262144);QCOMPARE(saved.compactAtPercent,80);
+        auto before=saved.toJson();reply=webRequest("POST",server.port(),"/settings",form+"1","application/x-www-form-urlencoded");QCOMPARE(reply.status,400);QCOMPARE(configLoad().toJson(),before);
+        auto output=runCli({"/auto-compact off","/auto-compact auto","/quit"});
+        QVERIFY(output.contains("Proactive compaction"));saved=configLoad();QCOMPARE(saved.contextWindowModes["local"].toString(),QString("auto"));QCOMPARE(saved.contextWindows["fast"].toInt(),1048576);QVERIFY(saved.autoContextRecovery);
+    }
+
+    void compactionModeControlsPreserveOtherModelsAndReactiveRecovery() {
+        Config c;c.model="local";c.contextWindows["fast"]=1048576;QString error;
+        QVERIFY(setCompactionPolicy(c,"local","explicit",262144,80,error));
+        QVERIFY(setCompactionPolicy(c,"local","off",0,80,error));
+        QCOMPARE(c.contextWindows["local"].toInt(),262144);QCOMPARE(c.contextWindows["fast"].toInt(),1048576);QVERIFY(c.autoContextRecovery);
+        auto o=ContextRecovery::Options::configured(c,"chat");
+        QVERIFY(!ContextWindows::resolve("http://localhost:1/v1","local","",o,[](){return false;}));
+        QCOMPARE(ContextWindows::resolve("http://localhost:1/v1","fast","",o,[](){return false;})->tokens,quint64(1048576));
+        QVERIFY(setCompactionPolicy(c,"local","auto",0,80,error));QCOMPARE(compactionPolicy(c,"local").first,QString("auto"));
+        auto before=c.toJson();QVERIFY(!setCompactionPolicy(c,"local","explicit",0,80,error));QVERIFY(!setCompactionPolicy(c,"local","off",0,101,error));QCOMPARE(c.toJson(),before);
+    }
+
     void proactiveWindowFormatsAndExplicitPrecedence() {
         auto body=QJsonObject{{"data",QJsonArray{QJsonObject{{"id","fast"},{"context_window",1048576}},QJsonObject{{"id","local"},{"meta",QJsonObject{{"n_ctx",262144}}}},QJsonObject{{"id","limited"},{"max_input_tokens",131072}}}}};
         QCOMPARE(ContextWindows::modelWindow(body,"fast")->tokens,quint64(1048576));QVERIFY(ContextWindows::modelWindow(body,"limited")->inputOnly);

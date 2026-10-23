@@ -110,6 +110,44 @@
           </div>
           <div id="modelsList" class="mt-2 d-none"></div>
         </div>
+<fieldset class="border rounded p-3 mb-3">
+  <legend class="float-none w-auto fs-6 px-1">Proactive context compaction</legend>
+  <input type="hidden" name="compaction_model" id="compactionModel">
+  <div class="mb-2"><label for="compactionMode" class="form-label">Selected-model policy</label>
+    <select name="compaction_mode" id="compactionMode" class="form-select">
+      <option value="off">Off</option><option value="auto">Auto-discover</option><option value="explicit">Explicit window</option>
+    </select></div>
+  <div class="mb-2"><label for="compactionWindow" class="form-label">Selected-model window (tokens)</label>
+    <input type="number" name="compaction_window" id="compactionWindow" class="form-control" min="1" max="2147483647" value="262144"></div>
+  <div class="mb-2"><label for="compactionPercent" class="form-label">Threshold (all models)</label>
+    <input type="number" name="compact_at_percent" id="compactionPercent" class="form-control" min="1" max="100" value="{{COMPACT_PERCENT}}"></div>
+  <div class="form-text">Policy applies to the selected model. Off keeps reactive recovery and existing checkpoints. Auto needs endpoint metadata; an unknown window stays reactive. Typical windows: 131072, 262144, 1048576. Threshold is shared.</div>
+</fieldset>
+<script>
+(() => {
+  const policy = {{COMPACTION_JSON}};
+  const model = document.getElementById('modelInput');
+  const mode = document.getElementById('compactionMode');
+  const windowInput = document.getElementById('compactionWindow');
+  const hidden = document.getElementById('compactionModel');
+  const load = () => {
+    const name = model.value;
+    hidden.value = name;
+    const windows = policy.context_windows || {}, modes = policy.context_window_modes || {};
+    const has = Object.prototype.hasOwnProperty.call(windows, name);
+    const count = has ? windows[name] : (policy.context_window || 0);
+    const selected = modes[name] || (count > 0 ? 'explicit' : (has || !policy.context_window_auto ? 'off' : 'auto'));
+    mode.value = selected;
+    windowInput.value = count > 0 ? count : 262144;
+    mode.disabled = !name.trim();
+    windowInput.disabled = !name.trim() || mode.value !== 'explicit';
+  };
+  model.addEventListener('input', load);
+  model.addEventListener('change', load);
+  mode.addEventListener('change', () => { windowInput.disabled = mode.value !== 'explicit'; });
+  load();
+})();
+</script>
         <div class="mb-3">
           <label class="form-label fw-semibold">Tool Confirmation</label>
           <select name="tool_confirmation" class="form-select">
@@ -238,6 +276,7 @@ async function fetchModels() {
       list.querySelectorAll('.badge').forEach(b => {
         b.addEventListener('click', () => {
           document.getElementById('modelInput').value = b.dataset.model;
+          document.getElementById('modelInput').dispatchEvent(new Event('change'));
           list.querySelectorAll('.badge').forEach(x => x.classList.remove('active','fw-bold'));
           b.classList.add('active','fw-bold');
         });

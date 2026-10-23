@@ -15,6 +15,7 @@ struct Options {
     QString outputParameter = "max_tokens";
     quint64 contextWindow = 0;
     QJsonObject contextWindows;
+    QJsonObject contextWindowModes;
     bool windowAuto = false;
     int compactAtPercent = 75;
     QString thinkingOff;

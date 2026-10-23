@@ -119,6 +119,9 @@ endif()
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
     enable_testing()
+    add_executable(pengy_compaction_settings_test test_compactionsettings.cpp)
+    target_link_libraries(pengy_compaction_settings_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Test)
+    add_test(NAME PengyCompactionSettingsTest COMMAND pengy_compaction_settings_test)
 
     # ChatView render-cache + auto-scroll regression tests (standalone binary,
     # mirrors PengyR's gui/tests/test_chatview_markdown.cpp).

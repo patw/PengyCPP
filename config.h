@@ -1,6 +1,7 @@
 #pragma once
 #include <QString>
 #include <QJsonObject>
+#include <utility>
 
 struct Config {
     // A local server, not a hosted API: Pengy's audience runs Ollama or llama.cpp
@@ -26,6 +27,7 @@ struct Config {
     QString outputTokenParameter = "max_tokens";
     quint64 contextWindow = 0;
     QJsonObject contextWindows;
+    QJsonObject contextWindowModes;
     bool contextWindowAuto = false;
     int compactAtPercent = 75;
     QString emptyReplyThinkingOff;
@@ -62,3 +64,6 @@ QString pengyConfigDirPath();
 // list when there is no cache or the endpoint does not match.
 QStringList modelCacheForBaseUrl(const QString& baseUrl);
 bool        modelCacheSave(const QString& baseUrl, const QStringList& models);
+
+std::pair<QString,quint64> compactionPolicy(const Config& config,const QString& model);
+bool setCompactionPolicy(Config& config,const QString& model,const QString& mode,quint64 window,int percent,QString& error);
