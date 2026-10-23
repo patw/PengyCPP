@@ -1,6 +1,6 @@
 # Testing proactive compaction locally
 
-All editions use the same settings and checkpoint/cache formats. The feature is **off by default**. Build/run from the feature branch `feat/proactive-context-compaction`; installed release apps do not acquire the feature merely because source was pulled. No version/tag bump is part of this branch.
+All editions use the same settings and checkpoint/cache formats. The feature is **off by default**. Build/run from `main`, source version **1.13.0**; installed release apps do not acquire the feature merely because source was pulled. This source version is intentionally **untagged and unpublished** pending local testing.
 
 ## Safe settings
 

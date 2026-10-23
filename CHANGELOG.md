@@ -1,11 +1,15 @@
 # Changelog
 
-## Unreleased
+## v1.13.0 — 2026-10-23
 
-- Opt-in proactive compaction with measured provider usage, global/per-model windows, bounded discovery cache, output reserve, hysteresis, and reserved reactive capacity; shared behavior with Rust. Cold starts remain reactive until usage calibrates the next request.
-- One additional reduction retry for long length stops with no requested output cap; configured one-shot thinking-off retry for reasoning-only empty replies and explicitly configured thinking-off summaries. Transcript and completed tools remain unchanged.
+Source version for local testing; not tagged or published yet.
 
-- Preserve unknown shared configuration keys when loading/saving settings, including Rust-first proactive compaction settings. All three editions now implement the proactive policy. Older native binaries may still erase these keys.
+- **Opt-in proactive context compaction in Python, Rust and C++.** Set `context_window` or per-model `context_windows`, or explicitly opt into bounded discovery with `context_window_auto`. Defaults remain off; `compact_at_percent` defaults to 75. No legacy model-window table or fixed characters/token divisor.
+- **Provider-calibrated pressure before every tool round.** Pair actual request text/schema/argument characters with `usage.prompt_tokens`. Cold starts send normally; validated calibration survives later turns in the same process. Output reserve, hysteresis, and bounded proactive steps preserve reactive recovery capacity.
+- **Reuse the provider-only recovery ladder.** Historical reasoning, tool previews/stubs, and protected-turn history summaries reduce the outgoing view only. Original transcripts and tool outputs remain intact; completed tools are never replayed. Failed proactive summaries keep the previous view and still permit the request. CLI, desktop and web render an accurate proactive notice.
+- **Bounded reply recovery.** Long `length` stops with no requested output cap get one additional reduction attempt. Reasoning-only empty `stop` replies get one thinking-off retry when a supported endpoint/model mechanism is configured. Bounded summaries use only that explicitly configured mechanism; normal conversation effort is unchanged.
+- **Shared configuration and caches.** Native editions preserve unknown settings. Route-specific window caches and checkpoints share formats across all editions; discovery recognizes selected-model metadata and Strata's explicit context-limit message without confusing prompt size with window size.
+- **Validation and local testing guide.** Shared arithmetic and loop fixtures cover 128K/256K/1M windows, thresholds, budgets, missing usage, failure safety and reply retries. Rust live tests passed on DeepSeek V4.1 Flash and Strata/Qwen 3.8, including a 249K-character mid-turn tool result whose unreduced view was genuinely refused. Python/C++ ports are regression-tested, not separately live-validated. See `docs/proactive-context-local-testing.md` and the linked live evidence.
 
 ## v1.12.5
 
