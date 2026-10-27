@@ -36,6 +36,7 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QCloseEvent>
+#include <QScreen>
 #include <QScrollArea>
 #include <QGroupBox>
 #include <QButtonGroup>
@@ -1123,8 +1124,11 @@ void MainWindow::handleQuestionRequest(TabSession* session, const QJsonObject& e
     QDialog dlg(this);
     dlg.setWindowTitle("Pengy — Questions");
     dlg.setModal(true);
-    dlg.setMinimumWidth(450);
-    dlg.setMaximumWidth(750);
+    // No window size constraints here on purpose. A toplevel that advertises a
+    // maximum width opens at its minimum *height* on COSMIC (cosmic-comp keeps
+    // the requested width but substitutes minimumSizeHint().height()), which
+    // collapsed the option list to a ~70px sliver. The width cap is applied to
+    // the computed content size below instead.
     dlg.setStyleSheet(appStyleSheet(theme, m_config.uiScale));
 
     QVBoxLayout* layout = new QVBoxLayout(&dlg);
@@ -1172,11 +1176,24 @@ void MainWindow::handleQuestionRequest(TabSession* session, const QJsonObject& e
     btnL->addWidget(cancel);
     layout->addLayout(btnL);
 
-    // Size dialog to fit content, with reasonable limits
+    // Size dialog to fit content, with reasonable limits.
+    //
+    // resize() alone is only a suggestion on Wayland: COSMIC opens a new
+    // toplevel at the minimum size it was told about, so the height we want has
+    // to be published as the dialog's minimum. Without that the compositor
+    // honours only the bare layout minimum (header + buttons, no choices) and
+    // the question list is unreadable.
     scrollW->adjustSize();
-    int idealW = qMin(scrollW->sizeHint().width() + 40, 750);
-    int idealH = qMin(scrollW->sizeHint().height() + 140, 650);
-    dlg.resize(qMax(idealW, 480), qMax(idealH, 280));
+    const QSize content = scrollW->sizeHint();
+    const QRect avail = screen() ? screen()->availableGeometry() : QRect();
+    const int maxW = avail.isValid() ? qMin(750, avail.width() - 60) : 750;
+    const int maxH = avail.isValid() ? qMin(650, avail.height() - 60) : 650;
+    const int idealW = qBound(qMin(480, maxW), content.width() + 40, maxW);
+    const int idealH = qBound(qMin(280, maxH), content.height() + 140, maxH);
+    // Keep whole options visible even if the dialog is resized down later.
+    scroll->setMinimumHeight(qMax(120, idealH - 140));
+    dlg.setMinimumSize(qMin(idealW, 560), idealH);
+    dlg.resize(idealW, idealH);
 
     connect(submit, &QPushButton::clicked, &dlg, &QDialog::accept);
     connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);

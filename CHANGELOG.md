@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.13.1 — 2026-10-27
+
+The `ask_user_question` dialog was unreadable on COSMIC. It opened with its option list collapsed to a ~70px strip, so the choices could not be seen, let alone clicked; GNOME was unaffected.
+
+- **cosmic-comp opens a new toplevel at its *minimum* size, and a dialog that publishes a maximum width loses its requested height.** `setMaximumWidth(750)` on the question dialog made a `resize(584, 394)` arrive as `xdg_toplevel.configure(584, 140)` — the layout minimum, header and buttons only. Measured on the same session: no constraint → 584x394, `setMinimumWidth(450)` → 584x394, `setMaximumWidth(750)` → 584x140, both → 584x140. `resize()` is only a suggestion on Wayland; a minimum size is the part of the request a compositor must honour.
+- **The dialog now publishes the size it wants instead of a maximum.** No window min/max constraints: the 750px width cap is applied to the computed content size (and bounded by the screen), the scroll area gets a minimum height so options stay visible, and the wanted height is set as the dialog's minimum before the advisory `resize()`. Verified on COSMIC at 120% scale: one question → 584x394 with every option visible, three questions → 584x650 with a scrollbar, one pathological 1900px-wide option → 750 wide with a horizontal scrollbar. Unchanged geometry on compositors that honour `resize()` (X11/offscreen measurements are byte-identical to v1.13.0).
+- **The other dialogs were audited for the same pattern and are not affected.** No other toplevel sets a maximum size hint: the tool-confirmation dialog (840x480), task editor (560x380), sudo prompt and placeholder prompt are honoured in full, the tasks dialog's list scrolls, and the image preview sizes itself from a pixmap-derived minimum. The settings dialog is the only one COSMIC trims (579x570 → 579x494) and it degrades cleanly — every field stays readable and the system-message box keeps its scrollbar.
+
 ## v1.13.0 — 2026-10-23
 
 Opt-in proactive context compaction and bounded reply recovery, shipped across the Python, Rust and C++ editions.
