@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.14.0 — 2026-10-31
 
 - **Settings → Extras installs the starter skills, in one press.** New fourth tab (between Tools and About). It detects the skills folder — no folder, or a folder without `skill_index.md`, counts as not installed — and lights up an **Install Skills** button in the accent colour only while something is missing. Installing copies the five bundled starter skills (`user_profile`, `memory`, `botskills`, `pengy_bio`, `sysinfo`) out of the Qt resource system (`assets/skills/`) without overwriting any existing file, and appends the skills pointer to the system message on the LLM tab exactly once (matched on the bare `skill_index.md`, so a hand-written pointer in another spelling is never doubled). The pointer is a checkbox, so it can be declined.
 - **`skills_dir` is now a documented setting.** Empty means `~/skills`, and the tab shows and edits it; resolution is `skills_dir` → the folder named by the system message *if it exists* → `~/skills`, so a synced tree is found without a second copy of it. An explicit `~/skills` is normalised back to empty so it never pins a future default.
