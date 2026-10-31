@@ -15,5 +15,15 @@
         <file alias="icons/settings.svg">assets/icons/settings.svg</file>
         <file alias="icons/stop.svg">assets/icons/stop.svg</file>
         <file alias="icons/tasks.svg">assets/icons/tasks.svg</file>
+        <!-- Starter skills, shared with the Python edition's pengy/assets/skills -->
+        <file alias="skills/README.md">assets/skills/README.md</file>
+        <file alias="skills/skill_index.md">assets/skills/skill_index.md</file>
+        <file alias="skills/botskills/botskills_skill.md">assets/skills/botskills/botskills_skill.md</file>
+        <file alias="skills/memory/memory.py">assets/skills/memory/memory.py</file>
+        <file alias="skills/memory/memory_skill.md">assets/skills/memory/memory_skill.md</file>
+        <file alias="skills/pengy_bio/pengy_bio_skill.md">assets/skills/pengy_bio/pengy_bio_skill.md</file>
+        <file alias="skills/sysinfo/sysinfo_skill.md">assets/skills/sysinfo/sysinfo_skill.md</file>
+        <file alias="skills/user_profile/profile.md">assets/skills/user_profile/profile.md</file>
+        <file alias="skills/user_profile/user_profile_skill.md">assets/skills/user_profile/user_profile_skill.md</file>
     </qresource>
 </RCC>

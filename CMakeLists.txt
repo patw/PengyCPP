@@ -119,6 +119,13 @@ endif()
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
     enable_testing()
+
+    # Starter-skills logic behind Settings → Extras. Needs resources.qrc compiled
+    # in, because install() copies the bundled tree out of the Qt resource system.
+    add_executable(pengy_skills_test test_skillshelper.cpp resources.qrc)
+    target_link_libraries(pengy_skills_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Test)
+    add_test(NAME PengySkillsTest COMMAND pengy_skills_test)
+
     add_executable(pengy_compaction_settings_test test_compactionsettings.cpp)
     target_link_libraries(pengy_compaction_settings_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Test)
     add_test(NAME PengyCompactionSettingsTest COMMAND pengy_compaction_settings_test)

@@ -22,6 +22,10 @@
 #include "themehelper.h"
 #include "iconhelper.h"
 #include "about.h"
+#include "skillshelper.h"
+#include <QFileDialog>
+#include <QDesktopServices>
+#include <QUrl>
 
 /* ComboBox whose dropdown popup is ~50% wider than the combo itself,
    so short-content combos (scale %, theme, accent) feel proportional
@@ -236,6 +240,118 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
 
     tabs->addTab(toolsTab, "Tools");
 
+    // ── Extras tab ─────────────────────────────────────────────
+    // Skills are inert files until the system message points at the index, so
+    // this tab does both jobs in one place: seed the skills folder, then add
+    // the pointer sentence. Nothing here writes outside the user's home, and
+    // nothing happens until a button is pressed.
+    const Theme skillsTheme = makeTheme(cfg.themeMode, cfg.themeAccent);
+    const QString mutedStyle = QString("color:%1;").arg(skillsTheme["muted"]);
+
+    auto* extrasTab = new QWidget;
+    auto* extrasLayout = new QVBoxLayout(extrasTab);
+    extrasLayout->setSpacing(6);
+
+    auto* skillsHeading = new QLabel("Skills");
+    QFont skillsFont = skillsHeading->font();
+    skillsFont.setBold(true);
+    skillsFont.setPointSize(skillsFont.pointSize() + 1);
+    skillsHeading->setFont(skillsFont);
+    extrasLayout->addWidget(skillsHeading);
+
+    auto* skillsBlurb = new QLabel(
+        "Skills are folders of markdown instructions that teach Pengy what its built-in "
+        "tools don't cover. Pengy reads the skill index at the start of a task, so the "
+        "folder is only useful once the system message mentions it \u2014 installing "
+        "fills in both.");
+    skillsBlurb->setWordWrap(true);
+    skillsBlurb->setStyleSheet(mutedStyle);
+    extrasLayout->addWidget(skillsBlurb);
+
+    m_skillsStatus = new QLabel;
+    m_skillsStatus->setWordWrap(true);
+    extrasLayout->addWidget(m_skillsStatus);
+
+    m_skillsDetail = new QLabel;
+    m_skillsDetail->setWordWrap(true);
+    m_skillsDetail->setStyleSheet(mutedStyle);
+    extrasLayout->addWidget(m_skillsDetail);
+
+    m_skillsPath = new QLineEdit(Skills::displayPath(
+        Skills::resolveRoot(cfg.skillsDir, m_systemMsg->toPlainText())));
+    m_skillsPath->setToolTip(
+        "Where skills live. Defaults to ~/skills. Point it at a synced or shared tree "
+        "if you keep skills elsewhere \u2014 only this one folder is consulted.");
+    connect(m_skillsPath, &QLineEdit::editingFinished, this, [this]() { refreshSkills(); });
+
+    auto* pathRow = new QHBoxLayout;
+    pathRow->addWidget(m_skillsPath, 1);
+    m_browseSkills = new QPushButton("Browse\u2026");
+    m_browseSkills->setToolTip("Choose an existing skills folder");
+    connect(m_browseSkills, &QPushButton::clicked, this, [this]() { browseSkillsFolder(); });
+    pathRow->addWidget(m_browseSkills);
+    extrasLayout->addWidget(labelWithTip("Skills folder:", m_skillsPath->toolTip()));
+    extrasLayout->addLayout(pathRow);
+
+    auto* actionsRow = new QHBoxLayout;
+    m_installSkills = new QPushButton("Install Skills");
+    m_installSkills->setToolTip(
+        "Copy the starter skills into the folder above and add the skills pointer to "
+        "your system message. Existing files are never overwritten.");
+    applyPengyIcon(m_installSkills, "save", skillsTheme, 15);
+    connect(m_installSkills, &QPushButton::clicked, this, [this]() { installSkills(); });
+    actionsRow->addWidget(m_installSkills);
+
+    m_addPointer = new QPushButton("Add to System Message");
+    m_addPointer->setToolTip(
+        "Skills already exist here \u2014 append the one-line pointer to the system "
+        "message so Pengy actually reads the index.");
+    connect(m_addPointer, &QPushButton::clicked, this, [this]() { addSkillsPointer(); });
+    actionsRow->addWidget(m_addPointer);
+
+    m_openSkillsFolder = new QPushButton("Open Folder");
+    m_openSkillsFolder->setToolTip("Open the skills folder in your file manager");
+    applyPengyIcon(m_openSkillsFolder, "file", skillsTheme, 15);
+    connect(m_openSkillsFolder, &QPushButton::clicked, this, [this]() { openSkillsFolder(); });
+    actionsRow->addWidget(m_openSkillsFolder);
+    actionsRow->addStretch();
+    extrasLayout->addLayout(actionsRow);
+
+    // Row 2: what to do *next* with the folder that now exists.
+    auto* nextRow = new QHBoxLayout;
+    m_fillProfile = new QPushButton("Fill In My Profile");
+    m_fillProfile->setToolTip(
+        "Sends one prompt: read the user_profile skill and interview me. Answers are "
+        "written to user_profile/profile.md in the skills folder.");
+    connect(m_fillProfile, &QPushButton::clicked, this, [this]() { startProfileInterview(); });
+    nextRow->addWidget(m_fillProfile);
+
+    m_browseRegistry = new QPushButton("Browse BotSkills");
+    m_browseRegistry->setToolTip(
+        "Open skills.catbee.ca \u2014 the public skill registry \u2014 in your browser. The "
+        "botskills skill documents how Pengy searches and installs from it.");
+    connect(m_browseRegistry, &QPushButton::clicked, this, [this]() { openSkillRegistry(); });
+    nextRow->addWidget(m_browseRegistry);
+    nextRow->addStretch();
+    extrasLayout->addLayout(nextRow);
+
+    m_pointerCheck = new QCheckBox("Add the skills pointer to my system message");
+    m_pointerCheck->setChecked(true);
+    m_pointerCheck->setToolTip(
+        "When checked, installing also appends the pointer sentence shown below to the "
+        "system message on the LLM tab. It is never added twice.");
+    extrasLayout->addWidget(m_pointerCheck);
+
+    m_skillsPointerPreview = new QLabel(
+        Skills::pointer(skillsRoot() + QLatin1Char('/') + Skills::indexName()));
+    m_skillsPointerPreview->setWordWrap(true);
+    m_skillsPointerPreview->setStyleSheet(mutedStyle + "font-style:italic;");
+    extrasLayout->addWidget(m_skillsPointerPreview);
+
+    extrasLayout->addStretch();
+    tabs->addTab(extrasTab, "Extras");
+    refreshSkills();
+
     // ── About tab ───────────────────────────────────────────────
     auto* aboutTab    = new QWidget;
     auto* aboutLayout = new QVBoxLayout(aboutTab);
@@ -297,6 +413,11 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
         m_config.toolTimeout       = m_toolTimeout->value();
         m_config.toolOutputMaxChars = m_toolOutputMax->value();
         m_config.downloadMaxMb       = m_downloadMax->value();
+        // An explicit ~/skills is the default: store "" rather than pinning a
+        // value every future default change has to outvote.
+        QString skillsDir = m_skillsPath->text().trimmed();
+        if (Skills::expandPath(skillsDir) == Skills::defaultRoot()) skillsDir.clear();
+        m_config.skillsDir = skillsDir;
         m_config = Config::fromJson(m_compaction->apply(m_config.toJson()));
         accept();
     });
@@ -378,4 +499,151 @@ void SettingsDialog::fetchModels() {
     });
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
+}
+
+// ── Extras tab: starter skills ──────────────────────────────────────
+
+QString SettingsDialog::skillsRoot() const {
+    // The path field is authoritative; an emptied field still resolves through
+    // the system message, then ~/skills (same order as the Python edition).
+    return Skills::resolveRoot(m_skillsPath->text(), m_systemMsg->toPlainText());
+}
+
+void SettingsDialog::setLit(QPushButton* button, bool lit) {
+    const Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
+    const QString iconName = button->property("pengyIcon").toString();
+    if (!lit) {
+        button->setStyleSheet(QString());
+        if (!iconName.isEmpty()) applyPengyIcon(button, iconName, theme, 15);
+        return;
+    }
+    button->setStyleSheet(QString(
+        "QPushButton { background-color:%1; color:%2; border:1px solid %1; font-weight:600; }"
+        "QPushButton:hover { background-color:%3; border-color:%3; }"
+        "QPushButton:pressed { background-color:%3; }"
+        "QPushButton:disabled { background-color:%4; color:%5; border:1px solid %6;"
+        " font-weight:normal; }")
+        .arg(theme["primary"], theme["primary_fg"], theme["primary_hover"],
+             theme["panel"], theme["muted"], theme["border_soft"]));
+    if (!iconName.isEmpty()) {
+        // A dark icon on an accent fill disappears; invert it while lit.
+        applyPengyIcon(button, iconName, theme, 15, "primary_fg");
+    }
+}
+
+void SettingsDialog::refreshSkills(const QString& note) {
+    const Skills::Status status = Skills::scan(skillsRoot());
+    const QString shown = Skills::displayPath(status.root);
+    const bool messageHasPointer = Skills::referencesSkills(m_systemMsg->toPlainText());
+
+    m_skillsPointerPreview->setText(
+        Skills::pointer(status.root + QLatin1Char('/') + Skills::indexName()));
+
+    if (status.installed()) {
+        m_skillsStatus->setText(QString("\u2713 %1 skill(s) at %2")
+                                    .arg(status.skills.size()).arg(shown));
+    } else if (status.exists) {
+        m_skillsStatus->setText(QString("\u26a0 %1 exists but has no %2 \u2014 Pengy has "
+                                        "nothing to read").arg(shown, Skills::indexName()));
+    } else {
+        m_skillsStatus->setText(QString("\u26a0 No skills folder at %1").arg(shown));
+    }
+
+    m_installSkills->setEnabled(!status.installed());
+    m_installSkills->setText(status.installed() ? "Skills Installed" : "Install Skills");
+    setLit(m_installSkills, !status.installed());
+
+    const bool needsPointer = status.installed() && !messageHasPointer;
+    m_addPointer->setVisible(status.installed());
+    m_addPointer->setEnabled(needsPointer);
+    setLit(m_addPointer, needsPointer);
+    m_openSkillsFolder->setEnabled(status.exists);
+
+    const bool needsProfile = Skills::profileNeedsInterview(status);
+    m_fillProfile->setEnabled(status.skills.contains(Skills::profileSkill()));
+    // The tab points at exactly ONE thing to press: install -> interview -> nothing.
+    setLit(m_fillProfile, needsProfile);
+
+    QStringList lines;
+    if (!status.skills.isEmpty())
+        lines << QString("Skills found: %1").arg(status.skills.join(", "));
+    else if (status.installed())
+        lines << "The index is there, but no skill folders were found.";
+    if (needsProfile)
+        lines << "Your profile is still a blank template \u2014 press Fill In My Profile "
+                 "to answer a few questions.";
+    if (status.installed() && messageHasPointer && note.isEmpty())
+        lines << "Your system message already points at the skill index.";
+    if (!note.isEmpty()) lines << note;
+    m_skillsDetail->setText(lines.join("\n"));
+}
+
+bool SettingsDialog::applyPointer() {
+    const Skills::Status status = Skills::scan(skillsRoot());
+    if (!status.installed()) return false;
+    const QString current = m_systemMsg->toPlainText();
+    const QString updated = Skills::withReference(
+        current, status.root + QLatin1Char('/') + Skills::indexName());
+    if (updated == current) return false;
+    m_systemMsg->setPlainText(updated);
+    return true;
+}
+
+void SettingsDialog::installSkills() {
+    const QString root = skillsRoot();
+    const Skills::InstallReport report = Skills::install(root);
+    if (report.failed > 0) {
+        QMessageBox::warning(this, "Install Failed",
+                             QString("Could not copy %1 file(s) into %2.")
+                                 .arg(report.failed).arg(Skills::displayPath(root)));
+    }
+    const Skills::Status status = Skills::scan(root);
+    QString note = QString("Installed %1 file(s) into %2.")
+                       .arg(report.created).arg(Skills::displayPath(status.root));
+    if (report.skipped > 0)
+        note += QString(" Left %1 existing file(s) untouched.").arg(report.skipped);
+    if (m_pointerCheck->isChecked()) {
+        if (applyPointer())
+            note += QString::fromUtf8(" System message updated \u2014 press OK to save it.");
+        else if (status.installed())
+            note += " System message already points at the index.";
+    }
+    refreshSkills(note);
+}
+
+void SettingsDialog::addSkillsPointer() {
+    const bool changed = applyPointer();
+    refreshSkills(changed
+        ? QString::fromUtf8("System message updated \u2014 press OK to save it.")
+        : QString("The system message already points at the skill index."));
+}
+
+void SettingsDialog::browseSkillsFolder() {
+    const QString root = skillsRoot();
+    const QString chosen = QFileDialog::getExistingDirectory(
+        this, "Choose a skills folder",
+        QDir(root).exists() ? root : QDir::homePath());
+    if (!chosen.isEmpty()) {
+        m_skillsPath->setText(Skills::displayPath(chosen));
+        refreshSkills();
+    }
+}
+
+void SettingsDialog::openSkillsFolder() {
+    const QString root = skillsRoot();
+    if (QDir(root).exists())
+        QDesktopServices::openUrl(QUrl::fromLocalFile(root));
+}
+
+void SettingsDialog::openSkillRegistry() {
+    QDesktopServices::openUrl(QUrl("https://skills.catbee.ca"));
+}
+
+void SettingsDialog::startProfileInterview() {
+    // Name the skill file rather than describing the task: the markdown is the
+    // contract. Emitting and then accepting lets the main window save these
+    // settings and send the prompt once the dialog is gone.
+    const Skills::Status status = Skills::scan(skillsRoot());
+    emit promptRequested(Skills::profileInterviewPrompt(status));
+    accept();
 }

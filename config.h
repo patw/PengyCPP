@@ -41,6 +41,10 @@ struct Config {
     int  toolTimeout         = 300;
     int  toolOutputMaxChars  = 50000;
     int  downloadMaxMb       = 100;
+    // Where skills live. Empty means the documented default (~/skills); the
+    // Settings → Extras tab shows and edits this, and an explicit ~/skills is
+    // normalised back to empty so it never pins a future default.
+    QString skillsDir;
     int  imageMaxDimension   = 4096;
     double imageMaxMb        = 4.5;
     int  imageQuality        = 85;

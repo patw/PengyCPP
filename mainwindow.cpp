@@ -552,6 +552,12 @@ void MainWindow::loadChat(const QString& chatId) {
 
 void MainWindow::openSettings() {
     SettingsDialog dlg(m_config, this);
+    // The Extras tab can ask for a prompt ("interview me"). Queue it: sending
+    // while the dialog is modal would be invisible, and the settings it just
+    // saved (skills_dir, system_message) must be in effect first.
+    QString pendingPrompt;
+    connect(&dlg, &SettingsDialog::promptRequested, this,
+            [&pendingPrompt](const QString& prompt) { pendingPrompt = prompt; });
     if (dlg.exec() == QDialog::Accepted) {
         m_config = dlg.config();
         configSave(m_config);
@@ -567,6 +573,8 @@ void MainWindow::openSettings() {
             m_chatHistory->selectChatById(m_activeChatId);
         TabSession* session = tabForChat(m_activeChatId);
         if (session) updateQuickSettingsFor(session);
+        if (!pendingPrompt.isEmpty())
+            sendMessage(pendingPrompt, QStringList());
     }
 }
 
