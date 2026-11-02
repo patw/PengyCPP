@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+The starter `pengy_bio` now says Python 3.11+, matching the Python edition
+(Pillow 13, and therefore the Python-edition security fix, needs 3.11), and the
+CI supply chain is pinned to audited bytes.
+
+- **Every `uses:` is pinned to a commit SHA, and the AppImage tooling comes from dated linuxdeploy releases with a `sha256sum -c` check** instead of the rolling `continuous` tag. This job holds `contents: write` and publishes release assets, so fetching and executing a moving artifact there was the most valuable thing in the repo to hijack.
+
+The C++ edition vendors no third-party source and pulls Qt6, OpenSSL and
+readline from the distribution, so there is no crate or wheel lock to move here:
+those fixes arrive through the OS patch lane.
+
 ## v1.14.1 — 2026-11-02
 
 - **The new-user `pengy_bio` skill no longer ships someone else's fleet, a stale tool list, or a wrong `--no-save` rule.** It listed seven hostnames and their LAN addresses: a new user has none of those machines, and the published wheel carried the operator's network around with it. The tool section claimed 11 tools and left out ones the agent actually has, so it now tells the agent that the live tool schema is authoritative and that a tool missing from it does not exist. Single-shot mode was documented twice as not saving history while `pengy/cli/main.py` saves by default, and the cron example omitted `--no-save` — a cron job written from that page would have filled the user's chat sidebar. The chats path is `~/.config/pengy/chats/<id>.json`, not a `chats.json` array, and the dangling `../scheduler/` link pointed at a skill the bundle does not contain.

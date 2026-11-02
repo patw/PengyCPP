@@ -9,7 +9,7 @@
 **GitHub:** [https://github.com/patw/Pengy](https://github.com/patw/Pengy)  
 **PyPI:** [`pengy`](https://pypi.org/project/pengy/)  
 **License:** MIT  
-**Language:** Python 3.10+  
+**Language:** Python 3.11+  
 **GUI Framework:** PySide6 (Qt6)  
 **CLI Framework:** rich  
 **LLM Client:** OpenAI SDK (non-streaming)  
@@ -81,7 +81,7 @@ and surveying a directory or codebase (`directory_tree`, `search_content`,
 
 ## Where Pengy Runs
 
-Anywhere Python 3.10+ and Qt6 are available. Pengy is local-first: it runs on the
+Anywhere Python 3.11+ and Qt6 are available. Pengy is local-first: it runs on the
 machine in front of you, keeps its state in `~/.config/pengy/`, and reaches
 another machine only through a tool you give it (`ssh` via `run_bash`, or a
 remote `host=` argument where the edition supports one).

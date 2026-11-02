@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install dependencies
         run: |
@@ -64,17 +64,25 @@ jobs:
         run: |
           # Ensure build directory exists (build_deb.sh already did this)
           # but AppImage build script needs its own flow
+          # Dated linuxdeploy releases plus a checksum, never the rolling
+          # `continuous` tag: this job holds contents: write and publishes
+          # release assets, so it executes audited bytes from a fixed URL.
+          # Moving either pin is a deliberate act, reviewed like a dependency.
           mkdir -p appimage/tools
           wget -q -P appimage/tools \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage
           wget -q -P appimage/tools \
-            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-x86_64.AppImage
+          printf '%s\n' \
+            'c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d  appimage/tools/linuxdeploy-x86_64.AppImage' \
+            '15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724  appimage/tools/linuxdeploy-plugin-qt-x86_64.AppImage' \
+            | sha256sum -c -
           chmod +x appimage/tools/*.AppImage
           cd appimage && ./build.sh
 
       - name: Upload Release Assets
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             pengy_*.deb
@@ -84,7 +92,7 @@ jobs:
 
       - name: Upload test build
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Pengy-Linux-${{ github.sha }}
           path: |
@@ -98,7 +106,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install dependencies
         run: |
@@ -110,7 +118,7 @@ jobs:
 
       - name: Upload DMG
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: Pengy-macOS-*.dmg
           generate_release_notes: true
@@ -118,7 +126,7 @@ jobs:
 
       - name: Upload test build
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Pengy-macOS-${{ github.sha }}
           path: Pengy-macOS-*.dmg
@@ -130,10 +138,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Qt6
-        uses: jurplel/install-qt-action@v4
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4
         with:
           version: '6.8.2'
           host: 'windows'
@@ -142,7 +150,7 @@ jobs:
           modules: 'qtnetworkauth'  # lightweight, catches potential missing deps
 
       - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
       - name: Build
         shell: cmd
@@ -221,7 +229,7 @@ jobs:
 
       - name: Upload Windows Zip + MSI
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             Pengy-Windows-*.zip
@@ -233,7 +241,7 @@ jobs:
       # download), so there is no zip-inside-a-zip.
       - name: Upload test build
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Pengy-Windows-${{ github.sha }}
           path: Pengy-Windows/
@@ -241,7 +249,7 @@ jobs:
 
       - name: Upload test MSI
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Pengy-Windows-MSI-${{ github.sha }}
           path: ${{ env.MSI_FILE }}
