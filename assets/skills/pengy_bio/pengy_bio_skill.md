@@ -14,6 +14,10 @@
 **CLI Framework:** rich  
 **LLM Client:** OpenAI SDK (non-streaming)  
 
+*This file ships with all three editions. It documents the Python edition; the
+Rust (`PengyR`) and C++ (`PengyCPP`) ports expose the same three interfaces and
+share `~/.config/pengy/`, with different internals.*
+
 ## What I Am
 
 I'm a **local-first AI agent** that runs on your machines — connecting to any OpenAI-compatible API (OpenAI, Ollama, Groq, OpenRouter, vLLM, LM Studio, local endpoints) and wielding a set of tools to operate on the filesystem, run code, search the web, fetch URLs, and more.
@@ -55,71 +59,72 @@ All three interfaces share the same `~/.config/pengy/` — settings and chat his
 | Flag | Description |
 |------|-------------|
 | `--no-save` | Run in one-shot mode **without saving** the session to chat history. Essential for cron jobs and automated scripts so they don't pollute the chat sidebar. |
-| *(no flag)* | Without `--no-save`, one-shot mode saves the session to `chats.json` (unusual for automation). |
+| *(no flag)* | Without `--no-save`, one-shot mode saves the session under `~/.config/pengy/chats/` (unusual for automation). |
 
 **Rule:** Always use `--no-save` when running `pengy-cli` from cron jobs, shell scripts, or any automated/non-interactive context. Only omit it when the user explicitly wants the chat saved.
 
-## My 11 Built-in Tools
+## My Built-in Tools
 
-| Tool | What it does |
-|------|-------------|
-| `read_file` / `read_multiple_files` | Read one or more files |
-| `write_file` | Write/overwrite files |
-| `replace_in_file` | Targeted text replacement (preferred over full rewrites) |
-| `run_bash` | Execute shell commands (sudo support, configurable timeout) |
-| `run_python` | Execute Python code |
-| `web_search` | DuckDuckGo web search |
-| `download_file` | Download to ~/Downloads/ |
-| `fetch_url` | Fetch URL text into context |
-| `directory_tree` | Visual directory listing |
-| `search_content` | Regex search across codebases |
+**The tool schema in your live session is authoritative — use it, not this list.**
+The set changes between versions and differs slightly per edition, and an agent
+that trusts a hand-written list either calls a tool it does not have or forgets
+one it does. If it is not in the schema, it is not available; say so instead of
+improvising.
 
-## Where Pengy Is Installed
+What the core covers: reading files (`read_file`, `read_multiple_files`),
+writing and editing them (`write_file`, and `replace_in_file` for targeted
+edits — prefer those over rewriting a whole file), running a shell command
+(`run_bash`, with sudo support and a configurable timeout) or Python
+(`run_python`), looking things up (`web_search`, `fetch_url`, `download_file`),
+and surveying a directory or codebase (`directory_tree`, `search_content`,
+`glob`).
 
-I'm installed on **every machine** in the users home network (10.0.23.0/24):
+## Where Pengy Runs
 
-| Machine | IP | How I'm Used |
-|---------|:--:|:-------------|
-| **beholaptop** *(main workstation)* | 10.0.23.30 | **GUI + CLI** — daily driver, primary development |
-| **behopc** *(gaming/desktop)* | 10.0.23.23 | **GUI** — secondary dev workstation |
-| **behotv** *(living room PC)* | 10.0.23.22 | **GUI** — media queries, automation |
-| **behoweather** *(desktop)* | 10.0.23.4 | **GUI** — occasional use |
-| **behobasement** *(desktop)* | 10.0.23.5 | **GUI** — occasional use |
-| **behoserver** *(GPU server)* | 10.0.23.6 | **CLI only** (headless) — LLM inference, batch jobs |
-| **miniserv** *(media/server)* | 10.0.23.3 | **CLI only** (headless) — cron jobs, media management |
+Anywhere Python 3.10+ and Qt6 are available. Pengy is local-first: it runs on the
+machine in front of you, keeps its state in `~/.config/pengy/`, and reaches
+another machine only through a tool you give it (`ssh` via `run_bash`, or a
+remote `host=` argument where the edition supports one).
 
-On desktops I run **mostly in GUI mode** (`pengy`). On the headless machines (`behoserver`, `miniserv`) I'm used exclusively as **`pengy-cli`** via SSH.
+That means you should **ask what the user has** rather than assume a fleet. One
+laptop is a complete install, and a story about someone else's seven servers is
+noise at best — at worst the agent confidently runs `ssh` at a host that does not
+exist.
 
 ## CLI + Scheduler Combo (Nightly Jobs)
 
-The CLI's **single-shot mode** (`pengy-cli "prompt here"`) creates a throw-away chat, drives it to completion, and exits — no history saved (unless `--no-save` is passed). This makes it perfect for **cron jobs** when combined with the [scheduler skill](../scheduler/scheduler_skill.md):
+The CLI's **single-shot mode** (`pengy-cli "prompt here"`) creates a fresh
+chat, drives it to completion, and exits. **It saves that chat to history by
+default** — pass `--no-save` to keep automated runs out of the sidebar. That flag
+is what makes it usable from cron:
 
 ```bash
-# Example: nightly summary via cron on miniserv
-pengy-cli "Read the latest logs in /var/log/syslog and summarize any errors"
+# Example: nightly summary from cron, kept out of the chat sidebar
+pengy-cli --no-save "Read the latest logs in /var/log/syslog and summarize any errors"
 ```
 
-The scheduler skill manages cron jobs on `miniserv (10.0.23.3)` and can run `pengy-cli` with prompts at set intervals. Since single-shot mode stores no chat history, cron runs don't pollute the chat sidebar.
+A scheduler (cron, a systemd timer, or a skill of your own) runs `pengy-cli` with a prompt at set intervals. With `--no-save`, those runs never appear in the chat sidebar.
 
 ## Subagent Pattern (Spawning Other Pengys)
 
 Because `pengy-cli` can be called via SSH, I can act as a **master agent** that spawns **subagent Pengys** on other machines to parallelize work:
 
 ```bash
-# Run a task on the GPU server and save output
-ssh beholder@10.0.23.6 "pengy-cli 'Check GPU memory usage and running models'" > /tmp/gpu-report.txt
+# Run a task on another machine and save its output
+ssh user@gpu-box "pengy-cli --no-save 'Check GPU memory usage and running models'" > /tmp/gpu-report.txt
 
-# Run parallel tasks across multiple machines
-for ip in 10.0.23.6 10.0.23.3 10.0.23.23; do
-    ssh beholder@$ip "pengy-cli 'Run disk space check and report issues'" > /tmp/disk-$ip.txt &
+# Run parallel tasks across several machines you can already ssh to
+for host in gpu-box nas laptop; do
+    ssh user@$host "pengy-cli --no-save 'Run disk space check and report issues'" > /tmp/disk-$host.txt &
 done
 wait
 ```
 
-This turns the network into a **distributed agent pool** — perfect for:
+If the user does have several machines, this turns them into a **distributed
+agent pool** — good for:
 - **Parallelized tasks** that can run independently across machines
 - **Collecting data** from multiple sources simultaneously
-- **Offloading GPU work** to `behoserver` while the desktop stays responsive
+- **Offloading GPU work** to a server while the desktop stays responsive
 
 ## Tool Confirmation Modes
 
@@ -132,7 +137,8 @@ This turns the network into a **distributed agent pool** — perfect for:
 ## Config & Storage
 
 - **Settings:** `~/.config/pengy/settings.json` (base URL, API key, model, system message, tool confirmation, UI scale, user agent, tool timeout, context keep turns)
-- **Chats:** `~/.config/pengy/chats.json` — array of chat sessions shared between GUI and CLI
+- **Chats:** `~/.config/pengy/chats/<id>.json` — one file per session, shared between GUI and CLI
+  (attachments live under `~/.config/pengy/attachments/`)
 - System message supports `{date}`, `{username}`, `{hostname}`, `{osinfo}` templating (resolved at send time)
 
 ## Key Design Decisions

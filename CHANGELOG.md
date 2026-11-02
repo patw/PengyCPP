@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **The new-user `pengy_bio` skill no longer ships someone else's fleet, a stale tool list, or a wrong `--no-save` rule.** It listed seven hostnames and their LAN addresses: a new user has none of those machines, and the published wheel carried the operator's network around with it. The tool section claimed 11 tools and left out ones the agent actually has, so it now tells the agent that the live tool schema is authoritative and that a tool missing from it does not exist. Single-shot mode was documented twice as not saving history while `pengy/cli/main.py` saves by default, and the cron example omitted `--no-save` — a cron job written from that page would have filled the user's chat sidebar. The chats path is `~/.config/pengy/chats/<id>.json`, not a `chats.json` array, and the dangling `../scheduler/` link pointed at a skill the bundle does not contain.
 The starter `memory` skill searched the way grep does, so a question phrased in
 the user's own words came back empty. It now ranks, and it no longer loses notes
 when two writes land at once. The skill is shared verbatim with the other two
