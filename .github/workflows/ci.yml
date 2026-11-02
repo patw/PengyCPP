@@ -37,6 +37,8 @@ jobs:
           ls -lh build/pengy build/pengy-cli build/pengy-web
           file build/pengy
 
-          # The starter skills are shipped assets, so nothing but a test of the
-          # installed tree can catch one that silently reverted.
-          QT_QPA_PLATFORM=offscreen ./build/pengy_skills_test
+          # All seven test binaries were registered with add_test and nothing
+          # ever ran them, so a reverted skill asset -- or any of the other
+          # regressions they guard -- could ship unnoticed.
+          echo "=== Tests ==="
+          cd build && QT_QPA_PLATFORM=offscreen ctest --output-on-failure
