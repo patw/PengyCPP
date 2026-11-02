@@ -36,3 +36,7 @@ jobs:
           echo "=== Verify ==="
           ls -lh build/pengy build/pengy-cli build/pengy-web
           file build/pengy
+
+          # The starter skills are shipped assets, so nothing but a test of the
+          # installed tree can catch one that silently reverted.
+          QT_QPA_PLATFORM=offscreen ./build/pengy_skills_test

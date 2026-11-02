@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+The starter `memory` skill searched the way grep does, so a question phrased in
+the user's own words came back empty. It now ranks, and it no longer loses notes
+when two writes land at once. The skill is shared verbatim with the other two
+editions (`memory.py` is stdlib Python, installed from the resource bundle), so
+this is an asset re-sync plus a test that proves the shipped bytes work.
+
+- **`search` is BM25 over text, subject and tags — not a substring AND.** Any query word can match, more matching words rank higher, an exact phrase lifts a note further, and plurals/tenses meet each other. Identifiers stay searchable whole and in parts. Measured on a 73-note store with 24 hand-annotated queries: Recall@5 **.486 → .965**, MRR **.500 → .958**, zero-result queries **12/24 → 0/24**; paraphrase queries went **.000 → .958**. Exit codes stay usable in a shell chain (0 matched, 1 nothing, 2 bad query).
+- **Notes can be corrected without being rewritten.** `add --supersedes ID` retires the older note (hidden from `search`/`list`, still there under `--all`, counted by `stats`); identical text is not stored twice unless `--force` is given.
+- **Concurrent writers no longer collide, and `forget` no longer takes out a neighbour.** Writes take an exclusive `fcntl` lock and are appended+fsynced individually; `forget` deletes exactly the record you were shown, backs the store up to `memory.jsonl.bak`, and preserves a hand-broken line verbatim. Re-measured: 40 parallel adds → 40 unique ids (was 36), and 60 adds racing 20 forgets kept all 60 new notes (was 47).
+- **A Qt test runs the installed script end to end** (`theInstalledMemorySkillActuallyWorks`), asserting that a paraphrase finds the note, that a duplicate is not stored twice, and that the store holds two notes. It skips when `python3` is absent rather than failing a build without it. CI now builds and runs that test, so an asset that silently reverts fails the build instead of shipping.
+
 ## v1.14.0 — 2026-10-31
 
 - **Settings → Extras installs the starter skills, in one press.** New fourth tab (between Tools and About). It detects the skills folder — no folder, or a folder without `skill_index.md`, counts as not installed — and lights up an **Install Skills** button in the accent colour only while something is missing. Installing copies the five bundled starter skills (`user_profile`, `memory`, `botskills`, `pengy_bio`, `sysinfo`) out of the Qt resource system (`assets/skills/`) without overwriting any existing file, and appends the skills pointer to the system message on the LLM tab exactly once (matched on the bare `skill_index.md`, so a hand-written pointer in another spelling is never doubled). The pointer is a checkbox, so it can be declined.

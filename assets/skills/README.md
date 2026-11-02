@@ -35,7 +35,7 @@ Five skills, none of which needs anything installed:
 | Skill | What it does | Start here? |
 |-------|--------------|-------------|
 | `user_profile/` | Interviews you and writes down who you are, so nobody has to repeat it | ← yes, do this one |
-| `memory/` | A flat `memory.jsonl` plus `memory.py`: write a fact down, search it before asking again | ← then this |
+| `memory/` | A flat `memory.jsonl` plus `memory.py`: write a fact down, search it — in your own words — before asking again | ← then this |
 | `pengy_bio/` | Tells Pengy what Pengy is |  |
 | `botskills/` | Finds and installs more skills from <https://skills.catbee.ca> |  |
 | `sysinfo/` | Disk, memory, load, temps — one command each, no remembering flags |  |
@@ -47,8 +47,10 @@ you skip stays blank.
 
 **Second move:** make it remember. "Remember that the test suite needs
 QT_QPA_PLATFORM=offscreen" gives you a note in `memory/memory.jsonl`; next
-session, "do you remember how the tests run?" finds it. A local file, no
-service — `memory/memory_skill.md` covers what belongs in it and what does not.
+session, "do you remember how the tests run?" finds it, because the search
+ranks on the words you used rather than requiring the note's exact phrasing. A
+local file, no service — `memory/memory_skill.md` covers what belongs in it and
+what does not.
 
 **Not in here on purpose:** a server-backed memory bus. The habits transfer
 unchanged, but the thing itself is a process with a database and a web UI — an

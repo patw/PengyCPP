@@ -24,8 +24,9 @@ months, it does not belong in the store.
 
 ```
 python3 memory.py add    --text "…" [--subject NAME] [--tags a,b]
-python3 memory.py search --q "words" [--limit 10]
-python3 memory.py list   [--subject NAME] [--tag TAG] [--limit 20]
+                         [--supersedes ID] [--force]
+python3 memory.py search --q "…" [--limit 10] [--all]
+python3 memory.py list   [--subject NAME] [--tag TAG] [--limit 20] [--all]
 python3 memory.py stats
 python3 memory.py forget --id N --yes
 ```
@@ -35,12 +36,35 @@ bit, which a wheel would otherwise drop. `python3` is the portable form.)
 
 | Flag | Meaning |
 |------|---------|
-| `--json` | Machine-readable output. Accepted **before or after** the subcommand (`memory.py --json list` and `memory.py list --json` both work). |
+| `--json` | Machine-readable output. Accepted **before or after** the subcommand (`memory.py --json list` and `memory.py list --json` both work). `search` adds a `score`. |
 | `--store PATH` | Use another store file. Also `$PENGY_MEMORY_FILE`. |
+| `--all` | Include notes that have been superseded. They are hidden by default. |
 | `--yes` | Required to make `forget` actually delete. |
 
-`search` matches **all** words, case-insensitively, across text, subject and
-tags, newest first. It exits 1 when nothing matches, so `search && act` works.
+## Searching: ask in your own words
+
+`search` ranks notes with BM25 over the text, the subject and the tags. **Any
+word can match, more matching words rank higher, and an exact phrase lifts a
+note further** — so you do not have to remember the note's wording:
+
+```
+$ python3 memory.py search --q "why do the gui tests need a display"
+#4  2026-10-31  pengy: UI tests need QT_QPA_PLATFORM=offscreen; xvfb is not needed
+#2  2026-10-31  pengy: UI tests are broken under xvfb; use a real display for now
+```
+
+Plurals and tenses meet each other (`test`/`tests`, `deploy`/`deployed`),
+common words like *the* and *how* are ignored, and identifiers stay searchable
+both whole and in parts — `client_max_body_size` is found by `max body size`.
+Subjects and tags count for more than a mention buried in a sentence.
+
+Exit codes are for shell chains: **0** when something matched, **1** when
+nothing did, **2** for a malformed query. So `search --q … && act` still means
+"only act if memory had something".
+
+A miss means *this store* has nothing — not that the fact is unknown. Say
+"nothing in my notes" rather than guessing, and write the answer down once you
+have it.
 
 ## What a good note looks like
 
@@ -58,17 +82,34 @@ python3 memory.py add --subject pengy --tags tests \
 - **One note per fact.** Three related facts are three notes — they get found
   independently.
 
-## Corrections, not edits
+Adding a note whose text already exists (ignoring case and spacing) stores
+nothing and tells you which id it is; `--force` keeps a second copy anyway.
 
-Never rewrite an existing note in place. Add a new one that says what changed:
+## Corrections: supersede, don't rewrite
+
+Never edit an existing note in place. Add a new one and point it at the old:
 
 ```bash
-python3 memory.py add --subject pengy --text "Supersedes #12: the offscreen flag is only needed for GUI tests, not the CLI suite"
+python3 memory.py add --subject pengy --tags tests \
+  --text "UI tests need the offscreen flag; xvfb is no longer used" \
+  --supersedes 4
 ```
 
-The old note keeps its history (and its mistakes), the new one wins by being
-newer, and `search` shows both. `forget --id N --yes` is for notes that are
-simply wrong or private — not for disagreeing with them.
+The old note keeps its history (and its mistakes), the new one wins, and the
+retired note stops appearing in `search`/`list` — it is still there for `--all`,
+labelled `(superseded by #5)`. That matters because a stale note is worse than
+no note: it gets believed. `stats` counts them under `superseded`.
+
+`forget --id N --yes` is for notes that are simply wrong or private — not for
+disagreeing with them. It deletes one note, writes `memory.jsonl.bak` first,
+and leaves the rest of the file (including any hand-broken line) untouched.
+
+## Parallel use is safe
+
+`add` and `forget` take an exclusive lock, so two agents writing at the same
+moment cannot mint the same id or overwrite each other's notes. Notes are
+appended and fsynced individually, never rewritten in place, except by
+`forget` and `--supersedes` (which rewrite the whole file, atomically).
 
 ## What never goes in
 
@@ -85,9 +126,11 @@ usually the point, but say so before storing anything host-specific. Point
 
 ## Housekeeping
 
-`stats` once in a while: notes, size, subjects. A few hundred notes is nothing
-(they are a few hundred KB). If the store grows past a few thousand, the
-upgrade path is a real index — see below — not a bigger file.
+`stats` once in a while: notes, size, subjects, how many are superseded. A few
+hundred notes is nothing (they are a few hundred KB, and a search is instant).
+At about five thousand notes a search still takes roughly a tenth of a second,
+because every query re-reads and re-tokenises the file. That is the point to
+stop adding and move on, not to keep going.
 
 ## Growing up: from a file to a shared memory bus
 
@@ -103,5 +146,20 @@ then:
   project, not a button.
 - Ask before sending anything to a remote service. A local file is private by
   default; a shared bus is not.
+
+What the upgrade buys is not "search works" — it is a memory **several machines
+and several agents write to at once**, with an author on every note, a
+machine-readable lifecycle (`status`, `superseded_by`), dedupe before posting,
+tag browsing, usage analytics and a web UI a human can read. What it costs is a
+service to run, a 400 MB embedding model, a database and its backups.
+
+A rough guide to when the file stops being enough:
+
+| Symptom | The file's limit |
+|---|---|
+| Two agents on two machines "remember" different things | nothing is shared without a synced folder |
+| "Who wrote this note, and is it still true?" | no author, no status beyond `--supersedes` |
+| A question uses words no note contains ("why does my laptop keep dying") | lexical search, no semantics |
+| You want to see what memory has been *useless* | no access tracking |
 
 Until then, the file is enough, and it never fails to start.

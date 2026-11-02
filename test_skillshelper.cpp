@@ -11,8 +11,32 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QStandardPaths>
 
 #include "skillshelper.h"
+
+namespace {
+
+// Drive the installed memory skill the way an agent does: as a subprocess, with
+// its store redirected into the test's temp dir.
+QString runMemory(const QString& script, const QString& store, const QStringList& args)
+{
+    const QString python = QStandardPaths::findExecutable("python3");
+    if (python.isEmpty())
+        return QString();
+    QProcess process;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert("PENGY_MEMORY_FILE", store);
+    process.setProcessEnvironment(env);
+    process.start(python, QStringList{script} + args);
+    if (!process.waitForFinished(60000))
+        return QString();
+    return QString::fromUtf8(process.readAllStandardOutput());
+}
+
+} // namespace
 
 class TestSkillsHelper : public QObject {
     Q_OBJECT
@@ -123,6 +147,43 @@ private slots:
         // success on a folder it only half understands.
         for (const QString& name : {"botskills", "memory", "pengy_bio", "sysinfo", "user_profile"})
             QVERIFY2(s.skills.contains(name), qPrintable(name));
+    }
+
+    void theInstalledMemorySkillActuallyWorks() {
+        // The skill is stdlib Python shipped as an asset, so this is the only
+        // check of the *shipped bytes*: an asset that quietly reverted to the
+        // old substring search returns nothing for a paraphrase and fails here.
+        QTemporaryDir tmp;
+        const QString root = tmp.filePath("skills");
+        Skills::install(root);
+        const QString script = root + "/memory/memory.py";
+        QVERIFY(QFileInfo(script).isFile());
+
+        if (QStandardPaths::findExecutable("python3").isEmpty())
+            QSKIP("python3 not available");
+
+        const QString store = tmp.filePath("memory.jsonl");
+        runMemory(script, store, {"add", "--text",
+                                  "UI tests need QT_QPA_PLATFORM=offscreen",
+                                  "--subject", "pengy", "--tags", "tests"});
+        runMemory(script, store, {"add", "--text",
+                                  "the printer bed needs glue stick on PEI at 60C",
+                                  "--subject", "workshop"});
+
+        // A question in the user's own words must find the note.
+        const QString found = runMemory(script, store,
+                                        {"search", "--q", "how do i run the gui tests"});
+        QVERIFY2(found.contains("QT_QPA_PLATFORM"), qPrintable(found));
+        QVERIFY2(!found.contains("glue stick"), qPrintable(found));
+
+        // The same fact twice is one note, not two.
+        const QString again = runMemory(script, store,
+                                        {"add", "--text",
+                                         "UI tests need QT_QPA_PLATFORM=offscreen"});
+        QVERIFY2(again.contains("Already stored"), qPrintable(again));
+
+        const QString stats = runMemory(script, store, {"stats"});
+        QVERIFY2(stats.contains("notes:   2"), qPrintable(stats));
     }
 
     void pointerIsAppendedOnce() {
