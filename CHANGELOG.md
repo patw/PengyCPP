@@ -2,10 +2,7 @@
 
 ## Unreleased
 
-- **Qt is one version everywhere: 6.12.0.** The GUI targets had drifted to 6.4.2 (Ubuntu 24.04's apt Qt, used by both CI and the release build), 6.8.2 (Windows) and whatever `brew install qt@6` resolved to on macOS. All three platforms now install 6.12.0 through `install-qt-action`, including Linux, so CI builds what a release ships. `build_macos.sh` now prefers `$QT_ROOT_DIR` instead of hard-overriding `CMAKE_PREFIX_PATH` with the Homebrew prefix, which is what pinned macOS to brew in the first place. Verified locally against the pinned Qt: build clean, 7/7 test binaries pass, and the only fallout is `qAsConst` deprecation warnings in `tests.cpp` (use `std::as_const`).
-The starter `pengy_bio` now says Python 3.11+, matching the Python edition
-(Pillow 13, and therefore the Python-edition security fix, needs 3.11), and the
-CI supply chain is pinned to audited bytes.
+- **Qt is one version everywhere: 6.10.3.** The GUI targets had drifted to 6.4.2 (Ubuntu 24.04's apt Qt, used by both CI and the release build), 6.8.2 (Windows) and whatever `brew install qt@6` resolved to on macOS. All three platforms now install 6.10.3 through `install-qt-action`, Linux included, so CI builds the Qt a release ships. **Windows is the ceiling, not a choice:** Qt publishes no 6.11.x or 6.12.x desktop package for Windows at all — the Windows index stops at 6.10.3 while macOS and Linux carry 6.12.0 (checked on download.qt.io and two mirrors) — which is exactly why these pins had drifted. `build_macos.sh` now prefers `$QT_ROOT_DIR` instead of hard-overriding `CMAKE_PREFIX_PATH` with the Homebrew prefix. Verified locally against the pinned Qt: build clean, 7/7 test binaries pass.
 
 - **Every `uses:` is pinned to a commit SHA, and the AppImage tooling comes from dated linuxdeploy releases with a `sha256sum -c` check** instead of the rolling `continuous` tag. This job holds `contents: write` and publishes release assets, so fetching and executing a moving artifact there was the most valuable thing in the repo to hijack.
 
