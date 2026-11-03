@@ -41,18 +41,6 @@ inline const QString& readmeName() {
     static const QString name = QStringLiteral("README.md");
     return name;
 }
-inline const QString& profileSkill() {
-    static const QString name = QStringLiteral("user_profile");
-    return name;
-}
-inline const QString& profileFile() {
-    static const QString name = QStringLiteral("profile.md");
-    return name;
-}
-inline const QString& profileTodo() {
-    static const QString todo = QStringLiteral("<!-- TODO -->");
-    return todo;
-}
 
 struct Status {
     QString     root;
@@ -190,25 +178,6 @@ inline QString withReference(const QString& message, const QString& indexFile) {
     if (referencesSkills(message)) return message;
     const QString trimmed = message.trimmed();
     return trimmed.isEmpty() ? pointer(indexFile) : trimmed + QLatin1Char(' ') + pointer(indexFile);
-}
-
-//: True when the profile skill is installed but still a blank template.
-inline bool profileNeedsInterview(const Status& status) {
-    if (!status.skills.contains(profileSkill())) return false;
-    QFile f(status.root + QLatin1Char('/') + profileSkill() + QLatin1Char('/') + profileFile());
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
-    return QString::fromUtf8(f.readAll()).contains(profileTodo());
-}
-
-//: The one prompt that starts the interview, naming the skill file so the
-//: markdown stays the contract.
-inline QString profileInterviewPrompt(const Status& status) {
-    const QString root = displayPath(status.root);
-    return QStringLiteral(
-               "Read %1/user_profile/user_profile_skill.md and interview me to fill in "
-               "%1/user_profile/profile.md. Ask one question at a time, write the file as "
-               "we go, and don't invent any answers.")
-        .arg(root);
 }
 
 }  // namespace Skills

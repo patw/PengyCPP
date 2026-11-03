@@ -8,6 +8,16 @@ Skills are how you teach Pengy to do things its built-in tools don't cover. A sk
 
 ---
 
+## Desktop setup
+
+Use **Settings → Extras → Install Skills** to copy the bundled starter skills
+and `skill_index.md` into the selected folder without overwriting existing
+files. The optional system-message pointer is saved when you press **OK**.
+**Open Folder** opens that directory in Explorer (Windows), Finder (macOS), or
+your configured Linux file manager. **Browse BotSkills** opens the registry in
+your external browser. Extras never calls the LLM or starts a conversation;
+use normal chat to invoke installed skills, including the user_profile interview.
+
 ## Skill patterns
 
 Looking through the existing skills, a few patterns emerge:

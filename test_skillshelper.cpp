@@ -204,34 +204,6 @@ private slots:
         QCOMPARE(Skills::withReference(custom, index), custom);
     }
 
-    void profileNeedsInterviewFollowsTheTodoMarker() {
-        QTemporaryDir tmp;
-        const QString root = tmp.filePath("skills");
-        Skills::install(root);
-        QVERIFY(Skills::profileNeedsInterview(Skills::scan(root)));
-
-        const QString profile = root + "/user_profile/profile.md";
-        QFile f(profile);
-        QVERIFY(f.open(QIODevice::ReadOnly));
-        QString text = QString::fromUtf8(f.readAll());
-        f.close();
-        text.replace(Skills::profileTodo(), "Prefers terse answers.");
-        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
-        f.write(text.toUtf8());
-        f.close();
-
-        QVERIFY(!Skills::profileNeedsInterview(Skills::scan(root)));
-    }
-
-    void interviewPromptNamesTheSkillFiles() {
-        QTemporaryDir tmp;
-        const QString root = tmp.filePath("skills");
-        Skills::install(root);
-        const QString prompt = Skills::profileInterviewPrompt(Skills::scan(root));
-        QVERIFY(prompt.contains("user_profile/user_profile_skill.md"));
-        QVERIFY(prompt.contains("user_profile/profile.md"));
-        QVERIFY(prompt.contains("one question at a time"));
-    }
 };
 
 QTEST_MAIN(TestSkillsHelper)

@@ -244,7 +244,7 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     // Skills are inert files until the system message points at the index, so
     // this tab does both jobs in one place: seed the skills folder, then add
     // the pointer sentence. Nothing here writes outside the user's home, and
-    // nothing happens until a button is pressed.
+    // nothing happens until a button is pressed. No action here starts a chat.
     const Theme skillsTheme = makeTheme(cfg.themeMode, cfg.themeAccent);
     const QString mutedStyle = QString("color:%1;").arg(skillsTheme["muted"]);
 
@@ -317,23 +317,12 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     actionsRow->addStretch();
     extrasLayout->addLayout(actionsRow);
 
-    // Row 2: what to do *next* with the folder that now exists.
-    auto* nextRow = new QHBoxLayout;
-    m_fillProfile = new QPushButton("Fill In My Profile");
-    m_fillProfile->setToolTip(
-        "Sends one prompt: read the user_profile skill and interview me. Answers are "
-        "written to user_profile/profile.md in the skills folder.");
-    connect(m_fillProfile, &QPushButton::clicked, this, [this]() { startProfileInterview(); });
-    nextRow->addWidget(m_fillProfile);
-
     m_browseRegistry = new QPushButton("Browse BotSkills");
     m_browseRegistry->setToolTip(
         "Open skills.catbee.ca \u2014 the public skill registry \u2014 in your browser. The "
         "botskills skill documents how Pengy searches and installs from it.");
     connect(m_browseRegistry, &QPushButton::clicked, this, [this]() { openSkillRegistry(); });
-    nextRow->addWidget(m_browseRegistry);
-    nextRow->addStretch();
-    extrasLayout->addLayout(nextRow);
+    actionsRow->insertWidget(actionsRow->count() - 1, m_browseRegistry);
 
     m_pointerCheck = new QCheckBox("Add the skills pointer to my system message");
     m_pointerCheck->setChecked(true);
@@ -559,19 +548,11 @@ void SettingsDialog::refreshSkills(const QString& note) {
     setLit(m_addPointer, needsPointer);
     m_openSkillsFolder->setEnabled(status.exists);
 
-    const bool needsProfile = Skills::profileNeedsInterview(status);
-    m_fillProfile->setEnabled(status.skills.contains(Skills::profileSkill()));
-    // The tab points at exactly ONE thing to press: install -> interview -> nothing.
-    setLit(m_fillProfile, needsProfile);
-
     QStringList lines;
     if (!status.skills.isEmpty())
         lines << QString("Skills found: %1").arg(status.skills.join(", "));
     else if (status.installed())
         lines << "The index is there, but no skill folders were found.";
-    if (needsProfile)
-        lines << "Your profile is still a blank template \u2014 press Fill In My Profile "
-                 "to answer a few questions.";
     if (status.installed() && messageHasPointer && note.isEmpty())
         lines << "Your system message already points at the skill index.";
     if (!note.isEmpty()) lines << note;
@@ -637,13 +618,4 @@ void SettingsDialog::openSkillsFolder() {
 
 void SettingsDialog::openSkillRegistry() {
     QDesktopServices::openUrl(QUrl("https://skills.catbee.ca"));
-}
-
-void SettingsDialog::startProfileInterview() {
-    // Name the skill file rather than describing the task: the markdown is the
-    // contract. Emitting and then accepting lets the main window save these
-    // settings and send the prompt once the dialog is gone.
-    const Skills::Status status = Skills::scan(skillsRoot());
-    emit promptRequested(Skills::profileInterviewPrompt(status));
-    accept();
 }

@@ -17,11 +17,6 @@ public:
     explicit SettingsDialog(const Config& config, QWidget* parent = nullptr);
     Config config() const { return m_config; }
 
-signals:
-    /// Asks the main window to send a prompt (e.g. start the profile interview).
-    /// Emitted from the Extras tab after the dialog has closed itself.
-    void promptRequested(const QString& prompt);
-
 private slots:
     void fetchModels();
     void refreshSkills(const QString& note = QString());
@@ -30,7 +25,6 @@ private slots:
     void browseSkillsFolder();
     void openSkillsFolder();
     void openSkillRegistry();
-    void startProfileInterview();
 
 private:
     /// Accent-fill a button (the "this is the thing to press" state).
@@ -70,6 +64,5 @@ private:
     QPushButton* m_addPointer;
     QPushButton* m_openSkillsFolder;
     QPushButton* m_browseSkills;
-    QPushButton* m_fillProfile;
     QPushButton* m_browseRegistry;
 };

@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.14.3 — 2026-11-03
+
+- **Settings → Extras is setup-only.** Removed Fill In My Profile and all Settings-to-chat prompt wiring. Installing the bundled skills/index and adding the system-message pointer are local operations; Open Folder opens the selected folder in the OS file manager, and Browse BotSkills opens the external browser. No Extras action invokes the LLM. The user_profile skill remains bundled and can be used from normal chat. Removed profile-template scanning from Settings and added local-only regression coverage.
+
 ## v1.14.2 — 2026-11-02
 
 - **`run_bash`'s schema now says what it actually does.** The description was vague enough to mislead: it states that stdin is closed so a prompt fails instead of waiting, that `host` runs the command on that machine with that machine's cwd and paths (and that wrapping the command in ssh yourself is wrong), and that `elevated` must accompany an explicit root command — `elevated` alone is rejected, not ignored. Identical wording in all three editions, so the model gets one contract rather than three.

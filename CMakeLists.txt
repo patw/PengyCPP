@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Pengy VERSION 1.14.2 LANGUAGES CXX)
+project(Pengy VERSION 1.14.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -125,6 +125,13 @@ if(Qt6Test_FOUND)
     add_executable(pengy_skills_test test_skillshelper.cpp resources.qrc)
     target_link_libraries(pengy_skills_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Test)
     add_test(NAME PengySkillsTest COMMAND pengy_skills_test)
+
+    add_executable(pengy_settings_extras_test
+        test_settings_extras.cpp settingsdialog.cpp config.cpp resources.qrc)
+    target_include_directories(pengy_settings_extras_test PRIVATE ${CMAKE_BINARY_DIR})
+    target_link_libraries(pengy_settings_extras_test PRIVATE
+        Qt6::Core Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Test)
+    add_test(NAME PengySettingsExtrasTest COMMAND pengy_settings_extras_test)
 
     add_executable(pengy_compaction_settings_test test_compactionsettings.cpp)
     target_link_libraries(pengy_compaction_settings_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Test)
