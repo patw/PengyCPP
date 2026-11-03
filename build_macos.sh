@@ -1,13 +1,17 @@
 #!/bin/bash
 # Build Pengy for macOS
 # Prerequisites:
-#   brew install qt@6 cmake
+#   brew install cmake        (Qt comes from install-qt-action, or `brew install qt@6` locally)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 ARCH="${1:-$(uname -m)}"  # arm64 or x86_64
 
-export CMAKE_PREFIX_PATH="$(brew --prefix qt@6 2>/dev/null || echo '/opt/homebrew/opt/qt@6')"
+if [[ -n "${QT_ROOT_DIR:-}" ]]; then
+    export CMAKE_PREFIX_PATH="$QT_ROOT_DIR"   # pinned by install-qt-action
+else
+    export CMAKE_PREFIX_PATH="$(brew --prefix qt@6 2>/dev/null || echo '/opt/homebrew/opt/qt@6')"
+fi
 export PATH="$CMAKE_PREFIX_PATH/bin:$PATH"
 
 echo "==> Building Pengy (C++/Qt6) for macOS ($ARCH)..."

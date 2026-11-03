@@ -55,6 +55,19 @@ jobs:
             build-essential cmake patchelf qt6-base-dev qt6-svg-dev qt6-wayland libqt6waylandclient6 libgl-dev dpkg-dev \
             libreadline-dev libfuse2 fuse3 imagemagick qt6-declarative-dev-tools
 
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4
+        with:
+          version: '6.12.0'
+          host: 'linux'
+          target: 'desktop'
+          arch: 'linux_gcc_64'
+
+      - name: Report Qt in use
+        run: |
+          echo "QT_ROOT_DIR=${QT_ROOT_DIR:-unset}"
+          "${QT_ROOT_DIR}/bin/qmake" -query QT_VERSION 2>/dev/null || true
+
       - name: Build .deb package
         run: |
           # build_deb.sh always builds from source + creates .deb
@@ -111,7 +124,20 @@ jobs:
       - name: Install dependencies
         run: |
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
-          brew install qt@6 cmake
+          brew install cmake
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4
+        with:
+          version: '6.12.0'
+          host: 'mac'
+          target: 'desktop'
+          arch: 'clang_64'
+
+      - name: Report Qt in use
+        run: |
+          echo "QT_ROOT_DIR=${QT_ROOT_DIR:-unset}"
+          "${QT_ROOT_DIR}/bin/qmake" -query QT_VERSION 2>/dev/null || true
 
       - name: Build DMG
         run: ./build_macos.sh
@@ -143,7 +169,7 @@ jobs:
       - name: Install Qt6
         uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4
         with:
-          version: '6.8.2'
+          version: '6.12.0'
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
