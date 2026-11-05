@@ -33,6 +33,13 @@ Pre-built binaries are on the [Releases page](https://github.com/patw/PengyCPP/r
 | **macOS** | `Pengy-macOS-<arch>.dmg` (arm64 / x86_64) |
 | **Windows** | `Pengy-Windows-<version>.msi` (per-user installer, no admin needed) · `Pengy-Windows-<version>.zip` (portable) |
 
+> **Windows: antivirus can quarantine Pengy.** The app hands the model shell,
+> PowerShell and file-write access, so Defender's heuristics may force-close it and
+> quarantine `pengy.exe` — the window vanishes, the Start menu entry goes with it,
+> and a reinstall is caught again the moment it lands. Exclude the program folder
+> **before** restoring or reinstalling, or nothing you try will stick. Step-by-step:
+> **[Windows Defender and antivirus](docs/windows-antivirus.md)**.
+
 ### Linux — Build from Source
 
 ```bash
@@ -292,6 +299,7 @@ All three offer the same 16 tools, durable image attachments, desktop theme cont
 - [Skills deep-dive](docs/skills.md) — skill patterns, `~/.secrets`, `uv` dependencies
 - [API compatibility](docs/api-compatibility.md) — provider support, model discovery, local endpoints
 - [FAQ](docs/faq.md) — common questions and troubleshooting
+- [Windows Defender and antivirus](docs/windows-antivirus.md) — false positives, quarantine, exclusions, SmartScreen
 - [Building from source](docs/building.md) — platform-specific build instructions
 - [Changelog](CHANGELOG.md) — version history
 

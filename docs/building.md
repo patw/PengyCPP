@@ -70,6 +70,12 @@ build_windows.bat
 REM → Pengy-Windows\pengy.exe  (Qt DLLs bundled)
 ```
 
+Your own build gets flagged more readily than a release: it is unsigned, has no
+download history, and sits in a folder Windows has never seen — and the moment it
+spawns a shell it looks like a dropper. If `pengy.exe` vanishes on first run, that
+is Defender, not a build error: see
+[Windows Defender and antivirus](windows-antivirus.md).
+
 ## Running tests
 
 ```bash

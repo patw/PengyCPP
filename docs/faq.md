@@ -50,6 +50,20 @@ See the [Pengy FAQ](../Pengy/docs/faq.md) for tool and skill questions — answe
 
 ## Troubleshooting
 
+### On Windows the app was force-closed and vanished from the Start menu
+
+Windows Defender almost certainly quarantined it. Pengy hands the model shell,
+PowerShell and file-write access, and Defender's heuristics act on that: the process
+is terminated without a dialog and `pengy.exe` is quarantined, which also breaks the
+Start Menu shortcut. A plain reinstall does not help — the new copy is caught the
+same way within seconds.
+
+Exclude `%LOCALAPPDATA%\Programs\PengyCPP` (and the process `pengy.exe`) **first**,
+then restore the file from Protection history or reinstall. Confirm it was Defender
+and follow the whole procedure in
+[Windows Defender and antivirus](windows-antivirus.md). The same page covers the
+portable ZIP, the "Windows protected your PC" prompt and Smart App Control.
+
 ### I get 403 errors from the web UI
 
 If you're behind a reverse proxy, you need `--trusted-host`. See [docs/reverse-proxy.md](reverse-proxy.md).
