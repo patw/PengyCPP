@@ -15,6 +15,7 @@
         <file alias="icons/settings.svg">assets/icons/settings.svg</file>
         <file alias="icons/stop.svg">assets/icons/stop.svg</file>
         <file alias="icons/tasks.svg">assets/icons/tasks.svg</file>
+        <file alias="icons/search.svg">assets/icons/search.svg</file>
         <!-- Starter skills, shared with the Python edition's pengy/assets/skills -->
         <file alias="skills/README.md">assets/skills/README.md</file>
         <file alias="skills/skill_index.md">assets/skills/skill_index.md</file>

@@ -3,5 +3,8 @@
         <file>templates/chat.html</file>
         <file>templates/settings.html</file>
         <file>templates/about.html</file>
+        <file>templates/chat-search.js</file>
+        <file>templates/search-hits.js</file>
+        <file>templates/theme-head.html</file>
     </qresource>
 </RCC>

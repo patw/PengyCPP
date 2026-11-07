@@ -1,0 +1,35 @@
+  <!-- Theme (shared verbatim with PengyCPP; Python Pengy's base.html does the
+       same).  data-bs-theme drives Bootstrap 5.3's dark mode: the server
+       renders it for an explicit light/dark setting, so that works without
+       JS, and puts the setting itself in data-theme-mode.  "system" is
+       resolved here, before the stylesheets load (no light flash), and
+       follows the OS live. -->
+  <script>
+    (function () {
+      var root = document.documentElement;
+      var mode = root.getAttribute('data-theme-mode') || 'system';
+      var dark = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+      function resolve() {
+        return mode === 'system' ? (dark && dark.matches ? 'dark' : 'light') : mode;
+      }
+      root.setAttribute('data-bs-theme', resolve());
+      if (mode === 'system' && dark) {
+        dark.addEventListener('change', function () { root.setAttribute('data-bs-theme', resolve()); });
+      }
+    })();
+  </script>
+  <style>
+    /* Everything else uses Bootstrap's own --bs-* vars, which already flip
+       with data-bs-theme.  These are the extras: a surface for code and tool
+       blocks, its text, and a colour for inline code. */
+    :root, [data-bs-theme="light"] {
+      --pengy-code-bg: #f6f8fa;
+      --pengy-code-fg: #24292e;
+      --pengy-inline-code-fg: #d63384;
+    }
+    [data-bs-theme="dark"] {
+      --pengy-code-bg: #1c1f24;
+      --pengy-code-fg: #d7dae0;
+      --pengy-inline-code-fg: #ff8bc4;
+    }
+  </style>

@@ -1,9 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="{{BS_THEME}}" data-theme-mode="{{THEME_MODE}}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Pengy — {{CHAT_TITLE}}</title>
+{{THEME_HEAD}}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>
@@ -46,6 +47,10 @@
   .msg-user { display: flex; justify-content: flex-end; margin-bottom: 0.85rem; }
   .bubble-user { max-width: 85%; background: var(--bs-secondary-bg); border-radius: 18px 18px 4px 18px; padding: 0.6rem 1rem; white-space: pre-wrap; word-break: break-word; font-size: 0.9rem; }
   .attachment-grid { display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:.45rem; }
+  .attachment-grid:empty { display:none; }
+  .attachment-unavailable { font-size:.78rem; color:var(--bs-secondary-color); }
+  mark.search-hit { padding: 0 1px; border-radius: 2px; }
+  .msg-user[id], .msg-assistant[id] { scroll-margin-top: 0.75rem; }
   .attachment-thumb { width:96px; height:96px; object-fit:cover; border-radius:6px; cursor:pointer; }
   @media (max-width: 575px) { .bubble-user { max-width: 92%; } }
   .msg-assistant { display: flex; justify-content: flex-start; margin-bottom: 0.85rem; }
@@ -58,7 +63,7 @@
   .tool-card.done { border-left-color: var(--bs-success); }
   .tool-header { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 0.4rem; }
   .tool-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 0.78rem; }
-  .tool-args, .tool-output { background: #f6f8fa; border-radius: 4px; padding: 0.5rem 0.6rem; margin-top: 0.4rem; max-height: 250px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; color: #24292e; }
+  .tool-args, .tool-output { background: var(--pengy-code-bg); border-radius: 4px; padding: 0.5rem 0.6rem; margin-top: 0.4rem; max-height: 250px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; font-size: 0.78rem; color: var(--pengy-code-fg); }
   .msg-thinking { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.85rem; color: var(--bs-secondary-color); font-size: 0.85rem; }
   /* ── Jump to bottom ──────────────────────────────────────── */
   #jumpBottomBtn {
@@ -84,14 +89,20 @@
   .markdown-body p { margin-bottom: 0.5rem; }
   .markdown-body p:last-child { margin-bottom: 0; }
   .markdown-body h1,.markdown-body h2,.markdown-body h3 { margin-top:0.75rem; margin-bottom:0.4rem; }
-  .markdown-body pre { background: #f6f8fa; border-radius: 4px; padding: 0.75rem; overflow-x: auto; }
+  .markdown-body pre { background: var(--pengy-code-bg); color: var(--pengy-code-fg); border-radius: 4px; padding: 0.75rem; overflow-x: auto; }
   .markdown-body code { font-size: 0.84em; }
-  .markdown-body :not(pre)>code { background: #f6f8fa; color: #d63384; padding: 0.1em 0.3em; border-radius: 3px; }
+  .markdown-body :not(pre)>code { background: var(--pengy-code-bg); color: var(--pengy-inline-code-fg); padding: 0.1em 0.3em; border-radius: 3px; }
   .markdown-body table { width:100%; border-collapse:collapse; margin-bottom:0.5rem; }
   .markdown-body th,.markdown-body td { border:1px solid var(--bs-border-color); padding:0.25rem 0.5rem; }
   .markdown-body ul,.markdown-body ol { padding-left:1.5rem; margin-bottom:0.5rem; }
   .markdown-body blockquote { border-left: 3px solid var(--bs-border-color); margin: 0.5rem 0; padding-left: 0.75rem; color: var(--bs-secondary-color); }
   .usage-line { font-size: 0.75rem; color: var(--bs-secondary-color); margin-top: 0.4rem; }
+  /* Chat search results: a title line plus up to three snippet lines. */
+  .search-result { display: block; padding: 0.4rem 0.75rem; border-radius: 6px; text-decoration: none; color: var(--bs-body-color); font-size: 0.85rem; }
+  .search-result:hover { background: var(--bs-secondary-bg); color: var(--bs-body-color); }
+  .search-result .result-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .search-result .result-hit { color: var(--bs-secondary-color); font-size: 0.8rem; overflow-wrap: anywhere; }
+  .search-result .result-hit b { color: var(--bs-body-color); }
 </style>
 </head>
 <body>
@@ -110,7 +121,19 @@
         </button>
       </form>
     </div>
-    <div class="chat-list px-2 pb-2" id="sidebar-chats"></div>
+    <div class="px-2 pb-2">
+      <div class="input-group input-group-sm">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input type="search" id="chatSearch" class="form-control" autocomplete="off"
+               placeholder="Search chats (Ctrl+K)" aria-label="Search chats"
+               title="Type to filter by title. Press Enter to search message text too. Words can be in any order; &quot;quote&quot; an exact phrase.">
+      </div>
+    </div>
+    <div id="searchResults" class="px-2 pb-2" hidden>
+      <div class="small text-muted px-1 pb-1" id="searchStatus"></div>
+      <div id="searchResultList"></div>
+    </div>
+    <div class="chat-list px-2 pb-2" id="chatList"></div>
     <div class="mt-auto border-top p-2 d-md-none">
       <a href="/settings" class="btn btn-outline-secondary w-100" data-bs-dismiss="offcanvas">
         <i class="bi bi-gear me-1"></i> Settings
@@ -338,6 +361,9 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+{{CHAT_SEARCH_JS}}
+</script>
+<script>
 // ── Server data ────────────────────────────────────────────────────
 const CHAT_ID   = '{{CHAT_ID}}';
 const MODEL     = '{{MODEL}}';
@@ -375,6 +401,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   renderSidebar(ALL_CHATS, CHAT_ID);
   renderInitMessages(MESSAGES);
+  // Opened from a search result: show the hits instead of the end of the chat.
+  const revealedHits = revealSearchHits();
+  window.addEventListener('hashchange', revealSearchHits);
 
   // Empty state
   if (MESSAGES.filter(m => m.role !== 'system').length === 0) {
@@ -478,7 +507,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (bsOffcanvas && offcanvas.classList.contains('show')) { bsOffcanvas.hide(); }
   });
 
-  scrollBottom();
+  if (!revealedHits) scrollBottom();
 });
 
 // ── Empty state ────────────────────────────────────────────────────
@@ -569,7 +598,7 @@ function reloadToSync() {
 
 // ── Sidebar ────────────────────────────────────────────────────────
 function renderSidebar(chats, activeChatId) {
-  const el = document.getElementById('sidebar-chats');
+  const el = document.getElementById('chatList');
   el.innerHTML = '';
   for (const c of chats) {
     const active = c.id === activeChatId;
@@ -626,17 +655,38 @@ function fixFileUrls(html) {
   });
 }
 
+// URL schemes a rendered link or image may keep (scheme-less URLs -- relative
+// and local file paths, #anchors -- are always fine).  Model output is
+// untrusted: a javascript: link would run in this origin, which can drive the
+// whole API.  Same rule as the Python and Rust editions.
+const SAFE_URL_SCHEMES = ['http', 'https', 'mailto', 'file'];
+function safeUrl(url) {
+  // esc() turned & into &amp;; undo that, and ignore the whitespace and
+  // control characters browsers skip inside a scheme.
+  const plain = url.replace(/&amp;/g, '&').replace(/[\x00-\x20]/g, '').toLowerCase();
+  const m = plain.match(/^([a-z][a-z0-9+.-]*):/);
+  return !m || SAFE_URL_SCHEMES.includes(m[1]);
+}
+
 function renderMd(raw) {
-  let s = esc(raw);
-  // Images — before other inline rules so ![alt](url) isn't garbled
-  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1">');
-  // fenced code blocks (must run before inline code)
-  s = s.replace(/```(?:\w+)?\n?([\s\S]*?)```/g, (_, c) =>
-    '<pre><code>' + c + '</code></pre>');
+  // Code is set aside first and put back last, so no later rule (emphasis,
+  // headings, lists, line breaks) rewrites what is inside it.
+  // Fenced blocks are marked \u0001n\u0001 (a block of their own), inline
+  // code \u0000n\u0000.
+  const kept = [];
+  const keep = (html, mark) => mark + (kept.push(html) - 1) + mark;
+  let s = esc(String(raw).replace(/[\u0000\u0001]/g, ''));
+  // fenced code blocks -- each its own block, never inside a paragraph
+  s = s.replace(/```[\w+#.-]*[^\S\n]*\n?([\s\S]*?)```/g, (_, c) =>
+    '\n\n' + keep('<pre><code>' + c.replace(/\n$/, '') + '</code></pre>', '\u0001') + '\n\n');
   // inline code
-  s = s.replace(/`([^`\n]+)`/g, (_, c) => '<code>' + c + '</code>');
+  s = s.replace(/`([^`\n]+)`/g, (_, c) => keep('<code>' + c + '</code>', '\u0000'));
+  // Images — before links so ![alt](url) isn't garbled
+  // URLs may hold one level of balanced parentheses (Wikipedia's Foo_(bar)).
+  s = s.replace(/!\[([^\]]*)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/g, (_, alt, url) =>
+    safeUrl(url) ? '<img src="' + url + '" alt="' + alt + '">' : '<img alt="' + alt + '">');
   // GFM tables
-  s = s.replace(/((?:\|[^\n]+\|\n)+)/g, tbl => {
+  s = s.replace(/((?:\|[^\n]+\|\n?)+)/g, tbl => {
     const rows = tbl.trim().split('\n').filter(r => !/^\|[-| :]+\|$/.test(r));
     let out = '<table class="table table-sm table-bordered">';
     rows.forEach((r, i) => {
@@ -644,35 +694,38 @@ function renderMd(raw) {
       const t = i === 0 ? 'th' : 'td';
       out += '<tr>' + cells.map(c => `<${t}>${c.trim()}</${t}>`).join('') + '</tr>';
     });
-    return out + '</table>';
+    return '\n\n' + out + '</table>\n\n';
   });
-  // blockquotes
-  s = s.replace(/(?:^|\n)((?:> .*\n?)+)/g, (_, block) => {
-    const lines = block.trim().split('\n').map(l => l.replace(/^> ?/, ''));
-    return '<blockquote>' + lines.join('<br>') + '</blockquote>';
+  // blockquotes (esc() turned the leading > into &gt;)
+  s = s.replace(/(?:^|\n)((?:&gt; .*\n?)+)/g, (_, block) => {
+    const lines = block.trim().split('\n').map(l => l.replace(/^&gt; ?/, ''));
+    return '\n\n<blockquote>' + lines.join('<br>') + '</blockquote>\n\n';
   });
   // headings
-  s = s.replace(/^###\s(.+)$/gm, '<h5>$1</h5>');
-  s = s.replace(/^##\s(.+)$/gm,  '<h4>$1</h4>');
-  s = s.replace(/^#\s(.+)$/gm,   '<h3>$1</h3>');
+  s = s.replace(/^###\s(.+)$/gm, '\n\n<h5>$1</h5>\n\n');
+  s = s.replace(/^##\s(.+)$/gm,  '\n\n<h4>$1</h4>\n\n');
+  s = s.replace(/^#\s(.+)$/gm,   '\n\n<h3>$1</h3>\n\n');
   // bold / italic
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/\*([^*\n]+)\*/g,     '<em>$1</em>');
   // links
-  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  s = s.replace(/\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/g, (_, text, url) =>
+    safeUrl(url) ? '<a href="' + url + '" target="_blank">' + text + '</a>' : '<a>' + text + '</a>');
   // ordered lists
   s = s.replace(/(?:^|\n)((?:\d+\.\s.+\n?)+)/g, (_, block) => {
     const items = block.trim().split('\n').map(l => '<li>' + l.replace(/^\d+\.\s/, '') + '</li>');
-    return '<ol>' + items.join('') + '</ol>';
+    return '\n\n<ol>' + items.join('') + '</ol>\n\n';
   });
   // unordered lists (simple)
   s = s.replace(/(?:^|\n)((?:- .+\n?)+)/g, (_, block) => {
     const items = block.trim().split('\n').map(l => '<li>' + l.replace(/^- /, '') + '</li>');
-    return '<ul>' + items.join('') + '</ul>';
+    return '\n\n<ul>' + items.join('') + '</ul>\n\n';
   });
-  // paragraphs
-  s = s.replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br>');
-  return '<p>' + s + '</p>';
+  // paragraphs: block elements stand alone; the rest is wrapped, with single
+  // newlines kept as line breaks
+  s = s.split(/\n{2,}/).map(b => b.trim()).filter(Boolean).map(b =>
+    /^(\u0001\d+\u0001$|<(h\d|ul|ol|table|blockquote)\b)/.test(b) ? b : '<p>' + b.replace(/\n/g, '<br>') + '</p>').join('');
+  return s.replace(/[\u0000\u0001](\d+)[\u0000\u0001]/g, (_, i) => kept[+i]);
 }
 
 // ── Message DOM helpers ────────────────────────────────────────────
@@ -680,10 +733,11 @@ function appendUserMsg(content, attachments = []) {
   hideEmptyState();
   const d = document.createElement('div');
   d.className = 'msg-user';
-  const cards = attachments.map(a => a.kind === 'image' && a.id && a.id.startsWith('sha256:') ? '<img class="attachment-thumb" src="/attachments/' + a.id.slice(7) + '/thumbnail" alt="' + esc(a.name || 'Image') + '">' : '<span>Attachment unavailable: ' + esc(a.name || 'Attachment') + '</span>').join('');
+  const cards = attachments.map(a => a.kind === 'image' && a.id && a.id.startsWith('sha256:') ? '<img class="attachment-thumb" src="/attachments/' + a.id.slice(7) + '/thumbnail" alt="' + esc(a.name || 'Image') + '">' : '<span class="attachment-unavailable">Attachment unavailable: ' + esc(a.name || 'Attachment') + '</span>').join('');
   d.innerHTML = '<div class="bubble-user"><div class="attachment-grid">' + cards + '</div>' + esc(content) + '</div>';
   document.getElementById('messages').appendChild(d);
   scrollBottom();
+  return d;
 }
 
 function appendAssistantMsg(content, usage) {
@@ -702,6 +756,7 @@ function appendAssistantMsg(content, usage) {
     '</div>' + usageHtml + '</div>';
   document.getElementById('messages').appendChild(d);
   scrollBottom();
+  return d;
 }
 
 function startToolTurn() {
@@ -765,17 +820,19 @@ function completeToolCard(tcId, content, declined) {
 }
 
 // ── Initial message render ─────────────────────────────────────────
+// User and assistant messages get id="msg-<i>", their index in the stored
+// chat, which search hits point at (see revealSearchHits).
 function renderInitMessages(messages) {
   let i = 0;
   while (i < messages.length) {
     const msg = messages[i];
     if (msg.role === 'system') { i++; continue; }
     if (msg.role === 'user') {
-      appendUserMsg(typeof msg.content === 'string' ? msg.content : '', msg.attachments || []);
+      appendUserMsg(typeof msg.content === 'string' ? msg.content : '', msg.attachments || []).id = 'msg-' + i;
       i++;
     } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
       // Tool turn — render any text content first
-      if (msg.content) appendAssistantMsg(msg.content);
+      if (msg.content) appendAssistantMsg(msg.content).id = 'msg-' + i;
       const turn = startToolTurn();
       for (const tc of msg.tool_calls) {
         let a = {};
@@ -791,7 +848,7 @@ function renderInitMessages(messages) {
         i++;
       }
     } else if (msg.role === 'assistant') {
-      appendAssistantMsg(msg.content || '');
+      appendAssistantMsg(msg.content || '').id = 'msg-' + i;
       i++;
     } else { i++; }
   }
@@ -1280,6 +1337,7 @@ function setProcessing(on) {
   if (!on) document.getElementById('messageInput').focus();
 }
 
+{{SEARCH_HITS_JS}}
 function scrollBottom() {
   const m = document.getElementById('messages');
   m.scrollTop = m.scrollHeight;

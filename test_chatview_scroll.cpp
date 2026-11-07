@@ -17,6 +17,8 @@
 #include "imagesave.h"
 #include <iostream>
 #include "chatview.h"
+#include <QScrollBar>
+#include <QThread>
 
 static void requireContains(const QString& haystack, const QString& needle, const char* label) {
     if (!haystack.contains(needle)) {
@@ -249,6 +251,52 @@ int main(int argc, char** argv) {
 
         v.clear();
         requireEqual(v.testAutoScroll() ? "true" : "false", "true", "clear resets the pin");
+    }
+
+    // Search jump: revealHits() marks the words in the hit messages only (not
+    // labels or other messages), anchors the first, scrolls to it and stops
+    // following; a later bottom-scroll queued by the tab opening must not
+    // undo it; sending a message clears the marks and follows again.
+    {
+        ChatView v;
+        v.resize(500, 300);
+        QString filler;
+        for (int i = 0; i < 60; ++i) filler += QString("paragraph %1\n\n").arg(i);
+        v.appendMessageText("user", "first question", false, 0);
+        v.appendMessageText("assistant", filler, false, 1);
+        QJsonObject req{{"tool_call_id", "t"}, {"name", "glob"}, {"args", QJsonObject()}};
+        v.appendMessage("tool_request", req, false);
+        v.appendMessageText("assistant", "the NGINX & <b>answer</b>", false, 3);
+        v.appendMessageText("user", "thanks nginx\n\n" + filler, false, 5);
+        v.renderNow();  // queues a scroll-to-bottom, like opening a tab does
+        v.show();
+
+        if (!v.revealHits({3}, {"nginx", "&"})) { std::cerr << "FAIL: hit not found\n"; std::exit(1); }
+        if (v.testHitMarks() != QList<int>{3}) { std::cerr << "FAIL: wrong messages marked\n"; std::exit(1); }
+        const QString hit = v.testCachedHtml(3);
+        requireContains(hit, "<a name='pengy-hit'></a>", "first hit is anchored");
+        requireContains(hit, "<span class='search-hit'>NGINX</span>", "word marked case-insensitively");
+        requireContains(hit, "<span class='search-hit'>&amp;</span>", "escaped word marked");
+        requireNotContains(v.testCachedHtml(4), "search-hit", "other messages are not marked");
+        requireNotContains(hit, "Assistant</span>", "label not marked");
+
+        auto* sb = v.verticalScrollBar();
+        for (int i = 0; i < 50 && (sb->value() == 0 || sb->value() == sb->maximum()); ++i) {
+            QApplication::processEvents();
+            QThread::msleep(5);
+        }
+        if (sb->value() == 0 || sb->value() == sb->maximum()) {
+            std::cerr << "FAIL: did not scroll to the hit, value=" << sb->value()
+                      << " max=" << sb->maximum() << std::endl;
+            std::exit(1);
+        }
+        requireEqual(v.testAutoScroll() ? "true" : "false", "false", "jump stops following");
+
+        if (v.revealHits({42}, {"nginx"})) { std::cerr << "FAIL: redacted hit reported\n"; std::exit(1); }
+        v.revealHits({3}, {"nginx"});
+        v.appendMessageText("user", "next", true, 6);
+        requireEqual(v.testAutoScroll() ? "true" : "false", "true", "sending follows again");
+        requireNotContains(v.testCachedHtml(3), "search-hit", "sending clears the marks");
     }
 
     return 0;

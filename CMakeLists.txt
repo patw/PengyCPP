@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Pengy VERSION 1.14.3 LANGUAGES CXX)
+project(Pengy VERSION 1.15.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,6 +24,7 @@ add_executable(pengy-cli
     tools.cpp
     llmclient.cpp
     titlegen.cpp
+    chatsearch.cpp
     image_utils.cpp
     attachments.cpp
     provider_messages.cpp
@@ -60,6 +61,7 @@ add_executable(pengy-web
     tools.cpp
     llmclient.cpp
     titlegen.cpp
+    chatsearch.cpp
     image_utils.cpp
     attachments.cpp
     provider_messages.cpp
@@ -81,6 +83,7 @@ add_executable(pengy WIN32
     tools.cpp
     llmclient.cpp
     titlegen.cpp
+    chatsearch.cpp
     image_utils.cpp
     attachments.cpp
     provider_messages.cpp
@@ -182,6 +185,7 @@ if(Qt6Test_FOUND)
     add_executable(pengy_chathistory_test
         test_chathistory.cpp
         chathistory.cpp
+        chatsearch.cpp
         chatmanager.cpp
         config.cpp
     )
@@ -198,6 +202,7 @@ if(Qt6Test_FOUND)
         tools.cpp
         llmclient.cpp
         titlegen.cpp
+        chatsearch.cpp
         chattitle.cpp
         image_utils.cpp
         attachments.cpp

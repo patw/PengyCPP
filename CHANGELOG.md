@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.15.0 — 2026-11-07
+
+- **Edit Chat replaces the sidebar's Save button.** The pencil on each chat (the chat bubble in the web UI, `/title` in the CLI) opens one dialog: rename the chat, have the configured model **Generate** a title, or export it as Markdown as before. Generate reads only the user and assistant text — never tool calls or tool output — and at most its first 6,000 characters, so a chat of any size costs one small request.
+- **Bulk Rename Chats (Settings → UI).** Titles every chat with the configured default model, behind a warning and a progress bar, with Stop between chats. Each chat records where its title came from (`title_source`: generated, typed, or the automatic first-message title), so a run only touches automatic titles, never a name you typed, and resumes where it left off after a stop or a crash. "Rename all chats again" also redoes generated ones.
+- **Chat search.** A search box under New Chat (Ctrl+K): typing filters the list by title instantly; Enter also searches message text and shows matching chats with highlighted snippets. Words can be in any order and in different messages; `"quotes"` keep a phrase together. Only your messages and the model's replies are searched — tool output buried the real hits — newest first, with title matches on top. No index: it scans the chat files, skipping most without parsing them (about 0.1–0.4 s for 360 chats / 112 MB). CLI: `/search <words>`, numbered like `/list`.
+- **Jump to message.** Opening a search result shows the matching messages with your words marked, instead of the end of the chat — in the desktop app, the web UI (also for the chat already open) and the CLI (`/load <#> <msg#>` prints the match in full).
+- **Desktop sidebar:** Settings and Tasks are now icon buttons beside New Chat, which frees the row the search box sits in.
+- **Search highlighting is right after emoji.** Snippet positions are counted in Unicode code points in every edition; the web UIs indexed them as UTF-16 and bolded one character off after an emoji.
+- **A `javascript:` or `data:` link in a model reply no longer survives into the web UI.** Model output can echo a fetched page, and that page shares an origin with an API that can switch on YOLO and send messages. Links and images keep only `http`, `https`, `mailto`, `file` and scheme-less URLs. Link URLs may now contain parentheses (Wikipedia's `Foo_(bar)`).
+- **Web: dark mode.** The web UI follows the shared `theme_mode` setting like the Python edition: explicit light/dark rendered server-side (works without JS), "Follow system" resolved before first paint and followed live, and a Theme select in web Settings. The light-only code and tool colours became theme tokens.
+- **Web: code blocks render as written.** The markdown renderer ran every rule over code too, so `# comments` in a shell block became headings, `*args` turned italic and blank lines split the block. Code is now set aside first; text after a block is a proper paragraph instead of a stray line break. Blockquotes, which never matched, render; an empty attachment row no longer adds a gap to every message you send.
+
+Verified: 9/9 test suites green; the desktop app checked in offscreen screenshots and the web UI in a headless browser, light and dark.
+
 ## v1.14.3 — 2026-11-03
 
 - **Settings → Extras is setup-only.** Removed Fill In My Profile and all Settings-to-chat prompt wiring. Installing the bundled skills/index and adding the system-message pointer are local operations; Open Folder opens the selected folder in the OS file manager, and Browse BotSkills opens the external browser. No Extras action invokes the LLM. The user_profile skill remains bundled and can be used from normal chat. Removed profile-template scanning from Settings and added local-only regression coverage.

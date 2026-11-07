@@ -44,7 +44,7 @@ Pre-built binaries are on the [Releases page](https://github.com/patw/PengyCPP/r
 
 ```bash
 # Dependencies
-sudo apt install build-essential cmake qt6-base-dev libgl-dev
+sudo apt install build-essential cmake qt6-base-dev qt6-svg-dev libgl-dev libreadline-dev
 
 # Build everything (GUI + CLI + Web)
 ./build_linux.sh
@@ -74,13 +74,15 @@ The web UI is for single-user personal use. For remote access, put it behind ngi
 - **Last-response tokens/s (GUI)** — Output tokens divided by the final successful request time, separate from cumulative token usage; excludes tool execution and retry waits.
 - **Theme system** — System/light/dark modes plus 8 accent colours; fonts scale with the UI
 - **Tasks** — Reusable prompt templates with `%placeholder%` tokens for repeat workflows
+- **Chat search** — A search box above the chat list (Ctrl+K): type to filter by title, press Enter to search message text too, then jump straight to the matching messages. CLI: `/search`, then `/load <#> <msg#>`
+- **Edit Chat & Bulk Rename** — Rename a chat, let the model generate a title, or export it as Markdown from the pencil on each chat (`/title` in the CLI); Settings → UI → Bulk Rename Chats titles your whole history, resumably, and never touches a name you typed
 - **Model discovery** — Fetch available models from your endpoint with one click
 - **File attachments** — GUI: attach files or paste images; CLI: `@path` syntax
 - **Image rendering** — Pasted and downloaded images display inline in the GUI
-- **Chat export** — Export any chat to Markdown with one click
+- **Chat export** — Export any chat to Markdown from its Edit Chat dialog (`/export` in the CLI)
 - **Templated system message** — Auto-fills `{date}`, `{username}`, `{hostname}`, `{osinfo}`
 - **Cross-version interop** — Chats created in Python Pengy or PengyR load seamlessly in PengyCPP
-- **Zero runtime dependencies** — No Python, no Rust, no third-party libraries beyond system Qt6
+- **Minimal runtime dependencies** — No Python, no Rust; system Qt6 (plus readline for the CLI on Linux/macOS)
 
 ---
 
@@ -129,7 +131,7 @@ The same settings live in Settings in the GUI and the Web UI.
 | Model | Model name, e.g. `llama3.2`, `qwen3:8b`, `gemma3` — **no default**, see below |
 | System Message | Supports `{date}`, `{username}`, `{hostname}`, `{osinfo}` placeholders |
 | Tool Confirmation | All / Safe / None — which tools require approval |
-| Theme Mode (GUI) | System / Light / Dark — follows OS palette |
+| Theme Mode (GUI, Web) | System / Light / Dark — follows OS palette |
 | Accent Color (GUI) | Default, Blue, Teal, Green, Orange, Red, Pink, or Purple |
 | UI Scale (GUI) | 75–200% — restart for full native-widget scaling |
 
@@ -218,14 +220,16 @@ PengyCPP is a **single CMake project** — no Rust, no Python, no FFI. All logic
 | Module | What |
 |--------|------|
 | `config` | Load/save settings.json; render system message templates |
-| `chatmanager` | Chat CRUD, message cleaning, context elision |
+| `chatmanager` | Per-chat files + index, `title_source`, message cleaning, context elision |
+| `chatsearch` | Chat search (rules in Pengy's spec, "Chat Search") |
+| `titlegen` | Edit Chat / Bulk Rename title generation |
 | `taskmanager` | Task template CRUD, `%placeholder%` extraction/rendering |
 | `themehelper` | System/light/dark mode, accent palette, UI-scale helpers |
 | `tools` | 16 tools using QFile, QProcess, QNetworkAccessManager |
 | `llmclient` | Blocking OpenAI-compatible chat loop |
 | `chatworker` | QThread worker with QWaitCondition for tool confirmation |
 | `webserver` | QTcpServer HTTP server with SSE push; Bootstrap 5 UI |
-| `mainwindow` | Three-pane window with tool confirmation modal |
+| `mainwindow` | Tabbed main window, tool confirmation, search jumps |
 
 Three binaries (`pengy`, `pengy-cli`, `pengy-web`) share the same config and chat storage. No runtime dependencies beyond system Qt6.
 
@@ -252,9 +256,8 @@ cmake --build build -j$(nproc)
 ./build/pengy-cli           # CLI
 ./build/pengy-web           # Web (http://localhost:5000)
 
-# Run tests
-cmake --build build --target pengy_tests
-./build/pengy_tests
+# Run tests (built whenever Qt6 Test is installed: core/web/CLI suite + Qt widget tests)
+cd build && QT_QPA_PLATFORM=offscreen ctest --output-on-failure
 ```
 
 ### Dependencies
@@ -264,10 +267,12 @@ cmake --build build --target pengy_tests
 | Qt6::Core | Foundation: QFile, QDir, QJson, QProcess |
 | Qt6::Widgets | GUI: QMainWindow, QTextBrowser, QSplitter, dialogs |
 | Qt6::Network | HTTP: QNetworkAccessManager |
+| Qt6::Gui, Qt6::Svg | Images, themed SVG icons |
+| readline | CLI line editing (Linux/macOS; libedit on macOS) |
 | C++17 compiler | `std::function`, `std::atomic`, structured bindings |
 | CMake ≥ 3.16 | Build system |
 
-**No Rust, no Python, no third-party C++ libraries.** Everything is Qt6 + STL.
+**No Rust, no Python, no third-party C++ libraries.** Everything is Qt6 + STL (and the system readline for the CLI).
 
 ---
 
@@ -275,7 +280,7 @@ cmake --build build --target pengy_tests
 
 PengyCPP shares `~/.config/pengy/` with Python Pengy and PengyR:
 - **`settings.json`** — Same format, all versions read/write it
-- **`chats.json`** — Same message schema. Chats created in any version load in any other
+- **`chats/`** — One JSON file per chat plus a rebuildable `index.json`, same schema in every edition, so a chat created in any version loads in any other (the old single `chats.json` is still read once as a migration seed)
 - **`tasks.json`** — Shared prompt-template library
 
 ---

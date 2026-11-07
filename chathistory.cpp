@@ -1,9 +1,16 @@
 #include "chathistory.h"
 #include <QSignalBlocker>
+#include <algorithm>
 #include <cmath>
 #include "themehelper.h"
 #include "iconhelper.h"
-#include "chatmanager.h"
+#include "chatsearch.h"
+#include <QApplication>
+#include <QPointer>
+#include <QResizeEvent>
+#include <QShortcut>
+#include <QTextDocument>
+#include <QThread>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFrame>
@@ -12,9 +19,55 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 
+namespace {
+
+// Result rows keep the hit message indexes and the search words here.
+constexpr int kHitsRole = Qt::UserRole + 1;
+constexpr int kTermsRole = Qt::UserRole + 2;
+
+// HTML-escape `text`, bolding the [start, end) UTF-16 `spans`.
+QString highlightSpans(const QString& text, QList<QPair<int, int>> spans) {
+    std::sort(spans.begin(), spans.end());
+    QString out;
+    int pos = 0;
+    for (const auto& [start, end] : spans) {
+        if (start < pos || end > text.size()) continue;
+        out += text.mid(pos, start - pos).toHtmlEscaped();
+        out += "<b>" + text.mid(start, end - start).toHtmlEscaped() + "</b>";
+        pos = end;
+    }
+    return out + text.mid(pos).toHtmlEscaped();
+}
+
+}  // namespace
+
+void SearchResultsList::resizeEvent(QResizeEvent* event) {
+    QListWidget::resizeEvent(event);
+    for (int i = 0; i < count(); ++i) relayoutRow(item(i));
+}
+
+void SearchResultsList::relayoutRow(QListWidgetItem* item) {
+    // QLabel's heightForWidth() undercounts wrapped rich text, so measure the
+    // same HTML in a QTextDocument at the width the row will really get.
+    auto* label = qobject_cast<QLabel*>(itemWidget(item));
+    if (!label) return;
+    const int width = qMax(50, viewport()->width() - 4);
+    const QMargins m = label->contentsMargins();
+    QTextDocument doc;
+    doc.setDefaultFont(label->font());
+    doc.setDocumentMargin(0);
+    doc.setHtml(label->text());
+    doc.setTextWidth(width - 8 - m.left() - m.right());
+    item->setSizeHint(QSize(width, int(std::ceil(doc.size().height())) + m.top() + m.bottom() + 8));
+}
+
 ChatHistoryWidget::ChatHistoryWidget(QWidget* parent) : QWidget(parent) {
     m_theme = makeTheme("system", "default");
     setupUi();
+}
+
+ChatHistoryWidget::~ChatHistoryWidget() {
+    cancelSearch();
 }
 
 void ChatHistoryWidget::setupUi() {
@@ -22,34 +75,65 @@ void ChatHistoryWidget::setupUi() {
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(4);
 
+    // New Chat, Settings and Tasks share one row (Settings and Tasks as icon
+    // buttons), which frees the row the search box sits in.
+    auto* topRow = new QHBoxLayout;
+    topRow->setSpacing(4);
     m_newChatBtn = new QPushButton("New Chat");
     m_newChatBtn->setFixedHeight(36);
     connect(m_newChatBtn, &QPushButton::clicked, this, &ChatHistoryWidget::newChatRequested);
-    layout->addWidget(m_newChatBtn);
+    topRow->addWidget(m_newChatBtn, 1);
 
-    m_settingsBtn = new QPushButton("Settings");
-    m_settingsBtn->setFixedHeight(36);
+    m_settingsBtn = new QPushButton;
+    m_settingsBtn->setToolTip("Settings");
+    m_settingsBtn->setAccessibleName("Settings");
     connect(m_settingsBtn, &QPushButton::clicked, this, &ChatHistoryWidget::settingsRequested);
-    layout->addWidget(m_settingsBtn);
+    topRow->addWidget(m_settingsBtn);
 
-    m_tasksBtn = new QPushButton("Tasks");
-    m_tasksBtn->setFixedHeight(36);
+    m_tasksBtn = new QPushButton;
+    m_tasksBtn->setToolTip("Tasks — run a saved prompt template");
+    m_tasksBtn->setAccessibleName("Tasks");
     connect(m_tasksBtn, &QPushButton::clicked, this, &ChatHistoryWidget::tasksRequested);
-    layout->addWidget(m_tasksBtn);
+    topRow->addWidget(m_tasksBtn);
+    layout->addLayout(topRow);
 
-    layout->addSpacing(8);
+    // Search: typing filters the list by title; Enter searches messages.
+    m_searchInput = new QLineEdit;
+    m_searchInput->setPlaceholderText("Search chats (Ctrl+K)");
+    m_searchInput->setToolTip("Type to filter by title. Press Enter to search message text too.\n"
+                              "Words can be in any order; \"quote\" an exact phrase.");
+    m_searchInput->setClearButtonEnabled(true);
+    m_searchIconAction = m_searchInput->addAction(QIcon(), QLineEdit::LeadingPosition);
+    connect(m_searchInput, &QLineEdit::textChanged, this, &ChatHistoryWidget::onSearchTextChanged);
+    connect(m_searchInput, &QLineEdit::returnPressed, this, &ChatHistoryWidget::runSearch);
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), m_searchInput);
+    escape->setContext(Qt::WidgetShortcut);
+    connect(escape, &QShortcut::activated, m_searchInput, &QLineEdit::clear);
+    layout->addWidget(m_searchInput);
 
-    auto* divider = new QFrame;
-    divider->setFrameShape(QFrame::HLine);
-    divider->setFrameShadow(QFrame::Sunken);
-    layout->addWidget(divider);
+    layout->addSpacing(2);
 
-    layout->addSpacing(4);
-
+    // Chat list, and the search results that replace it while a message
+    // search is showing.
+    m_listStack = new QStackedWidget;
     m_chatList = new QListWidget;
     m_chatList->setStyleSheet("QListWidget::item { padding: 2px; }");
     connect(m_chatList, &QListWidget::itemClicked, this, &ChatHistoryWidget::onItemClicked);
-    layout->addWidget(m_chatList, 1);
+    m_listStack->addWidget(m_chatList);
+
+    auto* resultsPage = new QWidget;
+    auto* resultsLayout = new QVBoxLayout(resultsPage);
+    resultsLayout->setContentsMargins(0, 0, 0, 0);
+    resultsLayout->setSpacing(4);
+    m_searchStatus = new QLabel;
+    m_searchStatus->setWordWrap(true);
+    resultsLayout->addWidget(m_searchStatus);
+    m_resultsList = new SearchResultsList;
+    m_resultsList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    connect(m_resultsList, &QListWidget::itemClicked, this, &ChatHistoryWidget::onResultClicked);
+    resultsLayout->addWidget(m_resultsList, 1);
+    m_listStack->addWidget(resultsPage);
+    layout->addWidget(m_listStack, 1);
 
     layout->addSpacing(8);
 
@@ -148,16 +232,20 @@ void ChatHistoryWidget::applyTheme(const Theme& theme, int scale) {
     m_scale = scale;
     setStyleSheet(QString("ChatHistoryWidget { background-color:%1; color:%2; } QFrame { border-color:%3; }")
                   .arg(theme["panel"], theme["fg"], theme["border"]));
-    if (m_chatList) {
-        m_chatList->setStyleSheet(QString(R"(
+    const QString listStyle = QString(R"(
 QListWidget { background-color:%1; color:%2; border:1px solid %3; border-radius:6px; outline:none; }
 QListWidget::item { color:%2; padding:2px; border-radius:6px; }
 QListWidget::item:selected { background-color:%4; color:%2; }
 QListWidget::item:hover { background-color:%5; }
-)" ).arg(theme["panel"], theme["fg"], theme["border_soft"], theme["selection"], theme["hover"]));
-    }
+)" ).arg(theme["panel"], theme["fg"], theme["border_soft"], theme["selection"], theme["hover"]);
+    m_chatList->setStyleSheet(listStyle);
+    m_resultsList->setStyleSheet(listStyle);
     int controlH = scaledSize(36, scale);
-    for (QPushButton* button : {m_newChatBtn, m_settingsBtn, m_tasksBtn}) button->setFixedHeight(controlH);
+    m_newChatBtn->setFixedHeight(controlH);
+    for (QPushButton* button : {m_settingsBtn, m_tasksBtn}) button->setFixedSize(controlH, controlH);
+    m_searchInput->setFixedHeight(scaledSize(30, scale));
+    m_searchIconAction->setIcon(QIcon(renderPengyIcon("search", theme["muted"], scaledSize(16, scale))));
+    m_searchStatus->setStyleSheet(QString("color:%1;").arg(theme["muted"]));
     applyPengyIcon(m_newChatBtn, "new-chat", theme, scaledSize(16, scale));
     applyPengyIcon(m_settingsBtn, "settings", theme, scaledSize(16, scale));
     applyPengyIcon(m_tasksBtn, "tasks", theme, scaledSize(16, scale));
@@ -204,6 +292,12 @@ QWidget* ChatHistoryWidget::makeItemWidget(const QString& id, const QString& tit
     return w;
 }
 
+QString ChatHistoryWidget::itemTitle(QListWidgetItem* item) const {
+    QWidget* w = m_chatList->itemWidget(item);
+    QLabel* label = w ? w->findChild<QLabel*>() : nullptr;
+    return label ? label->text() : QString();
+}
+
 void ChatHistoryWidget::loadChats(const QJsonArray& chats) {
     m_chatList->clear();
     for (const QJsonValue& v : chats) {
@@ -217,6 +311,7 @@ void ChatHistoryWidget::loadChats(const QJsonArray& chats) {
         m_chatList->addItem(item);
         m_chatList->setItemWidget(item, widget);
     }
+    if (!m_searchInput->text().isEmpty()) applyTitleFilter();
 }
 
 void ChatHistoryWidget::addChat(const QString& id, const QString& title) {
@@ -272,6 +367,136 @@ void ChatHistoryWidget::updateChatTitle(const QString& id, const QString& title)
 
 void ChatHistoryWidget::onItemClicked(QListWidgetItem* item) {
     emit chatSelected(item->data(Qt::UserRole).toString());
+}
+
+// ── Search ──────────────────────────────────────────────────────────────
+
+void ChatHistoryWidget::focusSearch() {
+    m_searchInput->setFocus(Qt::ShortcutFocusReason);
+    m_searchInput->selectAll();
+}
+
+void ChatHistoryWidget::onSearchTextChanged() {
+    // Any edit makes shown message results stale: back to the (title-
+    // filtered) chat list until Enter is pressed again.
+    cancelSearch();
+    m_listStack->setCurrentIndex(0);
+    applyTitleFilter();
+}
+
+void ChatHistoryWidget::applyTitleFilter() {
+    // Hide rows whose title lacks any search word (instant, no file reads).
+    const QStringList terms = ChatSearch::parseQuery(m_searchInput->text());
+    for (int i = 0; i < m_chatList->count(); ++i) {
+        const QString title = itemTitle(m_chatList->item(i)).toLower();
+        bool all = true;
+        for (const QString& t : terms) all = all && title.contains(t);
+        m_chatList->setRowHidden(i, !all);
+    }
+}
+
+void ChatHistoryWidget::cancelSearch() {
+    ++m_searchGeneration;
+    m_searchCancel->store(true);
+}
+
+void ChatHistoryWidget::runSearch() {
+    const QString query = m_searchInput->text();
+    if (ChatSearch::parseQuery(query).isEmpty()) return;
+    cancelSearch();
+    m_searchCancel = std::make_shared<std::atomic<bool>>(false);
+    auto cancel = m_searchCancel;
+    const int generation = m_searchGeneration;
+    m_resultsList->clear();
+    m_searchStatus->setText("Searching…");
+    m_listStack->setCurrentIndex(1);
+
+    // The thread checks `cancel` between chats and never touches us once
+    // we're gone; events reach us on the UI thread.
+    QPointer<ChatHistoryWidget> guard(this);
+    QThread* thread = QThread::create([guard, query, cancel, generation]() {
+        ChatSearch::run(query, ChatSearch::kMaxResults, [&](const QJsonObject& event) {
+            if (cancel->load()) return false;
+            QMetaObject::invokeMethod(qApp, [guard, generation, event]() {
+                if (guard) guard->onSearchEvent(generation, event);
+            });
+            return true;
+        });
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
+}
+
+void ChatHistoryWidget::onSearchEvent(int generation, const QJsonObject& event) {
+    if (generation != m_searchGeneration) return;
+    const QString kind = event["type"].toString();
+    auto found = [](int n) { return QString("%1 chat%2 found").arg(n).arg(n == 1 ? "" : "s"); };
+    if (kind == "result") {
+        addResultRow(event);
+        m_searchStatus->setText(found(m_resultsList->count()) + ", searching…");
+    } else if (kind == "progress") {
+        m_searchStatus->setText(QString("%1, searching… %2/%3").arg(found(m_resultsList->count()))
+                                .arg(event["scanned"].toInt()).arg(event["total"].toInt()));
+    } else if (kind == "done") {
+        const int n = event["results"].toInt();
+        QString text = n ? found(n) : QString("No chats match.");
+        if (event["truncated"].toBool())
+            text = QString("First %1 chats shown. Add words to narrow the search.").arg(n);
+        m_searchStatus->setText(text + "  Esc to go back.");
+    }
+}
+
+void ChatHistoryWidget::addResultRow(const QJsonObject& result) {
+    const QStringList terms = ChatSearch::parseQuery(m_searchInput->text());
+    QString title = result["title"].toString();
+    if (title.isEmpty()) title = "Untitled";
+    QList<QPair<int, int>> titleSpans;
+    const QString low = title.toLower();
+    if (low.size() == title.size()) {
+        for (const QString& t : terms) {
+            const int i = low.indexOf(t);
+            if (i >= 0) titleSpans.append({i, i + int(t.size())});
+        }
+    }
+    const QString muted = m_theme["muted"];
+    QString html = "<b>" + highlightSpans(title, titleSpans) + "</b>";
+    const QString when = result["created_at"].toString().left(10);
+    if (!when.isEmpty())
+        html += QString(" <span style='color:%1;'>%2</span>").arg(muted, when.toHtmlEscaped());
+    QVariantList sources;
+    for (const QJsonValue& v : result["hits"].toArray()) {
+        const QJsonObject hit = v.toObject();
+        const QString snippet = hit["snippet"].toString();
+        QList<QPair<int, int>> spans;  // code points -> UTF-16
+        for (const QJsonValue& s : hit["spans"].toArray()) {
+            const QJsonArray span = s.toArray();
+            spans.append({ChatSearch::codePointToUtf16(snippet, span[0].toInt()),
+                          ChatSearch::codePointToUtf16(snippet, span[1].toInt())});
+        }
+        html += QString("<br><span style='color:%1;'>%2:</span> %3")
+                    .arg(muted, hit["role"].toString() == "user" ? "You" : "AI", highlightSpans(snippet, spans));
+        sources << hit["index"].toInt();
+    }
+    auto* label = new QLabel(html);
+    label->setTextFormat(Qt::RichText);
+    label->setWordWrap(true);
+    label->setContentsMargins(4, 4, 4, 4);
+    label->setStyleSheet(QString("color:%1; background:transparent;").arg(m_theme["fg"]));
+    label->setAttribute(Qt::WA_TransparentForMouseEvents);
+    auto* item = new QListWidgetItem;
+    item->setData(Qt::UserRole, result["id"].toString());
+    item->setData(kHitsRole, sources);
+    item->setData(kTermsRole, terms);
+    m_resultsList->addItem(item);
+    m_resultsList->setItemWidget(item, label);
+    m_resultsList->relayoutRow(item);
+}
+
+void ChatHistoryWidget::onResultClicked(QListWidgetItem* item) {
+    if (!item) return;
+    QList<int> sources;
+    for (const QVariant& v : item->data(kHitsRole).toList()) sources << v.toInt();
+    emit searchHitSelected(item->data(Qt::UserRole).toString(), sources, item->data(kTermsRole).toStringList());
 }
 
 void ChatHistoryWidget::setThinking(bool thinking) {

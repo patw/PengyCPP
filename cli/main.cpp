@@ -44,6 +44,7 @@
 #include "../provider_messages.h"
 #include "../about.h"
 #include "../titlegen.h"
+#include "../chatsearchcore.h"
 #include "version.h"
 
 // ── Terminal colors ──────────────────────────────────────────────────
@@ -84,6 +85,14 @@ static bool stdinIsTerminal() {
     return isatty(STDIN_FILENO);
 #else
     return _isatty(_fileno(stdin));
+#endif
+}
+
+static bool stderrIsTerminal() {
+#ifdef Q_OS_UNIX
+    return isatty(STDERR_FILENO);
+#else
+    return _isatty(_fileno(stderr));
 #endif
 }
 
@@ -592,6 +601,7 @@ class PengyCliApp {
 public:
     Config      cfg;
     QJsonObject chat;
+    QStringList searchTerms;  // the last /search's words, marked by /load <n> <msg#>
     bool        m_firstEventDone = false;
     bool        m_noSave = false;
     /// Report a failed mid-turn save once, not per write.
@@ -1269,9 +1279,20 @@ private:
             listChats();
 
         } else if (cmd == "/load") {
-            bool ok; int n = arg.toInt(&ok);
-            if (!ok || n < 1) outln("Usage: /load <n>  (see /list)");
-            else loadChat(n - 1);
+            const QStringList parts = arg.split(' ', Qt::SkipEmptyParts);
+            bool ok = !parts.isEmpty();
+            const int n = ok ? parts[0].toInt(&ok) : 0;
+            int msgNo = -1;
+            if (ok && parts.size() > 1) {
+                QString m = parts[1];
+                if (m.startsWith('#')) m.remove(0, 1);
+                msgNo = m.toInt(&ok);
+            }
+            if (!ok || n < 1) outln("Usage: /load <n> [msg#]  (see /list)");
+            else loadChat(n - 1, msgNo);
+
+        } else if (cmd == "/search") {
+            cmdSearch(arg);
 
         } else if (cmd == "/delete") {
             bool ok; int n = arg.toInt(&ok);
@@ -1583,7 +1604,8 @@ private:
             {"/tasks",               "List saved prompt-template Tasks"},
             {"/task <n>",            "Run a Task by its /tasks index, prompting for any %placeholders%"},
             {"/list",                "List all chats"},
-            {"/load <n>",            "Load chat by number"},
+            {"/load <n> [msg#]",     "Load chat by number; msg# (from /search) prints that message"},
+            {"/search <words>",      "Search chat titles and messages (any order; \"quote\" a phrase)"},
             {"/delete <n>",          "Delete chat by number"},
             {"/attach",              "Show file attachment help (use @path)"},
             {"/attachments",         "Show durable attachment storage usage (read-only)"},
@@ -1623,7 +1645,94 @@ private:
         }
     }
 
-    void loadChat(int idx) {
+    // Mark every case-insensitive occurrence of `terms` in `text` (left
+    // unmarked if lowercasing changes the text's length).
+    static QString highlightTerms(const QString& text, const QStringList& terms) {
+        const QString lower = text.toLower();
+        if (terms.isEmpty() || lower.size() != text.size()) return text;
+        QList<bool> marked(text.size(), false);
+        for (const QString& t : terms) {
+            for (int i = lower.indexOf(t); i >= 0 && !t.isEmpty(); i = lower.indexOf(t, i + t.size()))
+                for (int j = i; j < i + t.size(); ++j) marked[j] = true;
+        }
+        QString out;
+        for (int i = 0; i < text.size();) {
+            int j = i;
+            while (j < text.size() && marked[j] == marked[i]) ++j;
+            const QString run = text.mid(i, j - i);
+            out += marked[i] ? bold(yellow(run)) : run;
+            i = j;
+        }
+        return out;
+    }
+
+    void cmdSearch(const QString& arg) {
+        const QStringList terms = ChatSearch::parseQuery(arg);
+        if (terms.isEmpty()) {
+            outln(dim("Usage: /search <words>  (any order; \"quote\" a phrase)"));
+            return;
+        }
+        // Number results the way /list does, so /load <n> opens one directly.
+        QHash<QString, int> position;
+        const QJsonArray index = chatsLoadIndex();
+        for (int i = 0; i < index.size(); ++i) position.insert(index[i].toObject()["id"].toString(), i + 1);
+        const bool progress = stderrIsTerminal();
+        QList<QJsonObject> results;
+        bool truncated = false;
+        ChatSearch::run(arg, ChatSearch::kMaxResults, [&](const QJsonObject& e) {
+            const QString type = e["type"].toString();
+            if (type == "result") results << e;
+            else if (type == "done") truncated = e["truncated"].toBool();
+            else if (type == "progress" && progress)
+                fprintf(stderr, "\rSearching… %d/%d", e["scanned"].toInt(), e["total"].toInt());
+            return true;
+        });
+        if (progress) fputs("\r\033[2K", stderr);
+        if (results.isEmpty()) { outln(dim("No chats match.")); return; }
+        for (const QJsonObject& r : results) {
+            QString title = r["title"].toString();
+            if (title.isEmpty()) title = "Untitled";
+            const int n = position.value(r["id"].toString());
+            outln(dim(QString("%1").arg(n ? QString::number(n) : QString("?"), 4)) + "  "
+                  + bold(highlightTerms(sanitizeDisplay(title), terms)) + "  "
+                  + dim(r["created_at"].toString().left(10)));
+            for (const QJsonValue& v : r["hits"].toArray()) {
+                const QJsonObject hit = v.toObject();
+                // #N is the message number /show uses and /load <n> <N> prints.
+                const QString who = hit["role"].toString() == "user" ? "You:" : "AI: ";
+                outln(dim(QString("      #%1 %2").arg(hit["index"].toInt() + 1, -4).arg(who)) + " "
+                      + highlightTerms(sanitizeDisplay(hit["snippet"].toString()), terms));
+            }
+        }
+        const int n = results.size();
+        const QString note = truncated
+            ? QString("First %1 chats shown; add words to narrow the search.").arg(n)
+            : QString("%1 chat%2 found.").arg(n).arg(n == 1 ? "" : "s");
+        outln(dim(note + " /load <n> to open one, /load <n> <msg#> to read a match."));
+        searchTerms = terms;
+    }
+
+    // Print message #n (1-based, as /show numbers it) in full, with the last
+    // /search's words marked.
+    void showMessage(int n) {
+        const QJsonArray msgs = chat["messages"].toArray();
+        if (n < 1 || n > msgs.size()) {
+            outln(red(QString("No message #%1; this chat has %2.").arg(n).arg(msgs.size())));
+            return;
+        }
+        const QJsonObject msg = msgs[n - 1].toObject();
+        const QString role = msg["role"].toString();
+        QString text = ChatSearch::textOf(msg["content"]);
+        if (text.isEmpty()) text = "(no text)";
+        QString label = role == "user" ? "You" : role == "assistant" ? "Assistant"
+                      : role.left(1).toUpper() + role.mid(1);
+        const QString header = QString("── #%1 %2 ").arg(n).arg(label) + QString(40, QChar(0x2500));
+        outln(bold(role == "user" ? blue(header) : green(header)));
+        outln(highlightTerms(sanitizeDisplay(text), searchTerms));
+        outln(dim(QString("── /show %1 to read on from here").arg(msgs.size() - n + 1)));
+    }
+
+    void loadChat(int idx, int msgNo = -1) {
         const QJsonArray chats = chatsLoadIndex();
         if (idx < 0 || idx >= chats.size()) { outln(red("No chat at that index.")); return; }
         const QJsonObject loaded = chatGet(chats[idx].toObject()["id"].toString());
@@ -1631,6 +1740,10 @@ private:
         chat = loaded;
         int msgCount = chat["messages"].toArray().size();
         outln(dim("Loaded: " + chat["title"].toString() + " (" + QString::number(msgCount) + " messages)"));
+        if (msgNo >= 0) {
+            showMessage(msgNo);
+            return;
+        }
         // Show tail for context
         cmdTail("3");
     }

@@ -79,12 +79,6 @@ The plan stores an endpoint/model/instruction identity, per-message prefix hashe
 
 Recovery notices are delivered through `context_compacted` with an explanatory `message` and shown in desktop, CLI stderr, and web. Summary-call usage and discarded empty-length completion usage are included in the eventual successful turn usage. No recovery inference is reported as a completed assistant answer. If the protected task cannot fit, the run fails explicitly; it never discards the active user request to force success.
 
-## Live proactive validation
-
-2026-10-23, operator-authorized `fast` (`FW-DeepSeek-V4.1-Flash`), 200 synthetic turns: a configured 1M window did not compact approximately 248K-token prompts. The same endpoint with an artificial 256K client budget bootstrapped normally, then committed one proactive summary and reduced the next prompt to 188,002 tokens; a follow-up at 188,048 did not compact. Exact marker/path/status survived and the transcript was unchanged. The initial trial exposed reasoning exhausting a bounded summary allowance; using the configured thinking-off mechanism for summary calls fixed it. [Full fast evidence and caveats](proactive-context-live-validation.md).
-
-The same day, actual Strata 0.1.41 / Swift-Qwen 3.8 at 262,144 passed: a 218,932-token history prompt was proactively reduced to 166,643; a 249,093-character tool result was retained in the transcript but previewed before the next request. The identical unreduced tool-chain view was separately rejected at 405,835 tokens, proving a real overflow was avoided. Rust window discovery returned the live 262,144 value. [Strata evidence, prefill timings and caveats](proactive-context-strata-validation.md).
-
 ## Testing
 
 - `tests/fixtures/context_pressure.json` pins measured log/prose density arithmetic for current 128K/256K/1M workloads; loop tests also cover cold starts, later user turns, unknown usage, hysteresis/budgets, failed proactive plans, reactive 400s, and bounded reply recovery.
@@ -93,6 +87,5 @@ The same day, actual Strata 0.1.41 / Swift-Qwen 3.8 at 262,144 passed: a 218,932
 - Python reference: `python -m pytest tests/test_auto_context_recovery.py tests/test_context_recovery.py tests/test_truncation.py tests/test_llm_loop.py`.
 - Rust: `cargo test --workspace -- --skip tools::remote_tests` (remote mocks require a `setsid` executable on macOS).
 - C++: build with CMake, run `pengy_tests` recovery cases and GUI CTest suites. Linux-only remote mocks are separately classified on macOS.
-- Operator-run live scripts are under Python `tests/live_*context_recovery.py`. They use synthetic data and isolated config/history and must only be run against an explicitly authorized endpoint. They intentionally induce substantial context pressure; do not point them at a shared production provider without approval.
 
 Live validation on 2026-10-05: Strata 0.1.38, Qwen3.8-Flash-Next IQ3_XXS, context 262144. Explicit context pressure recovered by tool preview and by history summary; exact `HARBOR_17`, `/tmp/harbor-17`, and pending audit survived summarization and a follow-up. A 262112-token prompt left only 24 generation tokens: recovery disabled produced `GenerationLimitError`, enabled recovered to `EMPTY_RECOVERY_OK`. Both native CLIs also recovered against Strata without changing saved tool output. Validation reports were written under `/tmp/pengy-strata-*-recovery*` on the development Mac. This is evidence for the tested workloads, not a guarantee of lossless summarization for arbitrary conversations.

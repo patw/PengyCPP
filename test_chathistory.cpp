@@ -8,6 +8,14 @@
 #include <QString>
 #include <iostream>
 #include "chathistory.h"
+#include <QCoreApplication>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QJsonDocument>
+#include <QLineEdit>
+#include <QTemporaryDir>
+#include <QThread>
 #include <QPushButton>
 
 static void requireEqual(int got, int want, const char* label) {
@@ -171,6 +179,79 @@ int main(int argc, char** argv) {
         for (auto* label : w.findChildren<QLabel*>())
             if (label->text() == "Tokens: —") cleared = true;
         requireTrue(cleared, "empty tab clears cumulative usage");
+    }
+
+    // Search: typing filters titles, Enter shows message results from the
+    // core (real chat files in a scratch PENGY_CONFIG_DIR), a click reports
+    // the hit message indexes for jump-to-message, and stale events drop.
+    {
+        QTemporaryDir cfg;
+        qputenv("PENGY_CONFIG_DIR", cfg.path().toUtf8());
+        QDir(cfg.path()).mkpath("chats");
+        auto writeChat = [&](const QString& id, const QString& title, int second, const QJsonArray& messages) {
+            QFile f(cfg.path() + "/chats/" + id + ".json");
+            f.open(QIODevice::WriteOnly);
+            f.write(QJsonDocument(QJsonObject{
+                {"id", id}, {"title", title}, {"messages", messages},
+                {"created_at", QString("2026-01-01T00:00:%1").arg(second, 2, 10, QChar('0'))}}).toJson());
+        };
+        auto msg = [](const char* role, const char* text) { return QJsonObject{{"role", role}, {"content", text}}; };
+        writeChat("s1", "Nginx notes", 1, {msg("user", "proxy_pass")});
+        writeChat("s2", "Grocery list", 2, {msg("user", "hi"), msg("assistant", "milk and an nginx joke")});
+        writeChat("s3", "Plan a trip", 3, {msg("user", "Banff")});
+
+        ChatHistoryWidget w;
+        QJsonArray seed;
+        for (auto [id, title] : {std::pair{"s3", "Plan a trip"}, {"s2", "Grocery list"}, {"s1", "Nginx notes"}})
+            seed.append(QJsonObject{{"id", id}, {"title", title}});
+        w.loadChats(seed);
+        auto visible = [&]() {
+            QStringList ids;
+            for (int i = 0; i < w.testChatList()->count(); ++i)
+                if (!w.testChatList()->isRowHidden(i)) ids << w.testChatIdAt(i);
+            return ids.join(",");
+        };
+        w.testSearchInput()->setText("NGINX");
+        requireEqual(visible(), QString("s1"), "typing filters rows by title");
+        w.testSearchInput()->setText("\"plan a\"");
+        requireEqual(visible(), QString("s3"), "a quoted phrase is one word");
+
+        w.testSearchInput()->setText("nginx");
+        w.runSearch();
+        requireEqual(w.testListPage(), 1, "Enter shows the results page");
+        QElapsedTimer timer;
+        timer.start();
+        while (!w.testSearchStatus().contains("Esc") && timer.elapsed() < 5000) {
+            QCoreApplication::processEvents();
+            QThread::msleep(5);
+        }
+        requireTrue(w.testSearchStatus().startsWith("2 chats found"), "search finishes with both chats");
+        requireEqual(w.testResults()->item(0)->data(Qt::UserRole).toString(), QString("s1"), "title match first");
+
+        QString openedId;
+        QList<int> openedSources;
+        QStringList openedTerms;
+        QObject::connect(&w, &ChatHistoryWidget::searchHitSelected,
+                         [&](const QString& id, const QList<int>& sources, const QStringList& terms) {
+                             openedId = id; openedSources = sources; openedTerms = terms;
+                         });
+        w.testClickResult(1);
+        requireEqual(openedId, QString("s2"), "click opens the chat");
+        requireTrue(openedSources == QList<int>{1}, "click reports the hit message index");
+        requireTrue(openedTerms == QStringList{"nginx"}, "click reports the search words");
+        w.testClickResult(0);
+        requireTrue(openedSources.isEmpty(), "a title-only match has nothing to jump to");
+
+        const int rows = w.testResults()->count();
+        w.testSearchEvent(w.testSearchGeneration() - 1,
+                          QJsonObject{{"type", "result"}, {"id", "x"}, {"title", "Stale"}, {"hits", QJsonArray()}});
+        requireEqual(w.testResults()->count(), rows, "stale search events are dropped");
+
+        w.testSearchInput()->setText("nginx p");
+        requireEqual(w.testListPage(), 0, "editing the query returns to the list");
+        w.testSearchInput()->clear();
+        requireEqual(visible(), QString("s3,s2,s1"), "clearing shows every chat again");
+        qunsetenv("PENGY_CONFIG_DIR");
     }
 
     std::cout << "All chathistory tests passed." << std::endl;

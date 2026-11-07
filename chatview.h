@@ -19,10 +19,17 @@ public:
     // m_htmlCache), so an append no longer re-runs markdown over the whole
     // history — but render() still calls setHtml(), which re-lays-out the whole
     // document, so batching a bulk load is still worth it.
-    void appendMessage(const QString& role, const QJsonValue& content, bool doRender = true);
-    void appendMessageText(const QString& role, const QString& text, bool doRender = true) {
-        appendMessage(role, QJsonValue(text), doRender);
+    //
+    // `source` is a user/assistant message's index in chat["messages"], which
+    // search hits point at (see revealHits); -1 for everything else.
+    void appendMessage(const QString& role, const QJsonValue& content, bool doRender = true, int source = -1);
+    void appendMessageText(const QString& role, const QString& text, bool doRender = true, int source = -1) {
+        appendMessage(role, QJsonValue(text), doRender, source);
     }
+    // Mark `terms` in the messages whose chat index is in `sources` and scroll
+    // the first one into view.  False if none of them is shown here (e.g. the
+    // chat was redacted since the search ran).
+    bool revealHits(const QList<int>& sources, const QStringList& terms);
     void renderNow();
     void clear();
     void applyTheme(const Theme& theme, int scale = 100);
@@ -43,6 +50,8 @@ public:
     }
     int testCacheSize() const { return m_htmlCache.size(); }
     bool testAutoScroll() const { return m_autoScroll; }
+    QList<int> testHitMarks() const { return m_hitMarks.keys(); }
+    QString testCachedHtml(int idx) const { return m_htmlCache.value(idx); }
     QVariant testLoadImage(const QUrl& url) { return loadResource(QTextDocument::ImageResource, url); }
     void testOpenImagePreview(const QString& source) { openImagePreview(source); }
     QString testImageAt(const QPoint& pos) const { return imageAt(pos); }
@@ -59,6 +68,9 @@ private slots:
 
 private:
     void render();
+    void scrollToBottom();
+    void scrollToHit();
+    void clearHitMarks();
     QString buildHtml();
     QString buildCss() const;
     void invalidate(int idx);
@@ -90,6 +102,8 @@ private:
     QList<QString> m_htmlCache;
     QSet<QString> m_expandedTools;
     QSet<int> m_expandedReasoning;
+    // Search hits being shown: view index -> words to mark (see revealHits).
+    QMap<int, QStringList> m_hitMarks;
 
     // Image caching for external HTTP images
     QMap<QString, QByteArray> m_imageCache;  // url -> raw bytes (empty = failed)

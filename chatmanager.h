@@ -1,6 +1,7 @@
 #pragma once
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QByteArray>
 #include <QString>
 
 // All data is represented as QJsonObject/QJsonArray to match the existing
@@ -20,6 +21,9 @@ QJsonObject chatCreate(const QString& title);
 bool        chatDelete(const QString& id);
 bool        chatSave(const QJsonObject& chat);
 QJsonObject chatGet(const QString& id);
+// A stored chat's file as raw bytes, for chat search's pre-check (which skips
+// most files without a JSON parse); empty if missing.  Ids come from the index.
+QByteArray  chatReadRaw(const QString& id);
 // Where a chat's title came from, stored as chat["title_source"].  Absent is
 // the automatic first-message title (and every chat from before the field).
 // Bulk Rename only touches absent ones, which makes it resumable and leaves

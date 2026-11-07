@@ -8,6 +8,8 @@
 #include "../provider_messages.h"
 #include "../about.h"
 #include "../titlegen.h"
+#include "../chatsearch.h"
+#include <QUrlQuery>
 #include <QTcpSocket>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -194,6 +196,8 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
         routeFile(req, socket);
     } else if (parts[0] == "attachments" && parts.size() == 3 && req.method == "GET") {
         routeAttachment(req, socket);
+    } else if (parts[0] == "search" && parts.size() == 1 && req.method == "GET") {
+        routeSearch(req, socket);
     } else if (parts[0] == "tasks" && parts.size() == 1 && req.method == "GET") {
         routeTasks(socket);
     } else if (parts[0] == "tasks" && parts.size() == 2 && parts[1] == "render" && req.method == "POST") {
@@ -787,6 +791,25 @@ void WebServer::routeChatGenerateTitle(const QString& chatId,
     });
 }
 
+// Sidebar chat search (Enter in the search box): every result at once, as
+// {"results": [...], "truncated": bool} -- same shape as the Python edition.
+// Scans chat files, so it runs off the (single) server thread.
+void WebServer::routeSearch(const HttpRequest& req, QTcpSocket* socket) {
+    const int q = req.path.indexOf('?');
+    const QString query = q < 0 ? QString()
+        : QUrlQuery(req.path.mid(q + 1)).queryItemValue("q", QUrl::FullyDecoded);
+    sendJsonAsync(socket, [query]() -> std::pair<int, QJsonObject> {
+        QJsonArray results;
+        bool truncated = false;
+        ChatSearch::run(query, ChatSearch::kMaxResults, [&](const QJsonObject& event) {
+            if (event["type"] == "result") results.append(event);
+            else if (event["type"] == "done") truncated = event["truncated"].toBool();
+            return true;
+        });
+        return {200, {{"results", results}, {"truncated", truncated}}};
+    });
+}
+
 void WebServer::sendJsonAsync(QTcpSocket* socket,
                               std::function<std::pair<int, QJsonObject>()> work) {
     QPointer<WebServer> self(this);
@@ -1153,6 +1176,11 @@ void WebServer::routeSettings(const HttpRequest& req, QTcpSocket* socket) {
         if (f.contains("model"))             cfg.model            = f["model"];
         if (f.contains("system_message"))    cfg.systemMessage    = f["system_message"];
         if (f.contains("tool_confirmation")) cfg.toolConfirmation = f["tool_confirmation"];
+        // Shared with the desktop app; anything but the three modes is ignored.
+        if (f.contains("theme_mode")) {
+            const QString mode = f["theme_mode"];
+            if (mode == "system" || mode == "light" || mode == "dark") cfg.themeMode = mode;
+        }
         if (f.contains("reasoning_effort"))   cfg.reasoningEffort  = f["reasoning_effort"];
         if (f.contains("user_agent"))        cfg.userAgent        = f["user_agent"];
         cfg.preserveReasoning = f.contains("preserve_reasoning");
@@ -1280,10 +1308,34 @@ static QString safeJs(const QByteArray& json) {
     return QString::fromUtf8(json).replace("</", "<\\/");
 }
 
+// The configured theme mode, validated; "system" is resolved client-side.
+static QString themeMode(const Config& cfg) {
+    return (cfg.themeMode == "light" || cfg.themeMode == "dark") ? cfg.themeMode : QStringLiteral("system");
+}
+
+// Fill in the parts every page shares: the theme (an explicit light/dark is
+// rendered here so it works without JS; theme-head.html resolves "system"),
+// and the sidebar chat search and search-hit reveal scripts.  All three files
+// are shared verbatim with the Rust edition (and match Python's templates).
+// Done before any chat data is substituted, so text inside a chat can never
+// be taken for a placeholder.
+static QString withSharedParts(QString html) {
+    for (const auto& [placeholder, file] : {std::pair{"{{THEME_HEAD}}", "theme-head.html"},
+                                            std::pair{"{{CHAT_SEARCH_JS}}", "chat-search.js"},
+                                            std::pair{"{{SEARCH_HITS_JS}}", "search-hits.js"}}) {
+        QFile f(QStringLiteral(":/web/templates/") + file);
+        if (f.open(QIODevice::ReadOnly)) html.replace(placeholder, QString::fromUtf8(f.readAll()));
+    }
+    const QString mode = themeMode(configLoad());
+    html.replace("{{THEME_MODE}}", mode);
+    html.replace("{{BS_THEME}}", mode == "dark" ? "dark" : "light");
+    return html;
+}
+
 QByteArray WebServer::renderChatPage(const QString& chatId) {
     QFile f(":/web/templates/chat.html");
     if (!f.open(QIODevice::ReadOnly)) return "<h1>Template missing</h1>";
-    QString html = QString::fromUtf8(f.readAll());
+    QString html = withSharedParts(QString::fromUtf8(f.readAll()));
 
     Config cfg = configLoad();
     QJsonObject chat = chatGet(chatId);
@@ -1308,7 +1360,7 @@ QByteArray WebServer::renderChatPage(const QString& chatId) {
 QByteArray WebServer::renderSettingsPage() {
     QFile f(":/web/templates/settings.html");
     if (!f.open(QIODevice::ReadOnly)) return "<h1>Template missing</h1>";
-    QString html = QString::fromUtf8(f.readAll());
+    QString html = withSharedParts(QString::fromUtf8(f.readAll()));
 
     Config cfg = configLoad();
     QJsonArray chats = chatsLoadIndex();
@@ -1331,6 +1383,9 @@ QByteArray WebServer::renderSettingsPage() {
     html.replace("{{TC_NONE}}",  cfg.toolConfirmation == "none"  ? "selected" : "");
     html.replace("{{TC_SAFE}}",  cfg.toolConfirmation == "safe"  ? "selected" : "");
     html.replace("{{TC_ALL}}",   cfg.toolConfirmation == "all"   ? "selected" : "");
+    html.replace("{{THEME_SYSTEM}}", themeMode(cfg) == "system" ? "selected" : "");
+    html.replace("{{THEME_LIGHT}}",  themeMode(cfg) == "light"  ? "selected" : "");
+    html.replace("{{THEME_DARK}}",   themeMode(cfg) == "dark"   ? "selected" : "");
     html.replace("{{REASONING_DEFAULT}}", cfg.reasoningEffort.isEmpty() ? "selected" : "");
     html.replace("{{REASONING_NONE}}",    cfg.reasoningEffort == "none" ? "selected" : "");
     html.replace("{{REASONING_LOW}}",     cfg.reasoningEffort == "low" ? "selected" : "");
@@ -1346,7 +1401,7 @@ QByteArray WebServer::renderSettingsPage() {
 QByteArray WebServer::renderAboutPage() {
     QFile f(":/web/templates/about.html");
     if (!f.open(QIODevice::ReadOnly)) return "<h1>Template missing</h1>";
-    QString html = QString::fromUtf8(f.readAll());
+    QString html = withSharedParts(QString::fromUtf8(f.readAll()));
 
     QJsonArray chats = chatsLoadIndex();
 

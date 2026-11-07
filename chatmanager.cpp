@@ -406,6 +406,12 @@ bool chatSetTitle(const QString& id, const QString& title, const QString& source
     return chatSave(chat);
 }
 
+QByteArray chatReadRaw(const QString& id) {
+    QFile f(chatFilePath(id));
+    if (!f.open(QIODevice::ReadOnly)) return {};
+    return f.readAll();
+}
+
 QJsonObject chatGet(const QString& id) {
     QJsonDocument doc = readJson(chatFilePath(id));
     if (doc.isObject()) return doc.object();

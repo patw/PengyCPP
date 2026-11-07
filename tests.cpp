@@ -24,6 +24,7 @@
 #include "config.h"
 #include "chatmanager.h"
 #include "chattitle.h"
+#include "chatsearchcore.h"
 #include "titlegen.h"
 #include "taskmanager.h"
 #include <QImage>
@@ -2876,6 +2877,56 @@ private slots:
         QVERIFY(r.body.contains(chatId.toUtf8()));
     }
 
+    void webSearchRouteAndSidebar() {
+        auto make = [](const QString& title, int second, const char* role, const char* text) {
+            QJsonObject chat = chatCreate(title);
+            chat["created_at"] = QString("2026-01-01T00:00:%1").arg(second, 2, 10, QChar('0'));
+            chat["messages"] = QJsonArray{QJsonObject{{"role", role}, {"content", text}}};
+            chatSave(chat);
+            return chat["id"].toString();
+        };
+        const QString titled = make("Nginx notes", 1, "user", "proxy_pass");
+        const QString other = make("Other", 2, "assistant", "reverse proxy via nginx");
+
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("GET", server.port(), "/search?q=nginx%20proxy");
+        QCOMPARE(r.status, 200);
+        const QJsonObject data = QJsonDocument::fromJson(r.body).object();
+        const QJsonArray results = data["results"].toArray();
+        QCOMPARE(results.size(), 2);
+        QCOMPARE(results[0].toObject()["id"].toString(), other);  // newest first: no title holds both words
+        QCOMPARE(results[1].toObject()["id"].toString(), titled);
+        QCOMPARE(results[0].toObject()["hits"].toArray()[0].toObject()["index"].toInt(), 0);
+        QCOMPARE(data["truncated"].toBool(), false);
+
+        // Every page with the sidebar gets the search box and its script;
+        // the chat page also gets the hit-revealing script.
+        for (const QString& page : {"/chat/" + other, QString("/settings"), QString("/about")}) {
+            const QByteArray html = webRequest("GET", server.port(), page).body;
+            QVERIFY2(html.contains("id=\"chatSearch\"") && html.contains("id=\"chatList\""), qPrintable(page));
+            QVERIFY2(html.contains("function runSearch()"), qPrintable(page));
+            QVERIFY2(!html.contains("{{"), qPrintable(page));
+        }
+        QVERIFY(webRequest("GET", server.port(), "/chat/" + other).body.contains("function revealSearchHits()"));
+    }
+
+    void cliSearchNumbersMessagesAndLoadPrintsOne() {
+        QJsonObject c = chatCreate("t");
+        auto m = [](const char* role, const char* text) { return QJsonObject{{"role", role}, {"content", text}}; };
+        c["messages"] = QJsonArray{m("user", "hello"), m("assistant", "hi"), m("user", "how do I set up nginx"),
+                                   m("assistant", "Install **nginx** and edit the config.")};
+        chatSave(c);
+        const QString out = runCli({"/search NGINX", "/load 1 #4", "/load 1 9", "/search zzz", "/search", "/quit"});
+        QVERIFY2(out.contains("#3    You:") && out.contains("#4    AI:"), qPrintable(out));
+        QVERIFY2(out.contains("1 chat found. /load <n> to open one"), qPrintable(out));
+        QVERIFY2(out.contains("── #4 Assistant"), qPrintable(out));
+        QVERIFY2(out.contains("Install **nginx** and edit the config."), qPrintable(out));
+        QVERIFY2(out.contains("/show 1 to read on from here"), qPrintable(out));
+        QVERIFY2(out.contains("No message #9; this chat has 4."), qPrintable(out));
+        QVERIFY2(out.contains("No chats match.") && out.contains("Usage: /search <words>"), qPrintable(out));
+    }
+
     void webGetSettingsPage() {
         WebServer server("127.0.0.1", 0);
         QVERIFY(server.start());
@@ -2885,6 +2936,48 @@ private slots:
         QVERIFY(r.body.contains("base_url"));
         QVERIFY(r.body.contains("api_key"));
         QVERIFY(r.body.contains("tool_confirmation"));
+    }
+
+    void webThemeRendersPersistsAndUsesTokens() {
+        Config cfg = configLoad();
+        cfg.themeMode = "dark";
+        configSave(cfg);
+        const QString chatId = chatCreate("Theme")["id"].toString();
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        auto htmlTag = [](const QByteArray& page) {
+            const int start = page.indexOf("<html");
+            return QString::fromUtf8(page.mid(start, page.indexOf('>', start) - start));
+        };
+        for (const QString& path : {"/chat/" + chatId, QString("/settings"), QString("/about")}) {
+            const QByteArray page = webRequest("GET", server.port(), path).body;
+            QVERIFY2(htmlTag(page).contains("data-bs-theme=\"dark\" data-theme-mode=\"dark\""), qPrintable(path));
+            // The resolver runs before the stylesheet, so a dark page never flashes light.
+            QVERIFY2(page.indexOf("prefers-color-scheme") < page.indexOf("bootstrap.min.css"), qPrintable(path));
+            QVERIFY2(page.indexOf("{{") < 0, qPrintable(path));
+            // Colours belong in the token block (the tool-card accent is a
+            // deliberate theme-agnostic highlight).
+            const QByteArray rest = page.mid(page.indexOf("</style>", page.indexOf("[data-bs-theme=\"dark\"]")));
+            static const QRegularExpression hex("#[0-9a-fA-F]{6}\\b");
+            for (auto it = hex.globalMatch(QString::fromUtf8(rest)); it.hasNext();) {
+                const QString h = it.next().captured().toLower();
+                QVERIFY2(h == "#f9e2af", qPrintable(path + ": stray colour " + h));
+            }
+        }
+        const QByteArray settings = webRequest("GET", server.port(), "/settings").body;
+        QVERIFY(settings.contains("<option value=\"dark\" selected>Dark</option>"));
+
+        // "system" renders light as the no-JS fallback; the script resolves it.
+        webRequest("POST", server.port(), "/settings", "theme_mode=system", "application/x-www-form-urlencoded");
+        QCOMPARE(configLoad().themeMode, QString("system"));
+        QVERIFY(htmlTag(webRequest("GET", server.port(), "/about").body)
+                    .contains("data-bs-theme=\"light\" data-theme-mode=\"system\""));
+        // Anything else is ignored, not saved; leaving the field out keeps it.
+        webRequest("POST", server.port(), "/settings", "theme_mode=solarized", "application/x-www-form-urlencoded");
+        QCOMPARE(configLoad().themeMode, QString("system"));
+        webRequest("POST", server.port(), "/settings", "theme_mode=light", "application/x-www-form-urlencoded");
+        webRequest("POST", server.port(), "/settings", "model=x", "application/x-www-form-urlencoded");
+        QCOMPARE(configLoad().themeMode, QString("light"));
     }
 
     void webPostSettingsSavesAndRedirects() {
@@ -3318,6 +3411,129 @@ private slots:
     }
 
     // ── Chat titles (Edit Chat / Bulk Rename) ──────────────────────────
+
+    // ── Chat search (rules pinned in Python Pengy's spec.md "Chat Search") ──
+
+    void searchParseQueryMatchesPython() {
+        const QList<QPair<QString, QStringList>> cases = {
+            {"NGINX proxy", {"nginx", "proxy"}},
+            {"  \"Reverse   Proxy\"  nginx ", {"reverse proxy", "nginx"}},
+            {"a a A", {"a"}},
+            {"\"\"", {}},
+            {"", {}},
+            {"\"open quote", {"\"open", "quote"}},
+            {"run \"make all\" in C:\\src", {"run", "make all", "in", "c:\\src"}},
+        };
+        for (const auto& c : cases) QCOMPARE(ChatSearch::parseQuery(c.first), c.second);
+    }
+
+    void searchMatchRules() {
+        using ChatSearch::matchChat;
+        auto msg = [](const char* role, const QJsonValue& content) {
+            return QJsonObject{{"role", role}, {"content", content}};
+        };
+        QJsonObject chat{{"title", "t"}, {"messages", QJsonArray{
+            msg("user", "set up nginx"), msg("assistant", "use a proxy_pass")}}};
+        auto hits = matchChat(chat, {"nginx", "proxy"});
+        QVERIFY(hits);
+        QCOMPARE(hits->at(0).toObject()["index"].toInt(), 0);
+        QCOMPARE(hits->at(1).toObject()["index"].toInt(), 1);
+        QVERIFY(!matchChat(chat, {"nginx", "apache"}));
+        QVERIFY(matchChat(QJsonObject{{"title", "Nginx notes"}, {"messages", QJsonArray{
+            msg("user", "proxy_pass")}}}, {"nginx", "proxy"}));
+
+        // Tool traffic is not searched; list content is.
+        QJsonObject tools{{"title", "t"}, {"messages", QJsonArray{
+            msg("user", "read my config"),
+            QJsonObject{{"role", "assistant"}, {"content", QJsonValue()}, {"tool_calls", QJsonArray{
+                QJsonObject{{"id", "1"}, {"function", QJsonObject{{"name", "read_file"},
+                    {"arguments", "{\"path\": \"nginx.conf\"}"}}}}}}},
+            QJsonObject{{"role", "tool"}, {"tool_call_id", "1"}, {"content", "server { nginx }"}},
+            msg("user", QJsonArray{QJsonObject{{"type", "text"}, {"text", "what is in this image"}},
+                                   QJsonObject{{"type", "image_url"}}})}}};
+        QVERIFY(!matchChat(tools, {"nginx"}));
+        QCOMPARE(matchChat(tools, {"image"})->at(0).toObject()["index"].toInt(), 3);
+
+        QJsonArray many;
+        for (int i = 0; i < 4; ++i) many << msg("user", "nginx");
+        many << msg("assistant", "nginx proxy here");
+        auto top = matchChat(QJsonObject{{"title", "t"}, {"messages", many}}, {"nginx", "proxy"});
+        QCOMPARE(top->size(), ChatSearch::kMaxHits);
+        QCOMPARE(top->last().toObject()["index"].toInt(), 4);
+    }
+
+    void searchSnippets() {
+        using ChatSearch::makeSnippet;
+        const QString text = QString(200, 'x') + " the NGINX config " + QString(200, 'y');
+        auto s = makeSnippet(text, {"nginx"});
+        QVERIFY(s.text.startsWith(QStringLiteral("…")) && s.text.endsWith(QStringLiteral("…")));
+        const QJsonArray span = s.spans.at(0).toArray();
+        QCOMPARE(s.text.mid(span[0].toInt(), span[1].toInt() - span[0].toInt()), QString("NGINX"));
+
+        s = makeSnippet("**Use** `nginx`\n\n```bash\nreload\n```", {"nginx"});
+        QCOMPARE(s.text, QString("Use nginx reload"));
+        QCOMPARE(s.spans, (QJsonArray{QJsonArray{4, 9}}));
+        // Spans are code points, as in Python: the emoji counts once, not twice.
+        s = makeSnippet(QString::fromUtf8("🐧 café nginx"), ChatSearch::parseQuery(QString::fromUtf8("nginx café")));
+        QCOMPARE(s.spans, (QJsonArray{QJsonArray{2, 6}, QJsonArray{7, 12}}));
+    }
+
+    void searchScansChatFiles() {
+        auto make = [](const QString& title, int second, const QJsonArray& messages) {
+            QJsonObject chat = chatCreate(title);
+            chat["created_at"] = QString("2026-01-01T00:00:%1").arg(second, 2, 10, QChar('0'));
+            chat["messages"] = messages;
+            chatSave(chat);
+            return chat["id"].toString();
+        };
+        auto m = [](const char* role, const char* text) { return QJsonObject{{"role", role}, {"content", text}}; };
+        auto run = [](const QString& q, int limit = 0) {
+            QList<QJsonObject> events;
+            ChatSearch::run(q, limit, [&](const QJsonObject& e) { events << e; return true; });
+            return events;
+        };
+        auto ids = [](const QList<QJsonObject>& events) {
+            QStringList out;
+            for (const auto& e : events) if (e["type"] == "result") out << e["id"].toString();
+            return out;
+        };
+        const QString old = make("Old", 1, {m("user", "nginx setup")});
+        const QString titled = make("Nginx notes", 2, {m("user", "hello")});
+        const QString fresh = make("New", 3, {m("assistant", "more NGINX")});
+        make("New Chat", 4, {});
+
+        auto events = run("nginx");
+        QCOMPARE(ids(events), (QStringList{titled, fresh, old}));
+        QVERIFY(events[0]["title_match"].toBool() && events[0]["hits"].toArray().isEmpty());
+        QCOMPARE(events.last(), (QJsonObject{{"type", "done"}, {"results", 3},
+                                             {"truncated", false}, {"cancelled", false}}));
+        int progress = 0;
+        for (const auto& e : events) if (e["type"] == "progress") ++progress;
+        QCOMPARE(progress, 2);  // the empty chat is never read
+
+        // A file as the Python edition writes it: non-ASCII as \u escapes.
+        const QString python = make("t", 5, {m("user", "placeholder")});
+        const QString path = pengyConfigDirPath() + "/chats/" + python + ".json";
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QByteArray raw = f.readAll().replace("placeholder", "Un CAF\\u00c9 cr\\u00e8me");
+        f.close();
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(raw);
+        f.close();
+        QCOMPARE(ids(run(QString::fromUtf8("café"))), QStringList{python});
+
+        auto limited = run("nginx", 2);
+        QCOMPARE(ids(limited).size(), 2);
+        QVERIFY(limited.last()["truncated"].toBool());
+
+        // Returning false from the callback cancels before the next file.
+        QList<QJsonObject> seen;
+        ChatSearch::run("zzz", 0, [&](const QJsonObject& e) { seen << e; return e["type"] != "progress"; });
+        QCOMPARE(seen.size(), 2);
+        QCOMPARE(seen[1]["type"].toString(), QString("done"));
+        QVERIFY(seen[1]["cancelled"].toBool());
+    }
 
     void titleCleanupMatchesPython() {
         const QList<QPair<QString, QString>> cases = {

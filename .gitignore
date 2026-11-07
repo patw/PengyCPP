@@ -3,6 +3,7 @@ build/
 build_macos/
 build_windows/
 build_test*/
+appimage/Pengy.AppDir/
 Pengy.app/
 Pengy-Windows/
 

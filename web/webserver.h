@@ -98,6 +98,7 @@ private:
     void routeChatRedact(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatCommand(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeTasks(QTcpSocket* socket);
+    void routeSearch(const HttpRequest& req, QTcpSocket* socket);
     void routeTasksRender(const HttpRequest& req, QTcpSocket* socket);
     void routeModels(QTcpSocket* socket);
     void routeFile(const HttpRequest& req, QTcpSocket* socket);    void routeAttachment(const HttpRequest& req, QTcpSocket* socket);

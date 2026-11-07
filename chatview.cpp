@@ -1,4 +1,5 @@
 #include "chatview.h"
+#include <algorithm>
 #include "imagepreview.h"
 #include "imagesave.h"
 #include <QMenu>
@@ -81,24 +82,67 @@ ul, ol { margin:4px 0 8px 20px; padding-left:16px; }
 li { margin:2px 0; }
 h1, h2, h3, h4, h5, h6 { margin:10px 0 4px 0; }
 h1 { font-size:1.4em; } h2 { font-size:1.3em; } h3 { font-size:1.1em; } h4, h5, h6 { font-size:1em; }
+.search-hit { background-color:%27; font-weight:bold; }
 )CSS")
         .arg(fixed).arg(m_theme["bg"], m_theme["fg"], m_theme["link"], m_theme["border"], m_theme["panel_2"],
              m_theme["user_label"]).arg(m_theme["assistant_label"], m_theme["border_soft"], m_theme["tool_bg"],
              m_theme["tool_arg_bg"], m_theme["code_fg"], m_theme["code_bg"], m_theme["muted"], m_theme["danger"],
              m_theme["reasoning_border"], m_theme["reasoning_bg"], m_theme["reasoning_fg"],
              m_theme["notice_border"], m_theme["notice_bg"], m_theme["notice_fg"],
-             m_theme["error_border"], m_theme["error_bg"], m_theme["error_fg"]);
+             m_theme["error_border"], m_theme["error_bg"], m_theme["error_fg"]).arg(m_theme["selection"]);
 }
 
-void ChatView::appendMessage(const QString& role, const QJsonValue& content, bool doRender) {
+// Wrap each search word in rendered `html` in a search-hit span.  Words are
+// matched case-insensitively in the text between tags only, against the
+// escaped text, so a word holding & or < still finds its entity form.  A word
+// split across tags (e.g. highlighted code tokens) is not marked.
+static QString markSearchTerms(const QString& html, const QStringList& terms) {
+    QStringList forms;
+    for (const QString& t : terms) {
+        if (t.isEmpty()) continue;
+        // User messages escape quotes as &quot;; markdown output leaves them bare.
+        QString noQuotes = t;
+        noQuotes.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        for (const QString& form : {noQuotes, t.toHtmlEscaped()})
+            if (!forms.contains(form)) forms << QRegularExpression::escape(form);
+    }
+    if (forms.isEmpty()) return html;
+    std::sort(forms.begin(), forms.end(), [](const QString& a, const QString& b) { return a.size() > b.size(); });
+    const QRegularExpression words('(' + forms.join('|') + ')', QRegularExpression::CaseInsensitiveOption
+                                                        | QRegularExpression::UseUnicodePropertiesOption);
+    static const QRegularExpression tag(QStringLiteral("<[^>]*>"));
+    QString out;
+    int pos = 0;
+    auto markText = [&](const QString& text) {
+        QString marked = text;
+        marked.replace(words, QStringLiteral("<span class='search-hit'>\\1</span>"));
+        out += marked;
+    };
+    for (auto it = tag.globalMatch(html); it.hasNext();) {
+        const auto m = it.next();
+        markText(html.mid(pos, m.capturedStart() - pos));
+        out += m.captured();
+        pos = m.capturedEnd();
+    }
+    markText(html.mid(pos));
+    return out;
+}
+
+void ChatView::appendMessage(const QString& role, const QJsonValue& content, bool doRender, int source) {
     if (role == "user") {
         QJsonObject obj = content.toObject();
         QJsonObject msg;
         msg["role"] = "user";
         msg["content"] = obj.contains("content") ? obj["content"] : content;
         msg["attachments"] = obj["attachments"];
+        if (source >= 0) msg["source"] = source;
         m_messages.append(msg);
         m_htmlCache.append(QString());
+        if (doRender) {
+            // Sending a message ends a search jump: back to following the chat.
+            clearHitMarks();
+            m_autoScroll = true;
+        }
     } else if (role == "tool_request") {
         // Create a unified tool_block with result = null (not yet available)
         QJsonObject obj = content.toObject();
@@ -135,6 +179,7 @@ void ChatView::appendMessage(const QString& role, const QJsonValue& content, boo
                 msg[it.key()] = it.value();
             }
         }
+        if (source >= 0) msg["source"] = source;
         m_messages.append(msg);
         m_htmlCache.append(QString());
     }
@@ -156,6 +201,7 @@ void ChatView::clear() {
     m_htmlCache.clear();
     m_expandedTools.clear();
     m_expandedReasoning.clear();
+    m_hitMarks.clear();
     m_autoScroll = true;
     QTextBrowser::clear();
 }
@@ -287,13 +333,52 @@ void ChatView::render() {
     if (m_autoScroll) {
         m_rendering = false;
         // maximum() is stale until Qt lays out the new document, so defer.
-        QTimer::singleShot(0, this, [this]() {
-            verticalScrollBar()->setValue(verticalScrollBar()->maximum());
-        });
+        QTimer::singleShot(0, this, &ChatView::scrollToBottom);
     } else {
         sb->setValue(prev);
         m_rendering = false;
     }
+}
+
+void ChatView::scrollToBottom() {
+    // Skipped if a search jump (revealHits) landed since this was queued, as
+    // it does right after a chat is opened from a search result.
+    if (m_autoScroll) verticalScrollBar()->setValue(verticalScrollBar()->maximum());
+}
+
+// ── search hits ─────────────────────────────────────────────────────────────
+
+bool ChatView::revealHits(const QList<int>& sources, const QStringList& terms) {
+    clearHitMarks();
+    for (int i = 0; i < m_messages.size(); ++i) {
+        const QJsonValue source = m_messages[i].toObject().value("source");
+        if (source.isDouble() && sources.contains(source.toInt())) {
+            m_hitMarks.insert(i, terms);
+            invalidate(i);
+        }
+    }
+    if (m_hitMarks.isEmpty()) return false;
+    // Stay put on later renders instead of snapping back to the bottom.
+    m_autoScroll = false;
+    render();
+    // The anchor's position is only known once Qt has laid out the new
+    // document, and this must run after any pending scroll-to-bottom.
+    QTimer::singleShot(0, this, &ChatView::scrollToHit);
+    return true;
+}
+
+void ChatView::scrollToHit() {
+    m_rendering = true;
+    scrollToAnchor("pengy-hit");
+    // A little of the previous message above it, so the hit isn't flush
+    // against the top edge.
+    verticalScrollBar()->setValue(verticalScrollBar()->value() - 24);
+    m_rendering = false;
+}
+
+void ChatView::clearHitMarks() {
+    for (int idx : m_hitMarks.keys()) invalidate(idx);
+    m_hitMarks.clear();
 }
 
 // ── render cache ────────────────────────────────────────────────────────────
@@ -331,6 +416,8 @@ QString ChatView::buildHtml() {
             QString rendered = renderMessage(m_messages[i].toObject(), i);
             // renderMessage may legitimately produce nothing (e.g. an empty
             // assistant message); store empty-but-non-null so it stays cached.
+            if (!m_hitMarks.isEmpty() && i == m_hitMarks.firstKey())
+                rendered = "<a name='pengy-hit'></a>" + rendered;
             m_htmlCache[i] = rendered.isNull() ? QLatin1String("") : rendered;
         }
         html += m_htmlCache[i];
@@ -363,7 +450,9 @@ QString ChatView::renderMessage(const QJsonObject& msg, int idx) const {
             "<p class='role-user'>&#x1F9D1; You</p>"
             "<div class='attachment-gallery'>%1</div>"
             "<p style='margin:2px 0 10px 0;white-space:pre-wrap;'>%2</p>"
-        ).arg(gallery, escapeHtml(msg["content"].toString()));
+        ).arg(gallery, m_hitMarks.contains(idx)
+                    ? markSearchTerms(escapeHtml(msg["content"].toString()), m_hitMarks.value(idx))
+                    : escapeHtml(msg["content"].toString()));
 
     } else if (role == "assistant") {
         QString content = msg["content"].toString();
@@ -375,7 +464,8 @@ QString ChatView::renderMessage(const QJsonObject& msg, int idx) const {
         parts += QString(
             "<p class='role-assistant'>&#x1F916; Assistant</p>"
             "<div style='margin:2px 0 10px 0;'>%1</div>"
-        ).arg(markdownToHtml(content));
+        ).arg(m_hitMarks.contains(idx) ? markSearchTerms(markdownToHtml(content), m_hitMarks.value(idx))
+                                       : markdownToHtml(content));
         return parts;
 
     } else if (role == "tool_block") {
