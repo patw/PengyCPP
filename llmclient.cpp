@@ -590,6 +590,11 @@ static LlmResponse syncPost(const QUrl& url, const QByteArray& body,
     return resp;
 }
 
+LlmResponse llmPostOnce(const QUrl& url, const QByteArray& body,
+                        const QString& apiKey, int timeoutMs) {
+    return syncPost(url, body, apiKey, timeoutMs, [] { return false; });
+}
+
 static bool isProxyReasoning(const QJsonValue& details) {
     return details.isObject() && details.toObject()["format"].toString()
         == "openai-proxy/reasoning-v1";

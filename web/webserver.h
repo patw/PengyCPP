@@ -1,4 +1,6 @@
 #pragma once
+#include <functional>
+#include <utility>
 #include <QObject>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -92,6 +94,7 @@ private:
     void routeChatExport(const QString& chatId, QTcpSocket* socket);
     void routeChatExportBundle(const QString& chatId, const QString& format, QTcpSocket* socket);
     void routeChatRename(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
+    void routeChatGenerateTitle(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatRedact(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeChatCommand(const QString& chatId, const HttpRequest& req, QTcpSocket* socket);
     void routeTasks(QTcpSocket* socket);
@@ -104,6 +107,9 @@ private:
     void sendResponse(QTcpSocket* socket, int status,
                       const QString& contentType, const QByteArray& body);
     void sendJson(QTcpSocket* socket, int status, const QJsonObject& obj);
+    // Run `work` on a worker thread and send its {status, body} as JSON when
+    // it finishes, so a slow model request never stalls the server's thread.
+    void sendJsonAsync(QTcpSocket* socket, std::function<std::pair<int, QJsonObject>()> work);
     void sendRedirect(QTcpSocket* socket, const QString& location);
     void pushSse(const QString& chatId, const QJsonObject& event);
     static QByteArray formatSseEvent(int id, const QJsonObject& event);

@@ -141,6 +141,10 @@ static QJsonObject summarize(const QJsonObject& chat) {
     e["created_at"] = chat["created_at"].toString();
     e["msg_count"]  = chat["messages"].toArray().size();
     e["preview"]    = previewOf(chat);
+    // Always present (null = automatic title), matching the Python edition: an
+    // entry *without* the key means "unknown, read the chat file".
+    e["title_source"] = chat.contains("title_source") ? chat["title_source"]
+                                                      : QJsonValue(QJsonValue::Null);
     return e;
 }
 
@@ -392,6 +396,14 @@ bool chatSave(const QJsonObject& chat) {
     one.append(chat);
     updateIndexEntries(one);
     return true;
+}
+
+bool chatSetTitle(const QString& id, const QString& title, const QString& source) {
+    QJsonObject chat = chatGet(id);
+    if (chat.isEmpty()) return false;
+    chat["title"] = title;
+    if (!source.isEmpty()) chat["title_source"] = source;
+    return chatSave(chat);
 }
 
 QJsonObject chatGet(const QString& id) {

@@ -17,6 +17,11 @@ public:
     explicit SettingsDialog(const Config& config, QWidget* parent = nullptr);
     Config config() const { return m_config; }
 
+signals:
+    /// Settings → UI → Bulk Rename Chats. The owner (MainWindow) runs it: it
+    /// must keep open tabs in sync.
+    void bulkRenameRequested();
+
 private slots:
     void fetchModels();
     void refreshSkills(const QString& note = QString());

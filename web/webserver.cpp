@@ -7,6 +7,7 @@
 #include "../attachments.h"
 #include "../provider_messages.h"
 #include "../about.h"
+#include "../titlegen.h"
 #include <QTcpSocket>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -24,6 +25,9 @@
 #include <QDir>
 #include <QUuid>
 #include <QSet>
+#include <QPointer>
+#include <QThread>
+#include <QCoreApplication>
 #include <algorithm>
 
 WebServer::WebServer(const QString& host, quint16 port, QObject* parent)
@@ -201,6 +205,9 @@ void WebServer::handleRequest(const HttpRequest& req, QTcpSocket* socket) {
             routeChatNew(socket);
         } else if (parts.size() == 2) {
             routeChatView(parts[1], socket);
+        } else if (parts.size() == 4 && parts[2] == "title" && parts[3] == "generate"
+                   && req.method == "POST") {
+            routeChatGenerateTitle(parts[1], req, socket);
         } else if (parts.size() == 4 && parts[2] == "export" && req.method == "GET") {
             routeChatExportBundle(parts[1], parts[3], socket);
         } else if (parts.size() == 3) {
@@ -755,9 +762,43 @@ void WebServer::routeChatRename(const QString& chatId,
         sendJson(socket, 404, {{"error","chat not found"}});
         return;
     }
+    // "model" when the client saves an unedited generated title; anything a
+    // person typed is "user", which Bulk Rename never overwrites.
+    const QString source = body["source"].toString() == kTitleSourceModel ? kTitleSourceModel
+                                                                          : kTitleSourceUser;
     chat["title"] = newTitle;
+    chat["title_source"] = source;
     chatSave(chat);
     sendJson(socket, 200, {{"status","ok"},{"title",newTitle}});
+}
+
+// Suggest a title with the configured model. Does not save it.
+void WebServer::routeChatGenerateTitle(const QString& chatId,
+                                       const HttpRequest&, QTcpSocket* socket) {
+    QJsonObject chat = chatGet(chatId);
+    if (chat.isEmpty()) {
+        sendJson(socket, 404, {{"error","chat not found"}});
+        return;
+    }
+    sendJsonAsync(socket, [chat]() -> std::pair<int, QJsonObject> {
+        const TitleResult r = generateTitle(configLoad(), chat);
+        if (r.ok()) return {200, {{"title", r.title}}};
+        return {r.unusable ? 400 : 502, {{"error", r.error}}};
+    });
+}
+
+void WebServer::sendJsonAsync(QTcpSocket* socket,
+                              std::function<std::pair<int, QJsonObject>()> work) {
+    QPointer<WebServer> self(this);
+    QPointer<QTcpSocket> sock(socket);
+    QThread* thread = QThread::create([self, sock, work]() {
+        const auto result = work();
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [self, sock, result]() {
+            if (self && sock) self->sendJson(sock, result.first, result.second);
+        }, Qt::QueuedConnection);
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
 }
 
 // Delete the last N raw messages (default 1) from the chat -- the
@@ -916,8 +957,24 @@ void WebServer::routeChatCommand(const QString& chatId,
         QJsonObject chat = chatGet(chatId);
         if (!chat.isEmpty()) {
             chat["title"] = newTitle;
+            chat["title_source"] = kTitleSourceUser;
             chatSave(chat);
             sendJson(socket, 200, {{"type","rename"},{"title",newTitle}});
+            return;
+        }
+    }
+
+    if (cmd == "/title") {
+        QJsonObject chat = chatGet(chatId);
+        if (!chat.isEmpty()) {
+            sendJsonAsync(socket, [chatId, chat]() -> std::pair<int, QJsonObject> {
+                const TitleResult r = generateTitle(configLoad(), chat);
+                if (!r.ok())
+                    return {200, {{"type","message"},
+                                  {"message","Couldn't generate a title: " + r.error}}};
+                chatSetTitle(chatId, r.title, kTitleSourceModel);
+                return {200, {{"type","rename"},{"title",r.title}}};
+            });
             return;
         }
     }
@@ -925,7 +982,7 @@ void WebServer::routeChatCommand(const QString& chatId,
     if (cmd == "/help") {
         sendJson(socket, 200, {{"type","message"},{"message",
             "Slash commands: /new /yolo [none|safe|all] /model <name> "
-            "/rename <title> /export /help"}});
+            "/rename <title> /title /export /help"}});
         return;
     }
 

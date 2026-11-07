@@ -93,6 +93,17 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     m_themeAccent->setToolTip("Highlight color for buttons, links, and selection highlights.");
     uiForm->addRow(labelWithTip("Accent color:", "Highlight color for buttons, links, and selection highlights."), m_themeAccent);
 
+    auto* bulkRenameBtn = new QPushButton("Bulk Rename Chats");
+    bulkRenameBtn->setObjectName("bulkRenameBtn");
+    bulkRenameBtn->setToolTip("Generate a new title for every existing chat with the default model.");
+    connect(bulkRenameBtn, &QPushButton::clicked, this, &SettingsDialog::bulkRenameRequested);
+    uiForm->addRow(labelWithTip("Chat titles:", "Retitle your whole chat history with the model."), bulkRenameBtn);
+    auto* bulkNote = new QLabel("Uses the saved default model, one request per chat. "
+                                "Replaces every chat's current title.");
+    bulkNote->setWordWrap(true);
+    bulkNote->setStyleSheet(scaleNote->styleSheet());
+    uiForm->addRow("", bulkNote);
+
     tabs->addTab(uiTab, "UI");
 
     // ── LLM tab ─────────────────────────────────────────────────

@@ -23,6 +23,8 @@
 
 #include "config.h"
 #include "chatmanager.h"
+#include "chattitle.h"
+#include "titlegen.h"
 #include "taskmanager.h"
 #include <QImage>
 #include "tools.h"
@@ -3315,6 +3317,194 @@ private slots:
                  QString("Renamed Via Cmd"));
     }
 
+    // ── Chat titles (Edit Chat / Bulk Rename) ──────────────────────────
+
+    void titleCleanupMatchesPython() {
+        const QList<QPair<QString, QString>> cases = {
+            {"NFS Mount at Boot", "NFS Mount at Boot"},
+            {"\"NFS Mount at Boot.\"", "NFS Mount at Boot"},
+            {"Title: NFS Mount at Boot", "NFS Mount at Boot"},
+            {"**NFS Mount at Boot**", "NFS Mount at Boot"},
+            {"\n\n  NFS Mount\nsecond line", "NFS Mount"},
+            {"<think>hmm, about NFS</think>\nNFS Mount", "NFS Mount"},
+            {"<think>never finished", ""},
+            {"NFS\x1b[31m Mount", "NFS[31m Mount"},
+            {"", ""},
+        };
+        for (const auto& c : cases) QCOMPARE(cleanTitle(c.first), c.second);
+        const QString capped = cleanTitle(QString("word ").repeated(100));
+        QVERIFY(capped.size() <= kTitleMaxChars);
+        QVERIFY(capped.endsWith("..."));
+    }
+
+    void titleSourceSkipsToolTrafficAndTruncates() {
+        QJsonObject chat{{"messages", QJsonArray{
+            QJsonObject{{"role", "user"}, {"content", QJsonArray{
+                QJsonObject{{"type", "text"}, {"text", "look"}},
+                QJsonObject{{"type", "image_url"}, {"image_url", QJsonObject()}}}}},
+            QJsonObject{{"role", "assistant"}, {"content", QJsonValue()}},
+            QJsonObject{{"role", "tool"}, {"content", "SECRET TOOL OUTPUT"}},
+            assistantMsg("done"),
+        }}};
+        QCOMPARE(titleSourceText(chat), QString("User: look\n\nAssistant: done"));
+        QJsonObject big{{"messages", QJsonArray{userMsg(QString(50000, 'x'))}}};
+        QCOMPARE(titleSourceText(big).size(), kTitleSourceMaxChars);
+    }
+
+    void titleGenerateSendsConversationAndCleansReply() {
+        StubLlmServer stub;
+        stub.responses << llmCompletion("\"NFS Mount at Boot.\"");
+        Config cfg = configLoad();
+        cfg.baseUrl = stub.baseUrl();
+        cfg.model = "m";
+        cfg.emptyReplyThinkingOffModels = QJsonObject{{"m", "enable_thinking"}};
+        QJsonObject chat{{"messages", QJsonArray{userMsg("mount nfs")}}};
+        const TitleResult r = generateTitle(cfg, chat);
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        QCOMPARE(r.title, QString("NFS Mount at Boot"));
+        QCOMPARE(stub.requests.size(), 1);
+        const QJsonObject req = stub.requests.first();
+        QCOMPARE(req["model"].toString(), QString("m"));
+        QCOMPARE(req["messages"].toArray().at(1).toObject()["content"].toString(),
+                 QString("User: mount nfs"));
+        QVERIFY(!req.contains("tools"));
+        QCOMPARE(req["chat_template_kwargs"].toObject()["enable_thinking"].toBool(true), false);
+
+        // Nothing to name the chat from: unusable, and no request is made.
+        const TitleResult empty = generateTitle(cfg, QJsonObject{{"messages", QJsonArray()}});
+        QVERIFY(empty.unusable);
+        QCOMPARE(stub.requests.size(), 1);
+    }
+
+    void titleBulkStepFollowsTitleSource() {
+        StubLlmServer stub;
+        for (int i = 0; i < 4; ++i) stub.responses << llmCompletion("NFS Mount at Boot");
+        Config cfg = configLoad();
+        cfg.baseUrl = stub.baseUrl();
+        cfg.model = "m";
+        configSave(cfg);
+
+        auto make = [](const QString& title, const QString& source, bool msgs) {
+            QJsonObject c = chatCreate(title);
+            if (msgs) c["messages"] = QJsonArray{userMsg("mount nfs at boot")};
+            if (!source.isEmpty()) c["title_source"] = source;
+            chatSave(c);
+            return c["id"].toString();
+        };
+        const QString autoId = make("Auto", {}, true);
+        const QString mine = make("Mine", kTitleSourceUser, true);
+        const QString modeled = make("Modeled", kTitleSourceModel, true);
+        const QString empty = make("New Chat", {}, false);
+
+        QStringList pending = ChatTitle::bulkTargets(false);
+        QVERIFY(pending.contains(autoId));
+        QVERIFY(!pending.contains(mine) && !pending.contains(modeled) && !pending.contains(empty));
+        QStringList redo = ChatTitle::bulkTargets(true);
+        QVERIFY(redo.contains(autoId) && redo.contains(modeled) && !redo.contains(mine));
+
+        QCOMPARE(ChatTitle::bulkStep(autoId, false)["status"].toString(), QString("renamed"));
+        QJsonObject saved = chatGet(autoId);
+        QCOMPARE(saved["title"].toString(), QString("NFS Mount at Boot"));
+        QCOMPARE(saved["title_source"].toString(), kTitleSourceModel);
+        QVERIFY(!ChatTitle::bulkTargets(false).contains(autoId));  // resumable
+        QCOMPARE(ChatTitle::bulkStep(autoId, true)["status"].toString(), QString("unchanged"));
+        QCOMPARE(ChatTitle::bulkStep(mine, true)["status"].toString(), QString("kept"));
+        QCOMPARE(chatGet(mine)["title"].toString(), QString("Mine"));
+        QCOMPARE(ChatTitle::bulkStep(modeled, false)["status"].toString(), QString("kept"));
+        QCOMPARE(ChatTitle::bulkStep(empty, false)["status"].toString(), QString("skipped"));
+        QCOMPARE(ChatTitle::bulkStep("no-such-chat", false)["status"].toString(), QString("skipped"));
+
+        stub.stop();
+        const QJsonObject failed = ChatTitle::bulkStep(modeled, true);
+        QCOMPARE(failed["status"].toString(), QString("failed"));
+        QCOMPARE(chatGet(modeled)["title"].toString(), QString("Modeled"));
+    }
+
+    void titleSetTitleKeepsNewerMessages() {
+        QJsonObject chat = chatCreate("Old");
+        chat["messages"] = QJsonArray{userMsg("hi")};
+        chatSave(chat);
+        chat["messages"] = QJsonArray{userMsg("hi"), assistantMsg("added elsewhere")};
+        chatSave(chat);
+        QVERIFY(chatSetTitle(chat["id"].toString(), "New", kTitleSourceUser));
+        const QJsonObject saved = chatGet(chat["id"].toString());
+        QCOMPARE(saved["title"].toString(), QString("New"));
+        QCOMPARE(saved["title_source"].toString(), kTitleSourceUser);
+        QCOMPARE(saved["messages"].toArray().size(), 2);
+        QVERIFY(!chatSetTitle("no-such-chat", "x"));
+        // The index carries the marker, so Bulk Rename can plan without opening files.
+        bool found = false;
+        for (const QJsonValue& v : chatsLoadIndex()) {
+            const QJsonObject e = v.toObject();
+            if (e["id"].toString() == chat["id"].toString()) {
+                found = true;
+                QCOMPARE(e["title_source"].toString(), kTitleSourceUser);
+            }
+        }
+        QVERIFY(found);
+    }
+
+    void webGenerateTitleSuggestsWithoutSaving() {
+        StubLlmServer stub;
+        stub.responses << llmCompletion("NFS Mount at Boot");
+        Config cfg = configLoad();
+        cfg.baseUrl = stub.baseUrl();
+        cfg.model = "m";
+        configSave(cfg);
+        QJsonObject chat = chatCreate("Old Title");
+        chat["messages"] = QJsonArray{userMsg("mount nfs")};
+        chatSave(chat);
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(), "/chat/" + chat["id"].toString() + "/title/generate");
+        QCOMPARE(r.status, 200);
+        QCOMPARE(QJsonDocument::fromJson(r.body).object()["title"].toString(), QString("NFS Mount at Boot"));
+        QCOMPARE(chatGet(chat["id"].toString())["title"].toString(), QString("Old Title"));
+
+        QJsonObject empty = chatCreate("Empty");
+        r = webRequest("POST", server.port(), "/chat/" + empty["id"].toString() + "/title/generate");
+        QCOMPARE(r.status, 400);
+        r = webRequest("POST", server.port(), "/chat/nope/title/generate");
+        QCOMPARE(r.status, 404);
+    }
+
+    void webRenameRecordsTitleSource() {
+        QJsonObject chat = chatCreate("Old Title");
+        const QString id = chat["id"].toString();
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        webRequest("POST", server.port(), "/chat/" + id + "/rename",
+                   "{\"title\": \"Typed\"}", "application/json");
+        QCOMPARE(chatGet(id)["title_source"].toString(), kTitleSourceUser);
+        webRequest("POST", server.port(), "/chat/" + id + "/rename",
+                   "{\"title\": \"Gen\", \"source\": \"model\"}", "application/json");
+        QCOMPARE(chatGet(id)["title_source"].toString(), kTitleSourceModel);
+        webRequest("POST", server.port(), "/chat/" + id + "/rename",
+                   "{\"title\": \"X\", \"source\": \"bogus\"}", "application/json");
+        QCOMPARE(chatGet(id)["title_source"].toString(), kTitleSourceUser);
+    }
+
+    void webTitleCommandRenamesAndMarks() {
+        StubLlmServer stub;
+        stub.responses << llmCompletion("NFS Mount at Boot");
+        Config cfg = configLoad();
+        cfg.baseUrl = stub.baseUrl();
+        cfg.model = "m";
+        configSave(cfg);
+        QJsonObject chat = chatCreate("Old Title");
+        chat["messages"] = QJsonArray{userMsg("mount nfs")};
+        chatSave(chat);
+        WebServer server("127.0.0.1", 0);
+        QVERIFY(server.start());
+        WebResp r = webRequest("POST", server.port(), "/chat/" + chat["id"].toString() + "/command",
+                               "{\"command\": \"/title\"}", "application/json");
+        QJsonObject data = QJsonDocument::fromJson(r.body).object();
+        QCOMPARE(data["type"].toString(), QString("rename"));
+        const QJsonObject saved = chatGet(chat["id"].toString());
+        QCOMPARE(saved["title"].toString(), QString("NFS Mount at Boot"));
+        QCOMPARE(saved["title_source"].toString(), kTitleSourceModel);
+    }
+
     void webCommandHelpAndUnknown() {
         QJsonObject chat = chatCreate("Cmd Test");
         WebServer server("127.0.0.1", 0);
@@ -6161,6 +6351,18 @@ private slots:
                     QVERIFY2(answered.contains(call.toObject()["id"].toString()), "dangling tool call");
         }
 #endif
+    }
+
+    // /rename marks the title "user" (Bulk Rename never touches it); /title on a
+    // chat with nothing to name it from reports why and keeps the title.
+    void cliRenameMarksUserAndTitleNeedsMessages() {
+        if (!QFile::exists(cliBin()))
+            QSKIP("pengy-cli not built yet");
+        const QString out = runCli({"/rename By Hand", "/title"});
+        QVERIFY2(out.contains("no messages to generate a title from"), qPrintable(out));
+        const QJsonObject newest = chatsLoadIndex().first().toObject();
+        QCOMPARE(newest["title"].toString(), QString("By Hand"));
+        QCOMPARE(chatGet(newest["id"].toString())["title_source"].toString(), kTitleSourceUser);
     }
 
     void cliFailedTurnGoesToStderrAndIsNotStored() {

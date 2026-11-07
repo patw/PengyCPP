@@ -20,6 +20,17 @@ QJsonObject chatCreate(const QString& title);
 bool        chatDelete(const QString& id);
 bool        chatSave(const QJsonObject& chat);
 QJsonObject chatGet(const QString& id);
+// Where a chat's title came from, stored as chat["title_source"].  Absent is
+// the automatic first-message title (and every chat from before the field).
+// Bulk Rename only touches absent ones, which makes it resumable and leaves
+// hand-picked titles alone.  Same values as the Python and Rust editions.
+inline const QString kTitleSourceModel = QStringLiteral("model");
+inline const QString kTitleSourceUser  = QStringLiteral("user");
+// Change only the title (and, if non-empty, its source) of a stored chat;
+// false if it no longer exists.  Re-reads the chat immediately before writing
+// instead of saving a copy loaded earlier, so a long-running caller (Bulk
+// Rename) cannot write back stale messages over newer ones.
+bool        chatSetTitle(const QString& id, const QString& title, const QString& source = {});
 QJsonArray  cleanDanglingToolCalls(const QJsonArray& messages);
 QJsonArray  elideOldToolResults(const QJsonArray& messages, int keepTurns);
 // Context-pruning "undo": pops exactly one raw message off the end,

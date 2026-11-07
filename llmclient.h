@@ -2,6 +2,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <QUrl>
 #include <functional>
 #include <atomic>
 #include <utility>
@@ -88,6 +89,12 @@ QString noModelHelp(const QString& baseUrl);
 /// error text ("Connection refused") does not tell a new user that the fix is to
 /// start their own server.  Wording is shared with the Python and Rust editions.
 QString unreachableHelp(const QString& baseUrl, const QString& detail);
+
+/// One plain POST to an OpenAI-compatible endpoint (bearer + api-key headers),
+/// blocking the calling thread for at most `timeoutMs`.  No retries; for
+/// one-off requests outside a turn, e.g. chat title generation.
+LlmResponse llmPostOnce(const QUrl& url, const QByteArray& body,
+                        const QString& apiKey, int timeoutMs);
 
 class LlmClient {
 public:

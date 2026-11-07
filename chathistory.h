@@ -40,6 +40,7 @@ signals:
     void settingsRequested();
     void tasksRequested();
     void deleteRequested(const QString& id);
+    void editRequested(const QString& id);
     void modelChanged(const QString& model);
     void effortChanged(const QString& effort);
 
@@ -51,7 +52,6 @@ private slots:
 private:
     void     setupUi();
     QWidget* makeItemWidget(const QString& id, const QString& title);
-    void     saveChatMarkdown(const QString& id);
 
     Theme m_theme;
     int m_scale = 100;

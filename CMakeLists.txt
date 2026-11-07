@@ -23,6 +23,7 @@ add_executable(pengy-cli
     taskmanager.cpp
     tools.cpp
     llmclient.cpp
+    titlegen.cpp
     image_utils.cpp
     attachments.cpp
     provider_messages.cpp
@@ -58,6 +59,7 @@ add_executable(pengy-web
     taskmanager.cpp
     tools.cpp
     llmclient.cpp
+    titlegen.cpp
     image_utils.cpp
     attachments.cpp
     provider_messages.cpp
@@ -78,6 +80,7 @@ add_executable(pengy WIN32
     taskmanager.cpp
     tools.cpp
     llmclient.cpp
+    titlegen.cpp
     image_utils.cpp
     attachments.cpp
     provider_messages.cpp
@@ -92,6 +95,9 @@ add_executable(pengy WIN32
     chatview.cpp
     chatinput.cpp
     settingsdialog.cpp
+    editchatdialog.cpp
+    bulkrename.cpp
+    chattitle.cpp
     resources.qrc
 )
 
@@ -163,6 +169,14 @@ if(Qt6Test_FOUND)
     target_link_libraries(pengy_toolconfirm_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
     add_test(NAME PengyToolConfirmTest COMMAND pengy_toolconfirm_test)
 
+    # Edit Chat + Bulk Rename dialogs against a canned ChatTitle (no core, no
+    # endpoint). Same test file as PengyR's gui/tests/test_editchat.cpp.
+    add_executable(pengy_editchat_test
+        test_editchat.cpp stub_chattitle.cpp editchatdialog.cpp bulkrename.cpp resources.qrc)
+    target_compile_definitions(pengy_editchat_test PRIVATE PENGY_UNIT_TEST)
+    target_link_libraries(pengy_editchat_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
+    add_test(NAME PengyEditChatTest COMMAND pengy_editchat_test)
+
     # Sidebar addChat()/removeChat() + model-hint-gap regression tests
     # (standalone binary, mirrors PengyR's gui/tests/test_chathistory.cpp).
     add_executable(pengy_chathistory_test
@@ -183,6 +197,8 @@ if(Qt6Test_FOUND)
         taskmanager.cpp
         tools.cpp
         llmclient.cpp
+        titlegen.cpp
+        chattitle.cpp
         image_utils.cpp
         attachments.cpp
         provider_messages.cpp

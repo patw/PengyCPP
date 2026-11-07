@@ -43,6 +43,7 @@
 #include "../attachments.h"
 #include "../provider_messages.h"
 #include "../about.h"
+#include "../titlegen.h"
 #include "version.h"
 
 // ── Terminal colors ──────────────────────────────────────────────────
@@ -1131,6 +1132,8 @@ private:
 
         } else if (cmd == "/rename") {
             cmdRename(arg);
+        } else if (cmd == "/title") {
+            cmdTitle();
 
         } else if (cmd == "/clear") {
             out("\033[2J\033[H");
@@ -1376,8 +1379,24 @@ private:
         }
         QString oldTitle = chat["title"].toString();
         chat["title"] = arg;
+        chat["title_source"] = kTitleSourceUser;
         chatSave(chat);
         outln(green("✓ Renamed: ") + bold(oldTitle) + " → " + bold(arg));
+    }
+
+    // Ask the configured model for a title and rename the current chat to it.
+    void cmdTitle() {
+        outln(dim("Generating title…"));
+        const TitleResult r = generateTitle(cfg, chat);
+        if (!r.ok()) {
+            outln(red("Couldn't generate a title: ") + sanitizeDisplay(r.error));
+            return;
+        }
+        QString oldTitle = chat["title"].toString();
+        chat["title"] = r.title;
+        chat["title_source"] = kTitleSourceModel;
+        chatSave(chat);
+        outln(green("✓ Renamed: ") + bold(sanitizeDisplay(oldTitle)) + " → " + bold(r.title));
     }
 
     void cmdExport(const QString& arg) {
@@ -1543,6 +1562,7 @@ private:
             {"/show [N]",            "Show full conversation (optional: last N messages)"},
             {"/tail [N]",            "Show the last N messages (default 5)"},
             {"/rename <title>",      "Rename the current chat"},
+            {"/title",               "Generate a title for the current chat with the model"},
             {"/clear",               "Clear the terminal screen"},
             {"/export [path]",       "Export current chat as Markdown"},
             {"/config",              "Show current configuration"},

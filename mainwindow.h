@@ -48,6 +48,8 @@ private slots:
     void pollToolConfirmation();
     void onModelChanged(const QString& model);
     void onEffortChanged(const QString& effort);
+    void editChat(const QString& chatId);
+    void bulkRenameChats(QWidget* parent);
 
 private:
     // ── UI setup ──────────────────────────────────────────────────
@@ -76,6 +78,7 @@ private:
     void showTurnError(TabSession* session, const QString& text);
     void handleQuestionRequest(TabSession* session, const QJsonObject& event);
     void updateQuickSettingsFor(TabSession* session);
+    void applyBulkTitle(const QString& chatId, const QString& title);
 
     // ── Worker lifecycle ──────────────────────────────────────────
     void abandonWorkerFor(TabSession* session);

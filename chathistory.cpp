@@ -11,11 +11,6 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QFileDialog>
-#include <QFile>
-#include <QTextStream>
-#include <QDir>
-#include <QRegularExpression>
 
 ChatHistoryWidget::ChatHistoryWidget(QWidget* parent) : QWidget(parent) {
     m_theme = makeTheme("system", "default");
@@ -188,14 +183,14 @@ QWidget* ChatHistoryWidget::makeItemWidget(const QString& id, const QString& tit
         "QPushButton { background-color:transparent; color:%1; border:none; border-radius:4px; font-size:13px; padding:0px; }"
         "QPushButton:hover { background-color:%2; }").arg(m_theme["fg"], m_theme["hover"]);
 
-    auto* saveBtn = new QPushButton;
-    saveBtn->setFixedSize(scaledSize(24, m_scale), scaledSize(24, m_scale));
-    saveBtn->setToolTip("Save chat as Markdown");
-    saveBtn->setAccessibleName("Save chat as Markdown");
-    applyPengyIcon(saveBtn, "save", m_theme, scaledSize(14, m_scale));
-    saveBtn->setStyleSheet(btnStyle);
-    connect(saveBtn, &QPushButton::clicked, this, [this, id]() { saveChatMarkdown(id); });
-    layout->addWidget(saveBtn);
+    auto* editBtn = new QPushButton;
+    editBtn->setFixedSize(scaledSize(24, m_scale), scaledSize(24, m_scale));
+    editBtn->setToolTip("Edit chat (rename, generate title, export)");
+    editBtn->setAccessibleName("Edit chat");
+    applyPengyIcon(editBtn, "edit", m_theme, scaledSize(14, m_scale));
+    editBtn->setStyleSheet(btnStyle);
+    connect(editBtn, &QPushButton::clicked, this, [this, id]() { emit editRequested(id); });
+    layout->addWidget(editBtn);
 
     auto* delBtn = new QPushButton;
     delBtn->setFixedSize(scaledSize(24, m_scale), scaledSize(24, m_scale));
@@ -273,41 +268,6 @@ void ChatHistoryWidget::updateChatTitle(const QString& id, const QString& title)
             return;
         }
     }
-}
-
-void ChatHistoryWidget::saveChatMarkdown(const QString& id) {
-    QJsonObject chat = chatGet(id);
-    if (chat.isEmpty()) return;
-
-    QString title    = chat["title"].toString();
-    QJsonArray messages = chat["messages"].toArray();
-
-    QString md = "# " + title + "\n\n";
-    for (const QJsonValue& v : messages) {
-        QJsonObject msg  = v.toObject();
-        QString role     = msg["role"].toString();
-        QString content  = msg["content"].toString();
-        if (role == "user" && !content.isEmpty()) {
-            md += "**You**\n\n" + content + "\n\n---\n\n";
-        } else if (role == "assistant" && !content.isEmpty()) {
-            md += "**Assistant**\n\n" + content + "\n\n---\n\n";
-        }
-    }
-
-    QString safe = title;
-    safe.replace(QRegularExpression(R"([/\\:*?"<>|])"), "_");
-    safe = safe.trimmed();
-    if (safe.isEmpty()) safe = "chat";
-
-    QString path = QFileDialog::getSaveFileName(
-        this, "Save Chat as Markdown",
-        QDir::homePath() + "/" + safe + ".md",
-        "Markdown (*.md)");
-    if (path.isEmpty()) return;
-
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
-    QTextStream(&f) << md;
 }
 
 void ChatHistoryWidget::onItemClicked(QListWidgetItem* item) {

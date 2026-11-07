@@ -35,6 +35,12 @@
   @media (hover: none) and (pointer: coarse) { .chat-list-item .delete-btn { opacity: 0.5; } }
   .chat-list-item:hover .delete-btn { opacity: 1; }
   .chat-list-item .delete-btn:hover { color: var(--bs-danger); }
+  /* The chat bubble doubles as the Edit Chat button: it turns into a pencil on hover. */
+  .chat-list-item .edit-btn { border: none; background: none; color: var(--bs-secondary-color); padding: 0; margin: -0.25rem 0 -0.25rem -0.35rem; font-size: 0.8rem; flex-shrink: 0; min-width: 28px; min-height: 28px; border-radius: 4px; }
+  .chat-list-item .edit-btn .bi-pencil { display: none; }
+  .chat-list-item .edit-btn:hover, .chat-list-item .edit-btn:focus-visible { color: var(--bs-primary); background: var(--bs-tertiary-bg); }
+  .chat-list-item .edit-btn:hover .bi-pencil, .chat-list-item .edit-btn:focus-visible .bi-pencil { display: inline; }
+  .chat-list-item .edit-btn:hover .bi-chat-left-text, .chat-list-item .edit-btn:focus-visible .bi-chat-left-text { display: none; }
   .messages-area { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 1rem 0.75rem; }
   @media (min-width: 576px) { .messages-area { padding: 1.25rem 1rem; } }
   .msg-user { display: flex; justify-content: flex-end; margin-bottom: 0.85rem; }
@@ -271,19 +277,30 @@
   </div>
 </div>
 
-<!-- Rename modal -->
+<!-- Edit Chat modal: rename, generate a title with the model, export -->
 <div class="modal fade" id="renameModal" tabindex="-1">
-  <div class="modal-dialog modal-sm">
+  <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
-        <h6 class="modal-title">Rename Chat</h6>
+        <h6 class="modal-title">Edit Chat</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <input type="text" id="renameInput" class="form-control" placeholder="Chat title…">
+        <label for="renameInput" class="form-label small text-muted">Title</label>
+        <div class="input-group">
+          <input type="text" id="renameInput" class="form-control" placeholder="Chat title…">
+          <button class="btn btn-outline-secondary" type="button" id="generateTitleBtn" onclick="generateTitle()" title="Generate a title with the configured model">
+            <i class="bi bi-stars"></i> Generate
+          </button>
+        </div>
+        <div class="small text-danger mt-2" id="editChatError" hidden></div>
       </div>
       <div class="modal-footer">
+        <a class="btn btn-sm btn-outline-secondary me-auto" id="editChatExport" href="#" target="_blank">
+          <i class="bi bi-download"></i> Export as Markdown
+        </a>
         <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button class="btn btn-sm btn-primary" onclick="doRename()">Rename</button>
+        <button class="btn btn-sm btn-primary" onclick="doRename()">Save</button>
       </div>
     </div>
   </div>
@@ -561,13 +578,20 @@ function renderSidebar(chats, activeChatId) {
     a.className = 'chat-list-item' + (active ? ' active' : '');
     a.dataset.chatId = c.id;
     a.innerHTML =
-      '<i class="bi bi-chat-left-text small text-muted flex-shrink-0"></i>' +
+      '<button type="button" class="edit-btn" title="Edit chat (rename, generate title, export)" aria-label="Edit chat">' +
+        '<i class="bi bi-chat-left-text"></i><i class="bi bi-pencil"></i>' +
+      '</button>' +
       '<span class="chat-title">' + esc(c.title || '(untitled)') + '</span>' +
       '<form action="/chat/' + c.id + '/delete" method="post" style="display:inline" onclick="event.stopPropagation()">' +
         '<button type="submit" class="delete-btn" title="Delete chat" onclick="return confirm(\'Delete this chat?\')">' +
           '<i class="bi bi-x"></i>' +
         '</button>' +
       '</form>';
+    a.querySelector('.edit-btn').addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      openEditChat(c.id);
+    });
     el.appendChild(a);
   }
 }
@@ -806,24 +830,95 @@ function exportChat() {
   window.open('/chat/' + CHAT_ID + '/export', '_blank');
 }
 
+// ── Edit Chat (rename / generate title / export) ─────────────
+// Opened from any sidebar row's chat bubble, or by double-clicking the
+// brand for the current chat. Generate only fills the field; nothing is
+// written until Save.
+
+let editChatId = CHAT_ID;
+let editChatOriginal = '';
+let generatedTitle = '';
+let titleRequest = 0;
+
 function showRename() {
-  const current = document.querySelector('.chat-list-item.active .chat-title');
-  document.getElementById('renameInput').value = current ? current.textContent : '';
+  openEditChat(CHAT_ID);
+}
+
+function openEditChat(chatId) {
+  editChatId = chatId;
+  titleRequest++;  // a reply for a previously opened chat must not land here
+  const row = document.querySelector('.chat-list-item[data-chat-id="' + chatId + '"] .chat-title');
+  const current = row ? row.textContent.trim() : '';
+  editChatOriginal = current;
+  generatedTitle = '';
+  document.getElementById('renameInput').value = current;
+  document.getElementById('editChatExport').href = '/chat/' + chatId + '/export';
+  setEditChatError('');
+  resetGenerateBtn();
   renameModal.show();
-  setTimeout(() => document.getElementById('renameInput').focus(), 300);
+  setTimeout(() => document.getElementById('renameInput').select(), 300);
+}
+
+function setEditChatError(text) {
+  const el = document.getElementById('editChatError');
+  el.textContent = text;
+  el.hidden = !text;
+}
+
+function resetGenerateBtn() {
+  const btn = document.getElementById('generateTitleBtn');
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-stars"></i> Generate';
+}
+
+async function generateTitle() {
+  const btn = document.getElementById('generateTitleBtn');
+  const request = ++titleRequest;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Generating…';
+  setEditChatError('');
+  try {
+    const r = await fetch('/chat/' + editChatId + '/title/generate', {method: 'POST'});
+    const data = await r.json();
+    if (request !== titleRequest) return;
+    if (!r.ok || !data.title) {
+      setEditChatError("Couldn't generate a title: " + (data.error || 'unknown error'));
+      return;
+    }
+    const input = document.getElementById('renameInput');
+    generatedTitle = data.title;
+    input.value = data.title;
+    input.focus();
+  } catch (err) {
+    if (request === titleRequest) setEditChatError("Couldn't generate a title: " + err);
+  } finally {
+    if (request === titleRequest) resetGenerateBtn();
+  }
 }
 
 async function doRename() {
   const newTitle = document.getElementById('renameInput').value.trim();
   if (!newTitle) return;
+  const chatId = editChatId;
+  titleRequest++;
   renameModal.hide();
-  const r = await fetch('/chat/' + CHAT_ID + '/rename', {
+  // Saving an untouched title is a no-op, so it can't mark an automatic title
+  // as hand-picked (which would hide it from Bulk Rename).
+  if (newTitle === editChatOriginal && !generatedTitle) return;
+  const source = newTitle === generatedTitle ? 'model' : 'user';
+  const r = await fetch('/chat/' + chatId + '/rename', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({title: newTitle})
+    body: JSON.stringify({title: newTitle, source})
   });
   const data = await r.json();
-  if (data.title) applyTitle(data.title);
+  if (!data.title) return;
+  if (chatId === CHAT_ID) {
+    applyTitle(data.title);
+  } else {
+    const row = document.querySelector('.chat-list-item[data-chat-id="' + chatId + '"] .chat-title');
+    if (row) row.textContent = data.title;
+  }
 }
 
 function applyTitle(title) {

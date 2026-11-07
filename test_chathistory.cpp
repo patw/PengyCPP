@@ -8,6 +8,7 @@
 #include <QString>
 #include <iostream>
 #include "chathistory.h"
+#include <QPushButton>
 
 static void requireEqual(int got, int want, const char* label) {
     if (got != want) {
@@ -62,6 +63,26 @@ int main(int argc, char** argv) {
         requireEqual(w.testChatIdAt(0), QString("new1"), "new chat at top");
         requireEqual(w.testChatIdAt(1), QString("old1"), "existing row 1 untouched");
         requireEqual(w.testChatIdAt(2), QString("old2"), "existing row 2 untouched");
+    }
+
+    // Each row's former Save button is now Edit: it emits editRequested(id)
+    // (MainWindow opens the Edit Chat dialog) instead of exporting directly.
+    {
+        ChatHistoryWidget w;
+        w.addChat("abc", "A chat");
+        QString requested;
+        QObject::connect(&w, &ChatHistoryWidget::editRequested,
+                         [&requested](const QString& id) { requested = id; });
+        QPushButton* edit = nullptr;
+        bool hasSave = false;
+        for (QPushButton* b : w.findChildren<QPushButton*>()) {
+            if (b->property("pengyIcon").toString() == "edit") edit = b;
+            if (b->property("pengyIcon").toString() == "save") hasSave = true;
+        }
+        requireTrue(edit != nullptr, "row has an Edit button");
+        requireFalse(hasSave, "row no longer has a Save button");
+        edit->click();
+        requireEqual(requested, QString("abc"), "Edit emits editRequested with the chat id");
     }
 
     // removeChat() drops exactly the row for the given id, leaving the rest
