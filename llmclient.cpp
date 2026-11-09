@@ -78,6 +78,82 @@ static const int MAX_EMPTY_RETRIES = 1;
 // timeout prevents admitting another. Identical policy in Rust and Python.
 static const qint64 RETRY_CHAIN_GRACE_MS = 31'000;
 
+// A checkpoint of "at most 500 words" needs ~700-900 answer tokens. At 2048 an
+// answer-room engine (Basalt) gives the thinking 1536 and the answer 512, so the
+// summary always ends at the cap and recovery can never commit.
+static const int SUMMARY_MAX_TOKENS = 8192;
+// A checkpoint this long was written, even if the allowance cut it off.
+static const int MIN_SUMMARY_CHARS = 200;
+// Ceiling for an automatically derived output allowance.
+static const quint64 MAX_AUTO_OUTPUT_TOKENS = 32768;
+
+// Output allowance that still leaves room to answer, or 0 to send none.
+static quint64 answerRoom(quint64 windowTokens, std::optional<quint64> estimate) {
+    if (!estimate || windowTokens == 0) return 0;
+    return qMin(windowTokens > *estimate ? windowTokens - *estimate : quint64(0),
+                MAX_AUTO_OUTPUT_TOKENS);
+}
+
+// Routes that refused the *derived* allowance in this process. Process-local on
+// purpose: the next start costs one rejected request, never a persisted
+// capability that could go stale. The image-rejection cache persists because it
+// changes the request body; this only removes a hint Pengy added itself.
+static QSet<QString> rejectedAutoOutput;
+static QMutex rejectedAutoOutputMutex;
+
+static QString autoOutputRoute(const QString& baseUrl, const QString& model) {
+    QString base = baseUrl;
+    while (base.endsWith('/')) base.chop(1);
+    return base + QChar(0x1f) + model;
+}
+
+static bool autoOutputRejected(const QString& baseUrl, const QString& model) {
+    QMutexLocker lock(&rejectedAutoOutputMutex);
+    return rejectedAutoOutput.contains(autoOutputRoute(baseUrl, model));
+}
+
+static void rememberAutoOutputRejection(const QString& baseUrl, const QString& model) {
+    QMutexLocker lock(&rejectedAutoOutputMutex);
+    rejectedAutoOutput.insert(autoOutputRoute(baseUrl, model));
+}
+
+// Whether the provider rejected the allowance parameter itself (an OpenAI
+// reasoning model answers 400 to max_tokens), as opposed to a context error.
+// Only the automatically derived allowance is ever dropped; a configured limit
+// keeps its existing explicit failure.
+static bool isOutputParameterError(int code, const QJsonObject& body, const QString& detail,
+                                   const QString& parameter) {
+    if ((code != 400 && code != 422) || parameter.isEmpty()) return false;
+    const auto error = body["error"].toObject();
+    const QString text = (detail + ' ' + error["message"].toString() + ' ' +
+                          error["code"].toString() + ' ' + error["type"].toString())
+                             .toLower();
+    if (!text.contains(parameter.toLower())) return false;
+    for (const QString& phrase : {QStringLiteral("unsupported"), QStringLiteral("not supported"),
+                                  QStringLiteral("does not support"),
+                                  QStringLiteral("unrecognized"),
+                                  QStringLiteral("unknown parameter")})
+        if (text.contains(phrase)) return true;
+    return false;
+}
+
+// Re-derive the output allowance for the view that is actually being sent.
+// Called before every attempt: a reduction makes the prompt smaller, so a stale
+// allowance would clip the answer exactly when room just became available.
+static void applyAutoOutput(QJsonObject& payload, const ContextPressure::Pressure& pressure,
+                            std::optional<quint64> windowTokens, quint64 limit,
+                            const QString& parameter) {
+    if (limit > 0 || parameter.isEmpty()) return;
+    const quint64 room =
+        windowTokens ? answerRoom(*windowTokens, pressure.estimate(ContextPressure::inputChars(
+                                       payload["messages"], payload["tools"])))
+                     : 0;
+    if (room > 0)
+        payload[parameter] = qint64(room);
+    else
+        payload.remove(parameter);
+}
+
 /// A 200 that carries no choices at all.
 static QString noChoicesHelp() {
     return QStringLiteral(
@@ -736,7 +812,7 @@ void LlmClient::run(const LlmParams& params,
             QJsonObject payload{{"model", params.model}, {"messages", QJsonArray{
                 QJsonObject{{"role", "system"}, {"content", ContextRecovery::SummaryPrompt}},
                 QJsonObject{{"role", "user"}, {"content", chunk}}}}};
-            payload[params.recovery.outputParameter] = 2048;
+            payload[params.recovery.outputParameter] = SUMMARY_MAX_TOKENS;
             applyThinkingOff(payload,thinkingOff);
             // The summary is part of this turn, so every transient failure shape
             // gets the same budget here as on the turn request.
@@ -779,7 +855,7 @@ void LlmClient::run(const LlmParams& params,
             auto choices = body["choices"].toArray();
             auto choice = choices.isEmpty() ? QJsonObject{} : choices[0].toObject();
             auto message = choice["message"].toObject();
-            if (resp.transportFailure || resp.httpStatus < 200 || resp.httpStatus >= 300 || choice["finish_reason"] != "stop" || message["content"].toString().trimmed().isEmpty() || !message["tool_calls"].toArray().isEmpty()) {
+            if (resp.transportFailure || resp.httpStatus < 200 || resp.httpStatus >= 300 || message["content"].toString().trimmed().isEmpty() || !message["tool_calls"].toArray().isEmpty() || (choice["finish_reason"] != "stop" && !(choice["finish_reason"] == "length" && message["content"].toString().trimmed().size() >= MIN_SUMMARY_CHARS))) {
                 if(!proactive) emitTurnError(onEvent, 0, "Context summary was incomplete or failed; original history retained.", params.baseUrl);
                 throw std::runtime_error("context summary failed");
             }
@@ -840,9 +916,21 @@ void LlmClient::run(const LlmParams& params,
         // Shared retry-admission clock across failure categories. An admitted
         // request retains its separate per-attempt wall deadline.
         qint64 retryChainStartMs = 0;
+        // A route that refuses the allowance parameter itself keeps the turn.
+        bool autoOutputOff =
+            params.recovery.outputLimit == 0 && autoOutputRejected(params.baseUrl, params.model);
         for (;;) {
             if (isCancelled()) return;
 
+            // Re-derive for the view actually being sent: a reduction makes the
+            // prompt smaller, so a stale allowance would clip the answer exactly
+            // when room just became available.
+            if (!autoOutputOff)
+                applyAutoOutput(payload, pressure,
+                                (window && !window->inputOnly)
+                                    ? std::optional<quint64>(window->tokens)
+                                    : std::nullopt,
+                                params.recovery.outputLimit, params.recovery.outputParameter);
             lastResp = syncPost(url, QJsonDocument(payload).toJson(QJsonDocument::Compact),
                                 params.apiKey, params.llmTimeout * 1000, isCancelled);
             if (isCancelled()) return;
@@ -941,6 +1029,16 @@ void LlmClient::run(const LlmParams& params,
                     QString("Model context limit reached; could not fit this request after %1 tool-output reductions. The full tool outputs remain in chat history. Try a shorter request or a larger-context model.")
                         .arg(contextRetries), params.baseUrl);
                 return;
+            }
+
+            // The route refuses the allowance parameter itself: drop the derived
+            // allowance and retry rather than failing the turn.
+            if (!autoOutputOff && params.recovery.outputLimit == 0 &&
+                isOutputParameterError(code, body, detail, params.recovery.outputParameter)) {
+                autoOutputOff = true;
+                rememberAutoOutputRejection(params.baseUrl, params.model);
+                payload.remove(params.recovery.outputParameter);
+                continue;
             }
 
             // A provider that answers "I ran out of time" (408, or 504 from a

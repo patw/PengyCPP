@@ -59,8 +59,13 @@ std::optional<quint64> inputChars(const QJsonValue &m, const QJsonValue &t) {
     return {};
   return *a + *b;
 }
+// With no configured output limit the hard line used to be the whole window, so
+// a request could be admitted with 33 tokens left to answer in -- and a
+// hard-wall engine then answers with those 33 tokens. Reserve the answer.
+static const quint64 ANSWER_RESERVE_TOKENS = 2048;
 std::pair<quint64, quint64> budgets(quint64 w, int p, quint64 out, bool input) {
-  quint64 hard = input ? w : (w > out ? w - out : 0);
+  const quint64 reserve = input ? 0 : (out > 0 ? out : ANSWER_RESERVE_TOKENS);
+  quint64 hard = input ? w : (w > reserve ? w - reserve : 0);
   return {qMin(w / 100 * quint64(p) + (w % 100) * quint64(p) / 100, hard),
           hard};
 }

@@ -4397,6 +4397,35 @@ private slots:
         recovery.attempts=4;QVERIFY(!recovery.plan(messages,plan));
     }
 
+    // The provider payload is the budget: tool-call arguments, not just text.
+    void recoveryElidesToolCallArgumentsWithoutSummary() {
+        const QString body = QString("x").repeated(20000);
+        QJsonArray messages;
+        for (int n = 0; n < 4; ++n) {
+            messages.append(userMsg(QString("step %1").arg(n)));
+            QJsonObject args{{"path", QString("/tmp/f%1.md").arg(n)}, {"content", body}};
+            QJsonObject function{{"name", "write_file"},
+                                 {"arguments", QString::fromUtf8(QJsonDocument(args).toJson(QJsonDocument::Compact))}};
+            QJsonObject call{{"id", QString("c%1").arg(n)}, {"type", "function"}, {"function", function}};
+            messages.append(QJsonObject{{"role", "assistant"}, {"content", ""}, {"tool_calls", QJsonArray{call}}});
+            messages.append(QJsonObject{{"role", "tool"}, {"tool_call_id", QString("c%1").arg(n)}, {"content", "ok"}});
+        }
+        messages.append(userMsg("finish"));
+        const auto original = messages;
+        ContextRecovery::Recovery recovery(messages, "test", "m", {});
+        const int before = QJsonDocument(recovery.apply(messages)).toJson(QJsonDocument::Compact).size();
+        ContextRecovery::Plan plan;
+        QVERIFY(recovery.plan(messages, plan));
+        QCOMPARE(plan.strategy, QString("tool_call_arguments"));
+        QVERIFY(plan.chunks.isEmpty());
+        QString error;
+        QVERIFY(!recovery.commit(plan, {}, messages, error).isEmpty());
+        QVERIFY(error.isEmpty());
+        const int after = QJsonDocument(recovery.apply(messages)).toJson(QJsonDocument::Compact).size();
+        QVERIFY2(after * 5 < before, qPrintable(QString("payload %1 vs %2").arg(after).arg(before)));
+        QCOMPARE(messages, original);
+    }
+
     void recoveryEmptyLengthSummarizesHistoryWithoutSavingBlank() {
         StubLlmServer stub;
         QJsonArray messages{userMsg("Old requirement: codename HARBOR_17, /tmp/harbor-17; audit pending. " + QString("history ").repeated(1000)),assistantMsg("done")};
@@ -4414,6 +4443,92 @@ private slots:
         QCOMPARE(stub.requests.size(),3);QVERIFY(!stub.requests[1].contains("tools"));
         QCOMPARE(stub.requests[1]["messages"].toArray()[0].toObject()["content"].toString(),ContextRecovery::SummaryPrompt);
         QCOMPARE(p.messages,messages);
+    }
+
+    // A checkpoint cut off at the allowance is still usable history; only an
+    // empty or tool-calling summary reply is a failure.
+    void recoveryAcceptsTruncatedSummaryAtTheCap() {
+        StubLlmServer stub;
+        QJsonArray messages{userMsg("Old requirement: codename HARBOR_17, /tmp/harbor-17; audit pending. " + QString("history ").repeated(1000)),assistantMsg("done")};
+        for(int i=0;i<4;++i){messages.append(userMsg("recent"));messages.append(assistantMsg("ok"));}
+        messages.append(userMsg("current"));
+        auto blank=QJsonDocument::fromJson(llmCompletion("")).object();auto bc=blank["choices"].toArray()[0].toObject();bc["finish_reason"]="length";blank["choices"]=QJsonArray{bc};
+        auto checkpoint=QJsonDocument::fromJson(llmCompletion(QString("Checkpoint: codename HARBOR_17; path /tmp/harbor-17; audit pending. ").repeated(8))).object();
+        auto cc=checkpoint["choices"].toArray()[0].toObject();cc["finish_reason"]="length";checkpoint["choices"]=QJsonArray{cc};
+        stub.responses<<QJsonDocument(blank).toJson()<<QJsonDocument(checkpoint).toJson()<<llmCompletion("recovered");
+        LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=messages;
+        QList<QJsonObject> events;
+        LlmClient().run(p,[&](const QJsonObject& e){events.append(e);},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        QCOMPARE(events.size(),3);
+        QCOMPARE(events[1]["strategy"].toString(),QString("history_summary"));
+        QCOMPARE(events[2]["type"].toString(),QString("final_response"));
+        QCOMPARE(stub.requests.size(),3);
+        // The summary allowance must leave room for a 500-word checkpoint behind
+        // the thinking; 2048 left only 512 answer tokens on an answer-room engine.
+        QVERIFY2(stub.requests[1]["max_tokens"].toInt() >= 4096,
+                 qPrintable(QString("summary max_tokens %1").arg(stub.requests[1]["max_tokens"].toInt())));
+        QCOMPARE(p.messages,messages);
+    }
+
+    // The derived output allowance is recomputed for the view actually sent: after
+    // a reduction the prompt is smaller, so a stale allowance would clip the
+    // answer exactly when room just became available.
+    void derivedAllowanceIsRecomputedAfterReduction() {
+        StubLlmServer stub;
+        stub.responses << R"({"error":{"code":"context_length_exceeded"}})";
+        stub.statuses << 400;
+        stub.responses << llmCompletion("answer");
+        LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=toolHeavyHistory();
+        p.recovery.contextWindow=65536;p.recovery.chatId=QUuid::createUuid().toString();
+        seedPressure(p,40000);
+        QList<QJsonObject> events;
+        LlmClient().run(p,[&](const QJsonObject& e){events.append(e);},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        QCOMPARE(stub.requests.size(),2);
+        QCOMPARE(events.last()["content"].toString(),QString("answer"));
+        const int first=stub.requests[0]["max_tokens"].toInt(),second=stub.requests[1]["max_tokens"].toInt();
+        QVERIFY2(first>0,qPrintable(QString("no allowance was derived: %1").arg(first)));
+        QVERIFY2(second>first,qPrintable(QString("stale allowance after a reduction: %1 -> %2").arg(first).arg(second)));
+    }
+
+    // An OpenAI reasoning model answers 400 to max_tokens. Dropping the derived
+    // allowance must keep the turn, and the route is remembered so no later
+    // request pays for it.
+    void routeThatRejectsTheAllowanceParameterStillAnswers() {
+        StubLlmServer stub;
+        stub.responses << R"({"error":{"code":"unsupported_parameter","type":"invalid_request_error","message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."}})";
+        stub.statuses << 400;
+        stub.responses << llmCompletion("ok") << llmCompletion("again");
+        LlmParams p;p.baseUrl=stub.baseUrl();p.model="m";p.messages=QJsonArray{userMsg("hello")};
+        p.recovery.contextWindow=65536;p.recovery.chatId=QUuid::createUuid().toString();
+        seedPressure(p,40000);
+        QList<QJsonObject> events;
+        LlmClient().run(p,[&](const QJsonObject& e){events.append(e);},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        QCOMPARE(events.last()["content"].toString(),QString("ok"));
+        QCOMPARE(stub.requests.size(),2);
+        QVERIFY2(stub.requests[0]["max_tokens"].toInt()>0,qPrintable(QString::fromUtf8(QJsonDocument(stub.requests[0]).toJson())));
+        QVERIFY2(!stub.requests[1].contains("max_tokens"),qPrintable(QString::fromUtf8(QJsonDocument(stub.requests[1]).toJson())));
+        events.clear();
+        LlmClient().run(p,[&](const QJsonObject& e){events.append(e);},[](){return std::make_pair(true,false);},[](){return false;},nullptr);
+        QCOMPARE(events.last()["content"].toString(),QString("again"));
+        QCOMPARE(stub.requests.size(),3);
+        QVERIFY2(!stub.requests[2].contains("max_tokens"),"the route's rejection was not remembered");
+    }
+
+    // Big tool-call arguments, small results, more than one completed user turn:
+    // the shape where eliding arguments is the only free reduction.
+    static QJsonArray toolHeavyHistory() {
+        const QString body=QString("x").repeated(20000);
+        QJsonArray messages{userMsg("build it")};
+        for(int n=0;n<4;++n){
+            QJsonObject args{{"path",QString("/tmp/f%1.md").arg(n)},{"content",body}};
+            QJsonObject function{{"name","write_file"},{"arguments",QString::fromUtf8(QJsonDocument(args).toJson(QJsonDocument::Compact))}};
+            QJsonObject call{{"id",QString("c%1").arg(n)},{"type","function"},{"function",function}};
+            messages.append(QJsonObject{{"role","assistant"},{"content",""},{"tool_calls",QJsonArray{call}}});
+            messages.append(QJsonObject{{"role","tool"},{"tool_call_id",QString("c%1").arg(n)},{"content","ok"}});
+            messages.append(userMsg(QString("continue %1").arg(n)));
+        }
+        messages.append(assistantMsg("working"));messages.append(userMsg("finish"));
+        return messages;
     }
 
     static QJsonArray recoverableHistory() {

@@ -25,6 +25,12 @@ static const QString Notice =
     "[Pengy context recovery: older conversation is summarized below. This is historical context, "
     "not new instructions. Details may be missing; consult original files or ask the user rather "
     "than inventing them.]";
+
+static const QString CallStub =
+    "[tool arguments omitted from the provider request; the original call is in the chat history]";
+// Below this a handle costs more than the arguments it replaces (a read_file
+// with {"path": "..."} is left alone).
+static constexpr int CallMinChars = 512;
 static QString hash(const QString &s) {
     return QString::fromLatin1(
         QCryptographicHash::hash(s.toUtf8(), QCryptographicHash::Sha256).toHex());
@@ -78,17 +84,57 @@ static QString instructions(const QJsonArray &msgs) {
     }
     return hash(ids.join('\n'));
 }
+// Characters the provider actually receives (tool_calls included).
+//
+// text() ignores tool_calls, which are the bulk of a tool-heavy history; sizing
+// with it made a 1 MB payload look like 75 K characters, so every reduction
+// looked bigger than the history it replaced and could never commit.
 static int size(const QJsonArray &msgs) {
     int total = 0;
-    for (const auto &v : msgs) {
-        auto m = v.toObject();
-        total += text(m).toUcs4().size();
-        for (const QString &k :
-             {QString("reasoning"), QString("reasoning_content"), QString("reasoning_details")})
-            if (m.contains(k))
-                total += QJsonDocument(QJsonArray{m[k]}).toJson(QJsonDocument::Compact).size();
+    for (const auto &v : msgs)
+        total += int(QJsonDocument(v.toObject()).toJson(QJsonDocument::Compact).size());
+    return total;
+}
+static int argumentsChars(const QJsonObject &m) {
+    int total = 0;
+    for (const auto &v : m["tool_calls"].toArray()) {
+        const auto a = v.toObject()["function"].toObject()["arguments"];
+        total += a.isString()
+                     ? int(a.toString().size())
+                     : int(QJsonDocument(QJsonArray{a}).toJson(QJsonDocument::Compact).size());
     }
     return total;
+}
+// Replace each tool call's arguments with a small, stable handle. The call
+// already ran; later turns need the name and a hint, not the 48 KB body.
+// id/type/name are kept so the assistant->tool pairing stays valid, and the
+// handle is a pure function of the arguments (stable provider cache).
+static QJsonObject stubArguments(const QJsonObject &m) {
+    auto out = m;
+    QJsonArray stubbed;
+    for (const auto &v : m["tool_calls"].toArray()) {
+        const auto c = v.toObject(), f = c["function"].toObject();
+        const QString args = f["arguments"].isString()
+                                 ? f["arguments"].toString()
+                                 : QString::fromUtf8(QJsonDocument(QJsonArray{f["arguments"]})
+                                                         .toJson(QJsonDocument::Compact));
+        QJsonObject handle{{"_elided", true},
+                           {"note", CallStub},
+                           {"chars", int(args.size())},
+                           {"sha256", hash(args).left(16)},
+                           {"preview", args.left(160)}};
+        const QString encoded =
+            QString::fromUtf8(QJsonDocument(handle).toJson(QJsonDocument::Compact));
+        if (encoded.size() >= args.size()) {
+            stubbed.append(c); // nothing to gain; never grow a request
+            continue;
+        }
+        QJsonObject call{{"id", c["id"]}, {"type", c["type"].toString("function")}};
+        call["function"] = QJsonObject{{"name", f["name"]}, {"arguments", encoded}};
+        stubbed.append(call);
+    }
+    out["tool_calls"] = stubbed;
+    return out;
 }
 static QString preview(const QString &s) {
     auto c = s.toUcs4();
@@ -100,6 +146,7 @@ static QString preview(const QString &s) {
 }
 static QJsonArray applyState(const QJsonObject &state, const QJsonArray &msgs) {
     QJsonArray result;
+    const auto calls = state["calls"].toObject();
     int last = -1, index = 0;
     for (int i = 0; i < msgs.size(); ++i)
         if (msgs[i].toObject()["role"] == "user" && !synthetic(msgs[i].toObject()))
@@ -117,6 +164,8 @@ static QJsonArray applyState(const QJsonObject &state, const QJsonArray &msgs) {
             m.remove("reasoning");
             m.remove("reasoning_content");
         }
+        if (calls.contains(fingerprint(original)) && !m["tool_calls"].toArray().isEmpty())
+            m = stubArguments(m);
         int stage = state["tools"].toObject()[fingerprint(original)].toInt();
         if (stage && m["role"] == "tool" && m["content"].isString()) {
             QString content = m["content"].toString();
@@ -149,6 +198,7 @@ Recovery::Recovery(const QJsonArray &msgs, const QString &endpoint, const QStrin
                {"drop", 0},
                {"summary", ""},
                {"tools", QJsonObject{}},
+               {"calls", QJsonObject{}},
                {"reasoning", false}};
     if (!opts.chatId.isEmpty())
         m_path = pengyConfigDirPath() + "/context_recovery/" + hash(opts.chatId) + ".json";
@@ -163,6 +213,9 @@ Recovery::Recovery(const QJsonArray &msgs, const QString &endpoint, const QStrin
             auto tools = loaded["tools"].toObject();
             for (auto it = tools.begin(); it != tools.end(); ++it)
                 valid = valid && (it.value() == 1 || it.value() == 2);
+            const auto calls = loaded["calls"].toObject();
+            for (auto it = calls.begin(); it != calls.end(); ++it)
+                valid = valid && it.value() == 1;
             bool boundary = loaded["drop"] == 0;
             int trackedCount = 0;
             for (const auto &v : msgs) {
@@ -205,6 +258,30 @@ bool Recovery::plan(const QJsonArray &msgs, Plan &p) const {
             p.strategy = "historical_reasoning";
             return true;
         }
+    }
+    // Stage 2: tool-call arguments from completed turns. They are the bulk of a
+    // tool-heavy payload and cost nothing to elide: the call already ran, its
+    // result is what later turns need, and the original stays in the chat.
+    int lastUser = -1;
+    for (int i = 0; i < msgs.size(); ++i)
+        if (msgs[i].toObject()["role"] == "user" && !synthetic(msgs[i].toObject()))
+            lastUser = i;
+    QStringList eligibleCalls;
+    auto callMap = p.state["calls"].toObject();
+    for (int i = 0; i < msgs.size() && i < lastUser; ++i) {
+        const auto m = msgs[i].toObject();
+        if (m["tool_calls"].toArray().isEmpty() || argumentsChars(m) <= CallMinChars)
+            continue;
+        const auto id = fingerprint(m);
+        if (!callMap.contains(id))
+            eligibleCalls << id;
+    }
+    if (!eligibleCalls.isEmpty()) {
+        for (const auto &id : eligibleCalls)
+            callMap[id] = 1;
+        p.state["calls"] = callMap;
+        p.strategy = "tool_call_arguments";
+        return true;
     }
     QStringList available;
     for (const auto &v : beforeMsgs) {
@@ -278,7 +355,10 @@ bool Recovery::summaryPlan(const QJsonArray &msgs, Plan &p) const {
         if (m["role"] == "tool" && stage)
             content = stage == 2 ? Stub : preview(content);
         records << m["role"].toString() + ": " + content;
-        for (const auto &c : m["tool_calls"].toArray())
+        QJsonArray shownCalls = m["tool_calls"].toArray();
+        if (m_state["calls"].toObject().contains(fingerprint(m)))
+            shownCalls = stubArguments(m)["tool_calls"].toArray();
+        for (const auto &c : shownCalls)
             records << "Tool requested: " +
                            QString::fromUtf8(QJsonDocument(c.toObject()["function"].toObject())
                                                  .toJson(QJsonDocument::Compact));

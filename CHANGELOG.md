@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Context recovery measures the whole provider payload, not just message text.** The size metric ignored `tool_calls`, which are the bulk of a tool-heavy history (a `write_file` body, a `run_bash` heredoc): a 1 MB request looked like 75 K characters, so every reduction looked larger than the history it replaced, could never commit, and the turn failed on a hard-wall engine.
+- **Tool-call arguments from completed turns are elided for free.** Each call's arguments become a small handle (tool name, character count, SHA-256, 160-character preview) while the call's `id`/`type`/`name` and its matching result are kept, so provider pairing stays valid and the prompt prefix cache still matches. No summary request is spent; arguments of 512 characters or fewer are left alone.
+- **A reduction now frees the answer room it creates.** The derived output allowance is re-derived for every attempt from the view actually being sent. It was computed once per turn, so a request retried after a reduction still asked for the pre-reduction budget and the engine answered inside it — the "Generation limit reached before an answer was produced" shape.
+- **An endpoint that refuses the allowance parameter no longer loses the turn.** When a provider answers 400 because it does not accept `max_tokens` (OpenAI's reasoning models require `max_completion_tokens`), Pengy drops the *derived* allowance, retries the turn without it, and remembers the route for the rest of the process. A configured `output_token_limit` keeps its explicit error.
+- **The summary allowance is 8,192 tokens, not 2,048.** At 2,048 an answer-room engine spent 1,536 on thinking and cut the 500-word checkpoint at 512, so summaries never committed and recovery could not finish. A checkpoint cut off at the allowance is now accepted from 200 characters instead of discarding the transcript and paying for the same prompt again.
+
 ## v1.15.0 — 2026-11-07
 
 - **Edit Chat replaces the sidebar's Save button.** The pencil on each chat (the chat bubble in the web UI, `/title` in the CLI) opens one dialog: rename the chat, have the configured model **Generate** a title, or export it as Markdown as before. Generate reads only the user and assistant text — never tool calls or tool output — and at most its first 6,000 characters, so a chat of any size costs one small request.
