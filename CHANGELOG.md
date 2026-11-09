@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.15.1 — 2026-11-09
 
 - **Context recovery measures the whole provider payload, not just message text.** The size metric ignored `tool_calls`, which are the bulk of a tool-heavy history (a `write_file` body, a `run_bash` heredoc): a 1 MB request looked like 75 K characters, so every reduction looked larger than the history it replaced, could never commit, and the turn failed on a hard-wall engine.
 - **Tool-call arguments from completed turns are elided for free.** Each call's arguments become a small handle (tool name, character count, SHA-256, 160-character preview) while the call's `id`/`type`/`name` and its matching result are kept, so provider pairing stays valid and the prompt prefix cache still matches. No summary request is spent; arguments of 512 characters or fewer are left alone.
