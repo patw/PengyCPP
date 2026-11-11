@@ -5128,6 +5128,8 @@ private slots:
         QTest::newRow("structured-adapter") << QByteArray(R"({"error":{"source":"openai-proxy","code":"unsupported_content_type","content_type":"image_url","message":"Cannot translate pictures"}})") << true;
         QTest::newRow("legacy-text-only") << QByteArray(R"({"error":"Only text content parts are supported by this upstream format"})") << true;
         QTest::newRow("upstream-image-unsupported") << QByteArray(R"({"error":{"message":"This model does not support image inputs"}})") << false;
+        // GLM router wording for a route with no vision at all (measured 2026-11-10)
+        QTest::newRow("glm-route-no-vision") << QByteArray(R"({"error":{"message":"Invalid image or video input","type":"invalid_request_error","code":400}})") << false;
     }
 
     void llmImageRecovery() {

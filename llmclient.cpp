@@ -426,6 +426,12 @@ static bool isImageInputError(int statusCode, const QJsonObject& body, const QSt
         "image inputs are not supported", "image input is not supported",
         "images are not supported", "image_url is not supported",
         "unsupported image input", "unsupported vision input",
+        // Fireworks' GLM router answers this to *any* image part (a 1x1 PNG
+        // included) while text-only requests on the same route succeed, so it
+        // means "no vision here", not "this image is corrupt". Measured
+        // 2026-11-10: `smart` (glm-latest) with a 51 KB JPEG and an 8x8 PNG;
+        // `fast` and `kimi-latest` accept the same bytes.
+        "invalid image or video input",
     };
     for (const QString& phrase : phrases)
         if (lower.contains(phrase)) return true;

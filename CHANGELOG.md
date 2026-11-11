@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **A route that refuses image input by wording is now recognized.** Fireworks' GLM router answers *any* image part — a 1×1 PNG included — with `400 Invalid image or video input`, while text-only requests on the same route succeed, so the phrase means "no vision here", not "this image is corrupt". It is now treated like the other unsupported-input signals: the turn continues with images suppressed and the model told only file metadata is available. Corpus-image errors ("Invalid image URL", "Unsupported image format") still fail loudly, and a corrupt image still surfaces its real error.
 - **A stored tool call whose arguments never parsed no longer breaks the chat.** A length-capped or malformed generation is saved verbatim (the transcript stays honest, and running it already failed cleanly), but replaying that raw string is not safe: an engine that parses every call's arguments — Basalt/Strata among them — answers the whole request `400 Expecting ',' delimiter: line 1 column N`, so one bad entry made every later turn in that chat fail on a local engine while the same chat kept working on a lenient hosted API. The provider view now repairs such a call into a stable handle (character count, SHA-256, 160-character preview) while keeping its `id`/`type`/`name`, so assistant→tool pairing and the prompt prefix cache stay valid. Persisted history is never modified. `scripts/repair_tool_args.py` (released with the Rust edition) does the same for chat files already on disk.
 
 ## v1.15.1 — 2026-11-09
