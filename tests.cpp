@@ -1043,6 +1043,19 @@ private slots:
         QVERIFY(prelude.contains("'C:\\Users\\o''brien\\x.ps1'"));
     }
 
+    void ansiSequencesAreStripped() {
+        // pwsh colours error records even into a pipe, and OutputRendering=PlainText
+        // only suppresses it from 7.5: 7.4.6 sends ESC[31;1mWrite-Error: ... (measured
+        // 2026-11-11). The capture path strips it whatever version is installed.
+        QCOMPARE(Tools::stripAnsi(QString("\x1b[31;1mWrite-Error: \x1b[31;1mbad\x1b[0m")),
+                 QString("Write-Error: bad"));
+        QCOMPARE(Tools::stripAnsi(QString("x\x1b]8;;http://example.com\x07link\x1b]8;;\x07y")),
+                 QString("xlinky"));
+        QCOMPARE(Tools::stripAnsi(QString("a\x1b[Kb")), QString("ab"));
+        QCOMPARE(Tools::stripAnsi(QString("trail\x1b")), QString("trail"));
+        QCOMPARE(Tools::stripAnsi(QString("plain\ttab\nnext")), QString("plain\ttab\nnext"));
+    }
+
     // Live: drive the real prelude through pwsh when it is installed.
     void runPowershellLive() {
         const QString pwsh = QStandardPaths::findExecutable("pwsh");
@@ -1062,6 +1075,10 @@ private slots:
 
         out = run("Write-Error 'bad'");
         QVERIFY2(!out.contains("\x1b[") && out.contains("bad"), qPrintable(out));
+        // Raw console writes bypass OutputRendering on every version, so this is
+        // the version-independent proof that the capture path strips ANSI.
+        out = run(QString("$e = [char]27; [Console]::Out.Write(\"$e[31mred$e[0m done`n\")"));
+        QVERIFY2(!out.contains(QChar(0x1b)) && out.contains("red done"), qPrintable(out));
         out = run("throw \"boom\"");
         QVERIFY2(out.contains("boom") && out.contains("[Exit code: 1]"), qPrintable(out));
         out = run("if ($true) {");

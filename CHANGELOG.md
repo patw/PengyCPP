@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## v1.15.3 — 2026-11-11
 
 - **A turn that fills the window now recovers on its own instead of asking you to retry.** Every elision stage protects the active turn — reasoning is only stripped before the last user message, and tool-call arguments have the same boundary — so inside one long agentic turn the ladder could only spend its four attempts on tool-output previews and stubs. When those were not enough the turn failed with `Generation limit reached … Pengy retried after 4 context reduction(s) without success`, and typing "try again" then recovered immediately, because the new user message moved the boundary and the same payload could be elided (measured 2026-11-11: `historical reasoning; 306008 fewer characters`, then `tool call arguments; 371360 fewer characters`, then the answer). A last-resort `active turn` stage now does that without waiting for the user: it keeps the newest four messages intact, elides everything older in the current turn (reasoning and tool-call arguments), and runs at most once per chat, only after every cheaper stage is spent.
+- **`run_powershell` output no longer carries ANSI escape codes.** pwsh colours error records even when stdout and stderr are pipes, and the prelude's `$PSStyle.OutputRendering = 'PlainText'` only suppresses that from 7.5 onwards: on 7.4.6 `Write-Error 'bad'` still arrives as `ESC[31;1mWrite-Error: ESC[31;1mbadESC[0m` (measured 2026-11-11, with `TERM` unset and inherited alike), so the model was reading escape sequences. Captured stdout and stderr are now stripped of CSI colours, OSC hyperlinks and other escapes at the boundary, whatever `pwsh` version is installed. A script writing escape codes itself is stripped too — the tool's contract is plain text. Tests cover the stripper and, on a live `pwsh`, a script that writes to the raw console stream, which `OutputRendering` does not touch on any version.
+
+Verified: 349 tests passed (1 skipped); `pengy`, `pengy-cli` and `pengy-web` all report v1.15.3; `pengy_1.15.3_amd64.deb` builds.
 
 ## v1.15.2 — 2026-11-10
 

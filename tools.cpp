@@ -2228,6 +2228,31 @@ QString powershellPrelude(const QString& scriptPath) {
     return QString::fromUtf8(kPowershellPrelude).replace("{path}", escaped);
 }
 
+QString stripAnsi(const QString& s) {
+    QString out;
+    out.reserve(s.size());
+    for (int i = 0; i < s.size(); ++i) {
+        const QChar c = s[i];
+        if (c != QChar(0x1b)) { out.append(c); continue; }
+        if (i + 1 >= s.size()) break;  // lone trailing ESC
+        const QChar next = s[++i];
+        if (next == '[') {             // CSI: parameters, then one final byte @-~
+            while (i + 1 < s.size()) {
+                const ushort u = s[++i].unicode();
+                if (u >= 0x40 && u <= 0x7e) break;
+            }
+        } else if (next == ']') {      // OSC: terminated by BEL or ESC backslash
+            while (i + 1 < s.size()) {
+                const QChar n = s[++i];
+                if (n == QChar(0x07)) break;
+                if (n == QChar(0x1b) && i + 1 < s.size() && s[i + 1] == '\\') { ++i; break; }
+            }
+        }
+        // Any other two-character escape: both characters consumed.
+    }
+    return out;
+}
+
 QString runPowershellWith(const QString& exe, const QJsonObject& args,
                           std::atomic<bool>* cancel, ToolContext* ctx) {
     if (!ctx) ctx = &g_defaultContext;
@@ -2280,10 +2305,14 @@ QString runPowershellWith(const QString& exe, const QJsonObject& args,
     ctx->registerProcess(pid);
 
     QString early = waitForCommand(proc, pid, toolTimeout(), cancel, ctx, tmpFiles);
-    if (!early.isEmpty()) return early;
+    if (!early.isEmpty()) return stripAnsi(early);
 
-    QString out = readAndRemove(tmpFiles.stdoutPath);
-    QString err = readAndRemove(tmpFiles.stderrPath);
+    // pwsh colours error records even into a pipe, and the prelude's
+    // OutputRendering=PlainText only suppresses that from 7.5 on: 7.4.6 still
+    // writes ESC[31;1m (measured 2026-11-11). Strip at the capture boundary so
+    // the model never sees escape codes, whatever version is installed.
+    QString out = stripAnsi(readAndRemove(tmpFiles.stdoutPath));
+    QString err = stripAnsi(readAndRemove(tmpFiles.stderrPath));
     out = joinCommandOutput(out, err, proc.exitCode());
     return out.trimmed().isEmpty() ? "(No output)" : snipMiddle(out);
 }

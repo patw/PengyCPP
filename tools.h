@@ -70,6 +70,10 @@ QJsonArray platformTools(const QJsonArray& base, bool windows,
 QString    powershellLabel(const QString& path);
 /// The fixed run_powershell prelude with *scriptPath* filled in.
 QString    powershellPrelude(const QString& scriptPath);
+/// Strip ANSI escape sequences (CSI colours, OSC hyperlinks) from captured
+/// output: pwsh colours error records even into a pipe and only honours
+/// OutputRendering=PlainText from 7.5 on.
+QString    stripAnsi(const QString& text);
 /// Error for a local run_bash on Windows (remote-only there); empty if allowed.
 QString    windowsLocalRunBashError(bool windows, const QString& host);
 /// run_powershell against an explicit executable (empty = not found).
