@@ -9,3 +9,10 @@ QJsonArray messagesForProvider(const QJsonArray& persistedMessages,
                               int maxDimension,
                               double maxMb,
                               int quality);
+
+// Replace tool-call arguments that are not valid JSON with a stable handle
+// (character count, SHA-256, 160-character preview), keeping each call's
+// id/type/name. Called by messagesForProvider: a stored, unparseable arguments
+// string makes a strict engine reject the whole request, so it must never be
+// replayed. The persisted transcript is not modified.
+QJsonArray repairUnparseableArguments(const QJsonArray& messages);

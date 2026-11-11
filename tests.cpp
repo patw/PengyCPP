@@ -5232,6 +5232,47 @@ private slots:
         QVERIFY(events.last()["message"].toString().contains("Cannot translate pictures"));
     }
 
+    void unparseableToolCallArgumentsAreRepairedForTheProvider() {
+        // A length-capped generation: the stored arguments object simply stops.
+        const QString broken = QStringLiteral(
+            R"X({"changes": [{"operations": [{"kind": "replace", "old": "a", "new": "b"}]})X");
+        const QString intact = QStringLiteral(R"X({"path": "/tmp/f"})X");
+        QJsonArray history{
+            QJsonObject{{"role", "user"}, {"content", "add --art"}},
+            QJsonObject{{"role", "assistant"}, {"content", ""}, {"tool_calls", QJsonArray{
+                QJsonObject{{"id", "call_broken"}, {"type", "function"},
+                            {"function", QJsonObject{{"name", "apply_changes"}, {"arguments", broken}}}},
+                QJsonObject{{"id", "call_ok"}, {"type", "function"},
+                            {"function", QJsonObject{{"name", "read_file"}, {"arguments", intact}}}},
+            }}},
+            QJsonObject{{"role", "tool"}, {"tool_call_id", "call_broken"},
+                        {"content", "Error: the arguments for apply_changes were not valid JSON"}},
+        };
+        const QJsonArray original = history;
+        const QJsonArray view = messagesForProvider(history, 0, 4096, 4.5, 85);
+        const QJsonArray calls = view[1].toObject()["tool_calls"].toArray();
+        QCOMPARE(calls.size(), 2);
+        // Pairing survives: the id/type/name the tool result answers to are kept.
+        QCOMPARE(calls[0].toObject()["id"].toString(), QString("call_broken"));
+        QCOMPARE(calls[0].toObject()["type"].toString(), QString("function"));
+        QCOMPARE(calls[0].toObject()["function"].toObject()["name"].toString(),
+                 QString("apply_changes"));
+        QJsonParseError parseError{};
+        const QJsonObject handle = QJsonDocument::fromJson(
+            calls[0].toObject()["function"].toObject()["arguments"].toString().toUtf8(),
+            &parseError).object();
+        QCOMPARE(parseError.error, QJsonParseError::NoError);
+        QVERIFY(handle["_repaired"].toBool());
+        QCOMPARE(handle["chars"].toInt(), broken.size());
+        QCOMPARE(handle["sha256"].toString().size(), 16);
+        // Negative control: a valid call is untouched.
+        QCOMPARE(calls[1].toObject()["function"].toObject()["arguments"].toString(), intact);
+        // The persisted transcript is the user's data; only the view changes.
+        QCOMPARE(history, original);
+        // Idempotent.
+        QCOMPARE(repairUnparseableArguments(view), view);
+    }
+
     void llmRejectedRouteIsRememberedAcrossRunsAndModelSwitches() {
         StubLlmServer stub;
         stub.statuses << 400 << 200 << 200 << 200 << 200 << 200;

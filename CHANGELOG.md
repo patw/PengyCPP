@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A stored tool call whose arguments never parsed no longer breaks the chat.** A length-capped or malformed generation is saved verbatim (the transcript stays honest, and running it already failed cleanly), but replaying that raw string is not safe: an engine that parses every call's arguments — Basalt/Strata among them — answers the whole request `400 Expecting ',' delimiter: line 1 column N`, so one bad entry made every later turn in that chat fail on a local engine while the same chat kept working on a lenient hosted API. The provider view now repairs such a call into a stable handle (character count, SHA-256, 160-character preview) while keeping its `id`/`type`/`name`, so assistant→tool pairing and the prompt prefix cache stay valid. Persisted history is never modified. `scripts/repair_tool_args.py` (released with the Rust edition) does the same for chat files already on disk.
+
 ## v1.15.1 — 2026-11-09
 
 - **Context recovery measures the whole provider payload, not just message text.** The size metric ignored `tool_calls`, which are the bulk of a tool-heavy history (a `write_file` body, a `run_bash` heredoc): a 1 MB request looked like 75 K characters, so every reduction looked larger than the history it replaced, could never commit, and the turn failed on a hard-wall engine.
