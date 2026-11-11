@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## v1.15.2 — 2026-11-10
 
 - **A route that refuses image input by wording is now recognized.** Fireworks' GLM router answers *any* image part — a 1×1 PNG included — with `400 Invalid image or video input`, while text-only requests on the same route succeed, so the phrase means "no vision here", not "this image is corrupt". It is now treated like the other unsupported-input signals: the turn continues with images suppressed and the model told only file metadata is available. Corpus-image errors ("Invalid image URL", "Unsupported image format") still fail loudly, and a corrupt image still surfaces its real error.
 - **A stored tool call whose arguments never parsed no longer breaks the chat.** A length-capped or malformed generation is saved verbatim (the transcript stays honest, and running it already failed cleanly), but replaying that raw string is not safe: an engine that parses every call's arguments — Basalt/Strata among them — answers the whole request `400 Expecting ',' delimiter: line 1 column N`, so one bad entry made every later turn in that chat fail on a local engine while the same chat kept working on a lenient hosted API. The provider view now repairs such a call into a stable handle (character count, SHA-256, 160-character preview) while keeping its `id`/`type`/`name`, so assistant→tool pairing and the prompt prefix cache stay valid. Persisted history is never modified. `scripts/repair_tool_args.py` (released with the Rust edition) does the same for chat files already on disk.
+- **The repair script refuses to run under a live Pengy.** The desktop app holds every chat it has opened in memory and writes that copy back on save and on exit, so a repair applied underneath it is silently undone: on 2026-11-10 the script repaired a chat at 19:31, the GUI exited at 19:43 and restored the byte-identical poisoned string, and the next turn failed with the same `400` again. `--apply` now exits 3 with instructions (quit Pengy, repair, start it again) when the app is running; `--force` overrides, and a running `pengy-web`/`pengy-cli` is reported as a warning.
+
+Verified: 346 tests passed (2 skipped); `pengy`, `pengy-cli` and `pengy-web` all report v1.15.2; `pengy_1.15.2_amd64.deb` builds.
 
 ## v1.15.1 — 2026-11-09
 
