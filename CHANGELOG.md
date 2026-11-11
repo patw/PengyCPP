@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A turn that fills the window now recovers on its own instead of asking you to retry.** Every elision stage protects the active turn — reasoning is only stripped before the last user message, and tool-call arguments have the same boundary — so inside one long agentic turn the ladder could only spend its four attempts on tool-output previews and stubs. When those were not enough the turn failed with `Generation limit reached … Pengy retried after 4 context reduction(s) without success`, and typing "try again" then recovered immediately, because the new user message moved the boundary and the same payload could be elided (measured 2026-11-11: `historical reasoning; 306008 fewer characters`, then `tool call arguments; 371360 fewer characters`, then the answer). A last-resort `active turn` stage now does that without waiting for the user: it keeps the newest four messages intact, elides everything older in the current turn (reasoning and tool-call arguments), and runs at most once per chat, only after every cheaper stage is spent.
+
 ## v1.15.2 — 2026-11-10
 
 - **A route that refuses image input by wording is now recognized.** Fireworks' GLM router answers *any* image part — a 1×1 PNG included — with `400 Invalid image or video input`, while text-only requests on the same route succeed, so the phrase means "no vision here", not "this image is corrupt". It is now treated like the other unsupported-input signals: the turn continues with images suppressed and the model told only file metadata is available. Corpus-image errors ("Invalid image URL", "Unsupported image format") still fail loudly, and a corrupt image still surfaces its real error.

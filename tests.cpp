@@ -4309,6 +4309,49 @@ private slots:
         }
     }
 
+    void activeTurnElisionRecoversWithoutANewUserMessage() {
+        // Measured 2026-11-11: a job died with "retried after 4 context
+        // reduction(s)"; a manual "try again" recovered instantly because the new
+        // user message moved the active-turn boundary. The last-resort stage does
+        // that without the user.
+        QJsonArray messages{
+            QJsonObject{{"role", "system"}, {"content", "You are Pengy."}},
+            QJsonObject{{"role", "user"}, {"content", "build the whole thing, all of it"}}};
+        for (int n = 0; n < 8; ++n) {
+            messages.append(QJsonObject{
+                {"role", "assistant"}, {"content", ""}, {"reasoning", QString(8000, 'r')},
+                {"tool_calls", QJsonArray{QJsonObject{
+                    {"id", QString("c%1").arg(n)}, {"type", "function"},
+                    {"function", QJsonObject{{"name", "run_bash"},
+                        {"arguments", "{\"command\":\"" + QString(8000, 'x') + "\"}"}}}}}}});
+            messages.append(QJsonObject{{"role", "tool"},
+                                        {"tool_call_id", QString("c%1").arg(n)},
+                                        {"content", QString(20000, 'y')}});
+        }
+        const auto original = messages;
+        ContextRecovery::Recovery recovery(messages, "test", "m", {});
+        QStringList strategies;
+        for (int i = 0; i < 6; ++i) {
+            ContextRecovery::Plan plan;
+            if (!recovery.plan(messages, plan)) break;
+            QString error;
+            auto event = recovery.commit(plan, {}, messages, error);
+            if (event.isEmpty()) break;
+            strategies << event["strategy"].toString();
+        }
+        QCOMPARE(strategies.last(), QString("active_turn"));
+        QCOMPARE(messages, original);
+        const auto view = recovery.apply(messages);
+        const int keep = messages.size() - ContextRecovery::DeepTailMessages;
+        for (int i = 0; i < view.size(); ++i) {
+            const auto m = view[i].toObject();
+            if (m["role"] != "assistant") continue;
+            QCOMPARE(m.contains("reasoning"), i >= keep);
+        }
+        ContextRecovery::Plan again;
+        QVERIFY(!recovery.plan(messages, again));
+    }
+
     void recoveryFourthAttemptReachesSummaryForContextAndEmptyLength() {
         QFile file(QString(PENGY_SOURCE_DIR) + "/tests/fixtures/context_recovery_reserve.json");
         QVERIFY(file.open(QIODevice::ReadOnly));

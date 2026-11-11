@@ -151,6 +151,10 @@ static QJsonArray applyState(const QJsonObject &state, const QJsonArray &msgs) {
     for (int i = 0; i < msgs.size(); ++i)
         if (msgs[i].toObject()["role"] == "user" && !synthetic(msgs[i].toObject()))
             last = i;
+    // Everything before `deepFrom` is elided even inside the active turn: only the
+    // last `deep` messages are still protected (see Recovery::deepPlan).
+    const int deepKeep = state["deep"].toInt(0);
+    const int deepFrom = deepKeep > 0 ? msgs.size() - deepKeep : -1;
     for (int i = 0; i < msgs.size(); ++i) {
         auto original = msgs[i].toObject(), m = original;
         if (tracked(m)) {
@@ -159,7 +163,8 @@ static QJsonArray applyState(const QJsonObject &state, const QJsonArray &msgs) {
                 continue;
         } else if (synthetic(m) && index <= state["drop"].toInt())
             continue;
-        if (state["reasoning"].toBool() && i < last && m["role"] == "assistant") {
+        if (state["reasoning"].toBool() && m["role"] == "assistant" &&
+            (i < last || (deepFrom >= 0 && i < deepFrom))) {
             // Unknown reasoning_details may carry provider-required signatures.
             m.remove("reasoning");
             m.remove("reasoning_content");
@@ -199,7 +204,8 @@ Recovery::Recovery(const QJsonArray &msgs, const QString &endpoint, const QStrin
                {"summary", ""},
                {"tools", QJsonObject{}},
                {"calls", QJsonObject{}},
-               {"reasoning", false}};
+               {"reasoning", false},
+               {"deep", QJsonValue(QJsonValue::Null)}};
     if (!opts.chatId.isEmpty())
         m_path = pengyConfigDirPath() + "/context_recovery/" + hash(opts.chatId) + ".json";
     if (opts.enabled && !m_path.isEmpty()) {
@@ -238,8 +244,12 @@ QJsonArray Recovery::apply(const QJsonArray &msgs) const {
     return options.enabled ? applyState(m_state, msgs) : msgs;
 }
 bool Recovery::plan(const QJsonArray &msgs, Plan &p) const {
-    if (!options.enabled || attempts >= 4)
+    if (!options.enabled)
         return false;
+    // The attempt budget is spent: the only thing left is the last-resort stage,
+    // and only if it has never run for this chat.
+    if (attempts >= MaxAttempts)
+        return deepPlan(msgs, p);
     auto beforeMsgs = apply(msgs);
     p = Plan{};
     p.before = size(beforeMsgs);
@@ -317,7 +327,49 @@ bool Recovery::plan(const QJsonArray &msgs, Plan &p) const {
             return true;
         }
     }
-    return summaryPlan(msgs, p);
+    if (summaryPlan(msgs, p))
+        return true;
+    return deepPlan(msgs, p);
+}
+
+// Last resort: elide all but the newest few messages of the ACTIVE turn.
+//
+// Every stage above protects the current turn -- reasoning is only stripped
+// before the last user message, and tool-argument elision has the same boundary
+// -- on the theory that a long agentic turn needs to see its own work. When that
+// protection is all that stands between the payload and the window, the turn dies
+// with "retried after 4 context reduction(s) without success", and the only way
+// through is for a new user message to arrive and move the boundary.
+//
+// That is exactly what a manual "try again" does, measured 2026-11-11: the retry
+// reported `historical reasoning; 306008 fewer characters` then `tool call
+// arguments; 371360 fewer characters` and answered. This does the same without
+// waiting for the user: keep the newest DeepTailMessages messages intact, elide
+// everything older in the turn. Runs at most once per chat, and only after every
+// cheaper stage is spent.
+bool Recovery::deepPlan(const QJsonArray &msgs, Plan &p) const {
+    if (m_state["deep"].toInt(0) > 0 || msgs.size() <= DeepTailMessages)
+        return false;
+    p = Plan{};
+    p.before = size(apply(msgs));
+    p.state = m_state;
+    const int boundary = msgs.size() - DeepTailMessages;
+    p.state["deep"] = DeepTailMessages;
+    p.state["reasoning"] = true;
+    auto calls = p.state["calls"].toObject();
+    for (int i = 0; i < boundary; ++i) {
+        const auto m = msgs[i].toObject();
+        if (m["tool_calls"].toArray().isEmpty() || argumentsChars(m) <= CallMinChars)
+            continue;
+        const auto id = fingerprint(m);
+        if (!calls.contains(id))
+            calls[id] = 1;
+    }
+    p.state["calls"] = calls;
+    if (size(applyState(p.state, msgs)) >= p.before)
+        return false;
+    p.strategy = "active_turn";
+    return true;
 }
 bool Recovery::summaryPlan(const QJsonArray &msgs, Plan &p) const {
     QVector<int> users, boundaries;
@@ -407,17 +459,19 @@ QJsonObject Recovery::commit(Plan p, const QStringList &summaries, const QJsonAr
     }
     m_state = p.state;
     ++attempts;
+    const int maxAttempts = qMax(attempts, MaxAttempts);
     return {{"type", "context_compacted"},
             {"attempt", attempts},
-            {"max_attempts", 4},
+            {"max_attempts", maxAttempts},
             {"chars_removed", p.before - after},
             {"strategy", p.strategy},
             {"turns_summarized", p.turns},
             {"message", QString("Context recovery — %1; %2 fewer characters, %3 older turns "
-                                "summarized. Full history retained. Retrying %4/4.")
+                                "summarized. Full history retained. Retrying %4/%5.")
                             .arg(p.strategy.replace('_', ' '))
                             .arg(p.before - after)
                             .arg(p.turns)
-                            .arg(attempts)}};
+                            .arg(attempts)
+                            .arg(maxAttempts)}};
 }
 } // namespace ContextRecovery

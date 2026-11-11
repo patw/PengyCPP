@@ -33,6 +33,13 @@ struct Plan {
 QString text(const QJsonObject &message);
 QString fingerprint(const QJsonObject &message);
 bool synthetic(const QJsonObject &message);
+// Reductions allowed before the turn is reported as failed. Only the cheap,
+// model-free stages are counted; the last-resort active-turn stage may run once
+// more after this budget is spent (see Recovery::deepPlan).
+constexpr int MaxAttempts = 4;
+// Messages at the end of the conversation that even the last-resort stage keeps
+// intact: the model must still see the work it just did.
+constexpr int DeepTailMessages = 4;
 class Recovery {
   public:
     Recovery(const QJsonArray &messages, const QString &endpoint, const QString &model,
@@ -48,6 +55,7 @@ class Recovery {
 
   private:
     bool summaryPlan(const QJsonArray &messages, Plan &result) const;
+    bool deepPlan(const QJsonArray &messages, Plan &result) const;
     QJsonObject m_state;
     QString m_path;
 };
