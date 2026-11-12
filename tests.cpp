@@ -1439,6 +1439,81 @@ private slots:
         QVERIFY(result.contains("Dry run")); QFile fb2(b); QVERIFY(fb2.open(QIODevice::ReadOnly)); QCOMPARE(fb2.readAll(), QByteArray("unchanged"));
     }
 
+    // insert_after is a character splice (defect report 2026-11-12): text with
+    // no leading newline joins the anchor's line, and that is valid text in
+    // .env, YAML, CSV, a Makefile or a commented-out setting, so the damage was
+    // silent.  The splice is unchanged on purpose; the result now says so, on a
+    // dry run and a real write alike.  Mirrors the Python and Rust tests.
+    void applyChangesInsertAfterAnnouncesJoinedLine() {
+        QTemporaryDir dir;
+        const QString path = dir.path() + "/t.txt";
+        auto write = [&](const QByteArray& bytes) {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(bytes);
+        };
+        auto insert = [&](const QString& anchor, const QString& text, int matches = 1) {
+            return Tools::execute("apply_changes", QJsonObject{{"dry_run", true}, {"changes", QJsonArray{
+                QJsonObject{{"path", path}, {"operations", QJsonArray{QJsonObject{
+                    {"kind", "insert_after"}, {"anchor", anchor}, {"text", text},
+                    {"expected_matches", matches}}}}}}}});
+        };
+        auto noteLines = [](const QString& r) {
+            QStringList out;
+            for (const QString& l : r.split('\n'))
+                if (l.startsWith("note:")) out << l;
+            return out;
+        };
+
+        write("alpha\nbeta\ngamma\n");
+        // The reported case: text has no leading newline.
+        const QString first = insert("beta", "INSERTED-1\nINSERTED-2");
+        QStringList n = noteLines(first);
+        QCOMPARE(n.size(), 1);
+        // Exact text, so the three editions cannot drift apart on wording.
+        QCOMPARE(n[0], QString("note: insert_after joined text to the end of line 2 in %1: "
+                               "the anchor does not end a line and text does not start with a newline. "
+                               "Start text with a newline to insert whole lines.").arg(path));
+        // The note sits between the header and the diff, so a preview shows it.
+        QVERIFY2(first.startsWith("Dry run: no changes applied.\nFiles: 1\nnote: "), qPrintable(first));
+        QVERIFY(first.contains("\n\n--- "));
+
+        // The same hazard from the other side: the anchor ends the line and the
+        // text does not end with a newline, so it runs into the following line.
+        n = noteLines(insert("beta\n", "X"));
+        QCOMPARE(n.size(), 1);
+        QVERIFY2(n[0].contains("joined text to the start of line 3"), qPrintable(n[0]));
+
+        // A mid-token anchor joins too, and the note does not pretend otherwise.
+        n = noteLines(insert("et", "-MID-"));
+        QCOMPARE(n.size(), 1);
+        QVERIFY2(n[0].contains("end of line 2"), qPrintable(n[0]));
+
+        // Repeated anchors report how many locations joined.
+        write("dup\ndup\ntail\n");
+        n = noteLines(insert("dup", "X", 2));
+        QCOMPARE(n.size(), 1);
+        QVERIFY2(n[0].contains("(+1 more)"), qPrintable(n[0]));
+
+        // Every documented whole-line form is silent.
+        write("alpha\nbeta\ngamma\n");
+        const QList<QPair<QString, QString>> plain{
+            {"beta", "\nINSERTED"}, {"beta\n", "INSERTED\n"}, {"beta", "\nINSERTED\n"},
+            {"gamma\n", "X"}, {"beta", ""}};
+        for (const auto& pair : plain)
+            QVERIFY2(noteLines(insert(pair.first, pair.second)).isEmpty(), qPrintable(pair.first));
+
+        // A real write keeps the exact splice and carries the note the dry run
+        // showed, so the preview and the write agree.
+        const QString r = Tools::execute("apply_changes", QJsonObject{{"changes", QJsonArray{
+            QJsonObject{{"path", path}, {"operations", QJsonArray{QJsonObject{
+                {"kind", "insert_after"}, {"anchor", "beta"}, {"text", "X"}}}}}}}});
+        QVERIFY(r.contains("note: insert_after joined text to the end of line 2"));
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("alpha\nbetaX\ngamma\n"));
+    }
+
     // ── Tools: hardening (mirror tests/test_tool_hardening.py and
     //    hardening_tests in tools.rs) ─────────────────────────────────
 

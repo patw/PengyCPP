@@ -271,7 +271,7 @@ const QJsonArray& baseToolDefinitions() {
                                         }},
                                         {"anchor", QJsonObject{
                                             {"type", "string"},
-                                            {"description", "Exact text to insert after"}
+                                            {"description", "Exact text to insert after; the splice lands at the end of the match, not the end of its line"}
                                         }},
                                         {"new", QJsonObject{
                                             {"type", "string"},
@@ -279,7 +279,7 @@ const QJsonArray& baseToolDefinitions() {
                                         }},
                                         {"text", QJsonObject{
                                             {"type", "string"},
-                                            {"description", "Text to insert"}
+                                            {"description", "Text to insert immediately after the anchor; start it with a newline to put it on its own line(s)"}
                                         }},
                                         {"expected_matches", QJsonObject{
                                             {"type", "integer"},
@@ -1077,6 +1077,42 @@ static QList<DiffOp> diffOpcodes(const QStringList& a, const QStringList& b) {
         merged.append(op);
     }
     return merged;
+}
+
+// The result line announcing an insert_after that shares a line, if it does.
+// insert_after is a character splice, not a line insert, so the inserted text
+// can end up on a line with existing text from either side: the anchor does not
+// end a line and text does not start with one ("beta" + "X" becomes "betaX"),
+// or the anchor does end a line and text does not end with one ("beta\n" + "X"
+// becomes "beta\nXgamma").  In .env, YAML, CSV, a Makefile, a shell export line
+// or a commented-out setting either result is valid text, so the corruption is
+// silent and surfaces much later.  The note names the file and line and the
+// missing newline; it is a contract reminder, not an error, because the edit
+// did exactly what was asked.  Empty means nothing shares a line.  Same rule
+// and same wording as the Python and Rust editions.
+static QString insertJoinNote(const QString& content, const QString& anchor, const QString& text,
+                              const QString& path, int matches) {
+    if (text.isEmpty()) return QString();
+    const int anchorEnd = content.indexOf(anchor) + anchor.size();
+    const QString more = matches > 1 ? QString(" (+%1 more)").arg(matches - 1) : QString();
+    const bool startsLine = text.at(0) == QLatin1Char('\n') || text.at(0) == QLatin1Char('\r');
+    const bool endsLine = text.at(text.size() - 1) == QLatin1Char('\n') || text.at(text.size() - 1) == QLatin1Char('\r');
+    const bool anchorEndsLine = anchor.at(anchor.size() - 1) == QLatin1Char('\n')
+                             || anchor.at(anchor.size() - 1) == QLatin1Char('\r');
+    const int line = content.left(anchorEnd).count(QLatin1Char('\n')) + 1;
+    if (!startsLine && !anchorEndsLine)
+        return QString("note: insert_after joined text to the end of line %1%2 in %3: "
+                       "the anchor does not end a line and text does not start with a newline. "
+                       "Start text with a newline to insert whole lines.").arg(line).arg(more, path);
+    const bool nextRunsOn = anchorEnd < content.size()
+                         && content.at(anchorEnd) != QLatin1Char('\n')
+                         && content.at(anchorEnd) != QLatin1Char('\r');
+    if (!endsLine && nextRunsOn)
+        return QString("note: insert_after joined text to the start of line %1%2 in %3: "
+                       "the anchor ends a line and text does not end with a newline, so the inserted "
+                       "text runs into the line that follows. End text with a newline to insert whole lines.")
+            .arg(line).arg(more, path);
+    return QString();
 }
 
 // Where needle first occurs in content, for a failed does_not_contain: "at
@@ -3608,6 +3644,7 @@ static QString toolApplyChanges(const QJsonObject& args) {
     struct Prepared { QString path, oldText, newText; };
     QList<Prepared> prepared;
     QStringList errors;
+    QStringList notes;
     QSet<QString> seen;
     int ops = 0, bytes = 0;
     for (int fi = 0; fi < changes.size(); ++fi) {
@@ -3653,6 +3690,9 @@ static QString toolApplyChanges(const QJsonObject& args) {
                 errors << QString("%1 operation %2: matches %3 locations; expected %4").arg(raw).arg(oi).arg(count).arg(expected);
                 continue;
             }
+            const QString joinNote = kind == "insert_after"
+                ? insertJoinNote(cur, needle, text, raw, expected) : QString();
+            if (!joinNote.isEmpty()) notes << joinNote;
             const QString repl = kind == "insert_after" ? needle + text : text;
             int pos = 0;
             for (int n = 0; n < expected; ++n) {
@@ -3692,8 +3732,12 @@ static QString toolApplyChanges(const QJsonObject& args) {
     QString diff;
     for (const auto& p : prepared)
         if (p.oldText != p.newText) diff += unifiedDiff(p.path, p.oldText, p.newText);
+    // Notes sit between the header and the diff so they appear on a dry run and
+    // a real write alike; with no notes the output is unchanged byte for byte.
+    const QString notesPart = notes.isEmpty() ? QString() : notes.join("\n") + "\n";
     if (args["dry_run"].toBool(false))
-        return QString("Dry run: no changes applied.\nFiles: %1\n\n%2").arg(prepared.size()).arg(diff).trimmed();
+        return QString("Dry run: no changes applied.\nFiles: %1\n%2\n%3")
+            .arg(prepared.size()).arg(notesPart, diff).trimmed();
 
     // Stage every file before replacing any, so a write failure (disk full,
     // permissions) leaves all targets untouched; only the renames remain after.
@@ -3712,7 +3756,8 @@ static QString toolApplyChanges(const QJsonObject& args) {
         if (!err.isEmpty())
             return "Error: rename failed after validation; changes may be partially applied: " + err;
     }
-    return QString("Applied changes to %1 file(s).\n\n%2").arg(prepared.size()).arg(diff).trimmed();
+    return QString("Applied changes to %1 file(s).\n%2\n%3")
+        .arg(prepared.size()).arg(notesPart, diff).trimmed();
 }
 
 static QString toolGlob(const QJsonObject& args);
