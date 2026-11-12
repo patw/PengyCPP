@@ -1322,6 +1322,42 @@ private slots:
         QVERIFY(result.contains("3 lines"));
     }
 
+    // Lines are counted like `wc -l`: a trailing newline is not a line.  It used
+    // to report N+1 for every file ending in a newline, so the header lied and
+    // offset=N+1 returned a phantom empty line instead of "past the end".
+    // Whole-file reads must stay byte-identical either way.  Mirrors Python's
+    // test_read_file_counts_lines_like_wc and Rust's read_file_counts_lines_like_wc.
+    void readFileCountsLinesLikeWc() {
+        QTemporaryDir dir;
+        const QString path = dir.path() + "/t.txt";
+        auto write = [&](const QByteArray& bytes) {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(bytes);
+        };
+        auto read = [&](const QJsonObject& extra) {
+            QJsonObject args{{"path", path}};
+            for (auto it = extra.begin(); it != extra.end(); ++it) args[it.key()] = it.value();
+            return Tools::execute("read_file", args);
+        };
+
+        write("a\nb\n");
+        QCOMPARE(read(QJsonObject()), QString("a\nb\n"));
+        QVERIFY(read(QJsonObject{{"offset", 1}}).startsWith(QString("[Lines 1-2 of 2 in %1]").arg(path)));
+        QVERIFY(read(QJsonObject{{"offset", 3}}).contains("2 lines"));
+
+        // No trailing newline: same count, and a page at the end still clamps.
+        write("a\nb");
+        QVERIFY(read(QJsonObject{{"offset", 1}}).startsWith(QString("[Lines 1-2 of 2 in %1]").arg(path)));
+        QCOMPARE(read(QJsonObject{{"offset", 2}, {"limit", 9}}).section('\n', 1), QString("b"));
+
+        // A blank line at the end IS a line; an empty file is empty.
+        write("a\n\n");
+        QVERIFY(read(QJsonObject{{"offset", 1}}).startsWith(QString("[Lines 1-2 of 2 in %1]").arg(path)));
+        write("");
+        QCOMPARE(read(QJsonObject()), QString());
+    }
+
     // ── Tools: write_file ───────────────────────────────────────────
 
     void writeFileCreatesAndWrites() {
@@ -1958,6 +1994,43 @@ private slots:
         QString regex = Tools::execute("search_content",
             QJsonObject{{"pattern", "a.b"}, {"path", path}, {"regex", true}});
         QVERIFY(regex.contains("axb"));
+    }
+
+    // `max_results` counts match BLOCKS, and a capped search says so.  Adjacent
+    // matches group into one block however long it runs.  A single-file search
+    // used to drop the limit flag on the floor: five blocks came back with
+    // nothing to say the rest of the log existed.  Mirrors Python's
+    // test_search_content_reports_being_capped and the Rust edition's test.
+    void searchContentReportsBeingCapped() {
+        QTemporaryDir dir;
+        const QString separated = dir.path() + "/sep.txt";
+        {
+            QStringList lines;
+            for (int i = 0; i < 300; ++i) lines << QString(i % 2 == 0 ? "hit%1" : "miss%1").arg(i);
+            QFile f(separated); f.open(QIODevice::WriteOnly); f.write(lines.join('\n').toUtf8());
+        }
+        const QString capped = Tools::execute("search_content",
+            QJsonObject{{"pattern", "hit"}, {"path", separated}, {"max_results", 5}});
+        QCOMPARE(capped.count(QString::fromUtf8("\xF0\x9F\x93\x84")), 5);
+        QVERIFY2(capped.contains("results truncated at 5 match blocks"), qPrintable(capped));
+
+        // One contiguous run is a single block, so the cap never fires.
+        const QString adjoining = dir.path() + "/run.txt";
+        {
+            QStringList hits;
+            for (int i = 0; i < 300; ++i) hits << QString("hit%1").arg(i);
+            QFile f(adjoining); f.open(QIODevice::WriteOnly); f.write(hits.join('\n').toUtf8());
+        }
+        const QString one = Tools::execute("search_content",
+            QJsonObject{{"pattern", "hit"}, {"path", adjoining}, {"max_results", 5}});
+        QCOMPARE(one.count(QString::fromUtf8("\xF0\x9F\x93\x84")), 1);
+        QVERIFY(!one.contains("truncated"));
+
+        // A directory search reports the cap in its summary line.
+        const QString dirOut = Tools::execute("search_content",
+            QJsonObject{{"pattern", "hit"}, {"path", dir.path()}, {"max_results", 5}});
+        QVERIFY2(dirOut.contains("match block(s)"), qPrintable(dirOut));
+        QVERIFY(dirOut.contains("results truncated"));
     }
 
     // ── Tools: unknown tool ─────────────────────────────────────────

@@ -244,11 +244,11 @@ const QJsonArray& baseToolDefinitions() {
             QJsonArray{"path", "old_str", "new_str"}),
 
         td("apply_changes",
-            "Apply several exact-text edits across existing files, all or nothing. dry_run=true returns the unified diff without writing.",
+            "Apply several exact-text edits across existing files, all or nothing.",
             QJsonObject{
                 {"changes", QJsonObject{
                     {"type", "array"},
-                    {"description", "Per file: path and operations. An operation is replace (old, new), delete (old) or insert_after (anchor, text); old/anchor must match expected_matches times (default 1)"},
+                    {"description", "Per file: path and operations. An operation is replace (old, new), delete (old) or insert_after (anchor, text)"},
                     {"items", QJsonObject{
                         {"type", "object"},
                         {"properties", QJsonObject{
@@ -295,7 +295,7 @@ const QJsonArray& baseToolDefinitions() {
                 }},
                 {"dry_run", QJsonObject{
                     {"type", "boolean"},
-                    {"description", "Preview only; nothing is written"}
+                    {"description", "Return the unified diff without writing"}
                 }},
                 {"postconditions", QJsonObject{
                     {"type", "array"},
@@ -313,7 +313,7 @@ const QJsonArray& baseToolDefinitions() {
             },
             QJsonArray{"changes"}),
 
-        td("run_bash", "Run a bash command and return its output. Non-interactive: stdin is closed, so prompts fail instead of waiting -- pass non-interactive flags. Without host it runs here; with host (an ssh destination, key login already working) it runs on that machine and cwd/paths are that machine's. Do not wrap the command in ssh yourself. For root, include an explicit sudo in the command AND set elevated=true: elevated alone is rejected, not silently ignored, and Pengy then asks the user for that host's sudo password. Killed after the tool timeout.",
+        td("run_bash", "Run a bash command and return its output. Non-interactive (stdin closed): pass non-interactive flags. With host, it runs on that ssh target and cwd/paths are its own; never wrap the command in ssh yourself. For root, include sudo in the command and set elevated=true -- elevated alone is rejected. Killed after the tool timeout.",
             QJsonObject{
                 {"command", prop("string", "Bash command")},
                 {"cwd",     prop("string", "Working directory (on the target when host is set)")},
@@ -342,7 +342,7 @@ const QJsonArray& baseToolDefinitions() {
                 {"max_chars", prop("integer", "Maximum characters returned (0 = no limit)")}},
             QJsonArray{"url"}),
 
-        td("run_python", "Run Python code in a fresh process; only printed output comes back. Killed after the tool timeout.",
+        td("run_python", "Run Python code in a fresh process; stdout and stderr both come back. Killed after the tool timeout.",
             QJsonObject{
                 {"code", prop("string", "Python source")},
                 {"cwd",  prop("string", "Working directory")}},
@@ -371,11 +371,11 @@ const QJsonArray& baseToolDefinitions() {
                 {"path",          prop("string",  "Directory or file to search")},
                 {"file_glob",     prop("string",  "Only files matching this glob, e.g. *.py or src/**/*.ts")},
                 {"context_lines", prop("integer", "Lines of context around each match")},
-                {"max_results",   prop("integer", "Maximum matches (default 50)")},
+                {"max_results",   prop("integer", "Maximum match blocks (adjacent matches group; default 50)")},
                 {"ignore_case",   prop("boolean", "Case-insensitive match")}},
             QJsonArray{"pattern", "path"}),
 
-        td("glob", "Find files by glob pattern; ** matches any depth. Skips hidden and build/vendor directories; at most 200 results.",
+        td("glob", "Find files by glob pattern; ** matches any depth. Skips hidden and build/dist/target directories; at most 200 results.",
             QJsonObject{
                 {"pattern", prop("string", "Glob, e.g. src/**/*.py")},
                 {"path",    prop("string", "Directory to search (default: current)")}},
@@ -1545,19 +1545,26 @@ static QString toolReadFile(const QJsonObject& args) {
     const int limit  = aInt(args, "limit", 0);
 
     const QStringList lines = text.split('\n');
-    const int total = lines.size();
+    // split() leaves a phantom "" after a trailing newline, so "a\nb\n" would
+    // report 3 lines where wc -l says 2 (and offset=3 would "work").  Slicing
+    // keeps the whole list — a whole-file read must still return the text byte
+    // for byte — so only the count we report and the past-the-end check use
+    // real lines.  Same fix as the Python and Rust editions.
+    const int rawTotal = lines.size();
+    const int total = rawTotal - ((rawTotal > 0 && lines.last().isEmpty()) ? 1 : 0);
+    if (text.isEmpty()) return QString();
     const int start = offset > 0 ? offset : 1;
     if (start > total)
         return QString("Error: offset %1 is past the end of %2, which has %3 lines.")
                    .arg(start).arg(path).arg(total);
-    const int count = limit > 0 ? limit : (total - start + 1);
-    const int end   = qMin(total, start + count - 1);
+    const int count = limit > 0 ? limit : (rawTotal - start + 1);
+    const int end   = qMin(rawTotal, start + count - 1);
 
     QString body = lines.mid(start - 1, end - start + 1).join('\n');
     int kept = 0;
     bool truncated = false;
     body = truncateHeadLines(body, 0, &kept, &truncated);
-    const int shownEnd = start + kept - 1;
+    const int shownEnd = qMin(start + kept - 1, total);
 
     // A plain whole-file read that fit stays bare — no header to parse.
     if (!truncated && offset <= 0 && limit <= 0) return body;
@@ -3558,9 +3565,16 @@ static QString toolSearchContent(const QJsonObject& args) {
     bool truncated = false;
 
     if (pathInfo.isFile()) {
-        searchOneFile(path, rx, contextLines, path, results, maxResults);
+        const bool hitLimit = searchOneFile(path, rx, contextLines, path, results, maxResults);
         if (results.isEmpty()) return QString("No matches found for '%1' in %2").arg(pattern, path);
-        return results.join("\n\n");
+        QString out = results.join("\n\n");
+        // A capped search must never look complete: this branch used to drop the
+        // limit flag on the floor, so a big log came back as five blocks with no
+        // sign that the rest existed.  Same text as the Python and Rust editions.
+        if (hitLimit)
+            out += QString("\n\n(results truncated at %1 match blocks; "
+                           "raise max_results or narrow the pattern)").arg(maxResults);
+        return snipMiddle(out);
     }
 
     // Hidden directories are searched (.github, .config and .vscode hold real
@@ -3625,7 +3639,7 @@ static QString toolSearchContent(const QJsonObject& args) {
         return summary;
     }
 
-    QString summary = QString("Found %1 match(es) for '%2' across %3 file(s)")
+    QString summary = QString("Found %1 match block(s) for '%2' across %3 file(s)")
                       .arg(results.size()).arg(pattern).arg(filesSearched);
     if (truncated) summary += " (results truncated)";
     return snipMiddle(summary + "\n" + QString(60, QChar(0x2500)) + "\n" + results.join("\n\n"));
