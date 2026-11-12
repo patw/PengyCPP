@@ -1550,6 +1550,44 @@ private slots:
         QCOMPARE(f.readAll(), QByteArray("alpha\nbetaX\ngamma\n"));
     }
 
+    // The sudo span parser must agree with the Python edition case for case
+    // (spec.md, "sudo support"). Positive cases are safe to assert: the guard
+    // rejects before running, so "Elevation required" proves the invocation was
+    // SEEN. Negative cases are harmless commands that really do run, and none of
+    // them may ask for elevation.
+    void sudoGuardUnderstandsHeredocsAndHereStrings() {
+        QTemporaryDir dir;
+        const QString out = dir.path() + "/doc.txt";
+        const QString word = QString("su") + "do";   // assembled, so this file's own
+                                                    // text cannot trip the guard
+        const QStringList dataCases{
+            QString("cat > %1 <<'EOF'\n%2 is documentation\nEOF").arg(out, word),
+            QString("cat > %1 <<'EOF'\nsee (%2 rule\nEOF").arg(out, word),
+            QString("cat > %1 <<\"E O F\"\n%2 x\nE O F").arg(out, word),
+            QString("echo \"%1 apt update\"").arg(word),
+            QString("echo %1").arg(word),
+        };
+        for (const QString& command : dataCases) {
+            const QString r = Tools::execute("run_bash", QJsonObject{{"command", command}});
+            QVERIFY2(!r.contains("Elevation required"), qPrintable(command + " -> " + r));
+        }
+
+        // A real invocation is still seen after a body, a here-string and the
+        // tab-stripping form — those used to swallow the rest of the command.
+        const QStringList seenCases{
+            QString("%1 -n true").arg(word),
+            QString("cat > %2 <<'EOF'\ntext\nEOF\n%1 -n true").arg(word, out),
+            QString("cat <<< hi\n%1 -n true").arg(word),
+            QString("cat <<-EOF\n\tbody\n\tEOF\n%1 -n true").arg(word),
+            QString("env -i %1 -n true").arg(word),
+            QString("command %1 -n true").arg(word),
+        };
+        for (const QString& command : seenCases) {
+            const QString r = Tools::execute("run_bash", QJsonObject{{"command", command}});
+            QVERIFY2(r.contains("Elevation required"), qPrintable(command + " -> " + r));
+        }
+    }
+
     // ── Tools: hardening (mirror tests/test_tool_hardening.py and
     //    hardening_tests in tools.rs) ─────────────────────────────────
 

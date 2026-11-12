@@ -1796,24 +1796,96 @@ private:
 
 // Find unquoted sudo command words. A textual mention, quote, or comment must
 // never request a password or alter the source command.
+// A small shell lexical pass, not a parser. It must agree with the Python
+// edition case for case (spec.md, "sudo support"): heredoc bodies are data, a
+// here-string (`<<<`) opens no body, `<<-` names the same delimiter as `<<`, and
+// `command`/`env` wrappers still count as an invocation. The previous scan reset
+// "command start" at every '(' and newline with no heredoc state at all, so
+// heredoc text — a commit message, a document — could be read as a subshell
+// invocation and a real sudo after a heredoc went unnoticed.
+static bool isSudoWord(const QString& word) {
+    return word == "sudo" || word == "/usr/bin/sudo" || word == "/bin/sudo";
+}
+
 static QList<QPair<int, int>> sudoInvocationSpans(const QString& command) {
-    QList<QPair<int, int>> spans; int i = 0; bool commandStart = true;
+    QList<QPair<int, int>> spans;
+    QStringList words, heredocs;
+    const QString separators = ";|&()\n";
+    int i = 0;
     while (i < command.size()) {
-        QChar c = command[i];
-        if (c.isSpace()) { if (c == '\n') commandStart = true; ++i; continue; }
-        if (c == '#' && (i == 0 || command[i - 1].isSpace() || QString(";|&()\n").contains(command[i - 1]))) {
-            i = command.indexOf('\n', i); if (i < 0) break; ++i; commandStart = true; continue;
+        if (!heredocs.isEmpty() && (i == 0 || command[i - 1] == '\n')) {
+            const QString delimiter = heredocs.takeFirst();
+            int lineEnd = command.indexOf('\n', i);
+            if (lineEnd < 0) lineEnd = command.size();
+            if (command.mid(i, lineEnd - i).trimmed() != delimiter) heredocs.prepend(delimiter);
+            i = qMin(lineEnd + 1, command.size());
+            words.clear();
+            continue;
         }
-        if (QString(";|&()").contains(c)) { commandStart = true; ++i; continue; }
-        int start = i; bool quoted = false;
-        while (i < command.size() && !command[i].isSpace() && !QString(";|&()").contains(command[i])) {
+        const QChar c = command[i];
+        if (c.isSpace()) {
+            if (c == '\n') words.clear();
+            ++i;
+            continue;
+        }
+        if (c == '#' && (i == 0 || command[i - 1].isSpace() || separators.contains(command[i - 1]))) {
+            i = command.indexOf('\n', i);
+            if (i < 0) break;
+            ++i;
+            words.clear();
+            continue;
+        }
+        if (command.mid(i, 2) == "&&" || command.mid(i, 2) == "||"
+            || command.mid(i, 2) == ";;") {
+            words.clear();
+            i += 2;
+            continue;
+        }
+        if (separators.contains(c)) {
+            words.clear();
+            ++i;
+            continue;
+        }
+        const int start = i;
+        bool quoted = false;
+        while (i < command.size() && !command[i].isSpace() && !separators.contains(command[i])) {
             if (command[i] == '\\') { i += 2; continue; }
-            if (command[i] == '\'' || command[i] == '"') { quoted = true; QChar q = command[i++]; while (i < command.size() && command[i] != q) ++i; if (i < command.size()) ++i; continue; }
+            if (command[i] == '\'' || command[i] == '"') {
+                quoted = true;
+                const QChar q = command[i++];
+                while (i < command.size() && command[i] != q) {
+                    if (q == '"' && command[i] == '\\') i += 2; else ++i;
+                }
+                if (i < command.size()) ++i;
+                continue;
+            }
             ++i;
         }
-        QString word = command.mid(start, i - start);
-        if (commandStart && !quoted && (word == "sudo" || word == "/usr/bin/sudo" || word == "/bin/sudo")) spans.append({start, i});
-        commandStart = false;
+        const QString word = command.mid(start, i - start);
+        if (word.startsWith("<<") && !word.startsWith("<<<") && word.size() > 2) {
+            QString delimiter = word.mid(2);
+            if (delimiter.startsWith('-')) delimiter.remove(0, 1);
+            if (delimiter.size() >= 2
+                && (delimiter.at(0) == '\'' || delimiter.at(0) == '"')
+                && delimiter.at(0) == delimiter.at(delimiter.size() - 1))
+                delimiter = delimiter.mid(1, delimiter.size() - 2);
+            if (!delimiter.isEmpty()) heredocs.append(delimiter);
+        }
+        bool invocation = !quoted && isSudoWord(word);
+        if (invocation) {
+            if (!words.isEmpty()) {
+                if (words.first() == "command")
+                    invocation = std::all_of(words.begin() + 1, words.end(),
+                                             [](const QString& w) { return w.startsWith('-'); });
+                else if (words.first() == "env")
+                    invocation = std::all_of(words.begin() + 1, words.end(),
+                                             [](const QString& w) { return w.startsWith('-') || w.contains('='); });
+                else
+                    invocation = false;
+            }
+        }
+        if (invocation) spans.append({start, i});
+        words.append(word);
     }
     return spans;
 }
