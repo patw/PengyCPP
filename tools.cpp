@@ -20,6 +20,7 @@
 #include <QFileInfo>
 #include <QStorageInfo>
 #include <QElapsedTimer>
+#include <QDateTime>
 #include <QUuid>
 #include <QCoreApplication>
 #include <QThread>
@@ -2380,14 +2381,33 @@ QString runPowershellWith(const QString& exe, const QJsonObject& args,
     if (!cwd.isEmpty() && !QFileInfo(cwd).isDir())
         return "Error: cwd not found or not a directory: " + cwd;
 
-    QTemporaryFile script;
-    script.setFileTemplate(QDir::tempPath() + "/pengy-XXXXXX.ps1");
-    if (!script.open()) return "Error: Could not create temp file.";
-    script.write(command.toUtf8());
-    // Close (the file stays until `script` is destroyed): .NET's ReadAllText
-    // opens with FileShare.Read, which fails on Windows while our write
-    // handle is still open.
-    script.close();
+    // A plain QFile, deliberately NOT a QTemporaryFile.  QTemporaryFile opens
+    // with FILE_FLAG_DELETE_ON_CLOSE on Windows, and while that handle is alive
+    // PowerShell's [IO.File]::ReadAllText fails with "The process cannot access
+    // the file because it is being used by another process."  We create, write,
+    // close and remove the file ourselves instead.
+    const QString scriptPath = QDir::tempPath() + QString("/pengy-%1-%2.ps1")
+        .arg(QCoreApplication::applicationPid())
+        .arg(QDateTime::currentMSecsSinceEpoch());
+    {
+        QFile script(scriptPath);
+        if (!script.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return "Error: Could not create temp file.";
+        if (script.write(command.toUtf8()) < 0) {
+            script.close();
+            QFile::remove(scriptPath);
+            return "Error: Could not create temp file.";
+        }
+        // Closed before PowerShell starts: .NET's ReadAllText opens with
+        // FileShare.Read, which fails while a write handle is still open.
+        script.close();
+    }
+
+    // Remove the script however we leave this function.
+    struct ScriptCleanup {
+        QString path;
+        ~ScriptCleanup() { if (!path.isEmpty()) QFile::remove(path); }
+    } scriptCleanup{scriptPath};
 
     auto tmpFiles = createOutputFiles("powershell");
     if (!tmpFiles.valid) {
@@ -2397,7 +2417,7 @@ QString runPowershellWith(const QString& exe, const QJsonObject& args,
     QProcess proc;
     proc.setProgram(exe);
     proc.setArguments({"-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
-                       powershellPrelude(QDir::toNativeSeparators(script.fileName()))});
+                       powershellPrelude(QDir::toNativeSeparators(scriptPath))});
     proc.setStandardOutputFile(tmpFiles.stdoutPath);
     proc.setStandardErrorFile(tmpFiles.stderrPath);
     proc.setStandardInputFile(QProcess::nullDevice());
