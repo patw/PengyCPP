@@ -7,6 +7,7 @@
 #include <QIcon>
 #include <QTextStream>
 #include "themehelper.h"
+#include "appicon.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -68,7 +69,7 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Pengy");
     app.setOrganizationName("Pengy");
-    app.setWindowIcon(QIcon(":/pengy.png"));
+    app.setWindowIcon(pengyApplicationIcon());
 
     QFont font = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
     font = scaledSystemFont(configLoad().uiScale);

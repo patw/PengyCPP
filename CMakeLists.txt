@@ -129,6 +129,11 @@ find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
     enable_testing()
 
+    add_executable(pengy_appicon_test test_appicon.cpp resources.qrc)
+    target_include_directories(pengy_appicon_test PRIVATE ${CMAKE_SOURCE_DIR})
+    target_link_libraries(pengy_appicon_test PRIVATE Qt6::Core Qt6::Widgets)
+    add_test(NAME PengyAppIconTest COMMAND pengy_appicon_test)
+
     # Starter-skills logic behind Settings → Extras. Needs resources.qrc compiled
     # in, because install() copies the bundled tree out of the Qt resource system.
     add_executable(pengy_skills_test test_skillshelper.cpp resources.qrc)
