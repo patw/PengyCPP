@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **The chat view follows output again, and scrolling back now stays where you put it.** Same defect as the Python edition: the view inferred "keep following?" from the scrollbar after each render, but setHtml() replaces the document, resets the bar and keeps moving the maximum over several layout passes by itself, so a reset was read as "the user scrolled up" and every render after it restored a stale pixel offset while new output arrived below. Intent now comes from real input events only (wheel, the view's scroll keys, scrollbar actions and drags), the reading position is held by document position plus sub-line offset instead of a pixel offset, a coalesced settle pass re-asserts it while Qt's layout is still moving (rangeChanged re-arms it), returning to the bottom resumes following, and a held scrollbar thumb defers the rebuild instead of being reset under the pointer.
+
+Verified: all 9 test targets pass under `ctest`; the rewrite of `PengyChatViewTest`'s scroll block drives real wheel/key/scrollbar events, and it fails at "programmatic scroll keeps following" when the old geometry rule is spliced back in, so the check has teeth. Ported to the Python and Rust editions.
+
 ## v1.15.4 — 2026-11-12
 
 - **`insert_after` says so when it splices onto an existing line instead of starting one.** Same defect as the Python and Rust editions: it is a character splice, so `text` without a leading newline is appended to the anchor's line (`beta` + `X` becomes `betaX`), and `text` without a trailing newline runs into the following line when the anchor ends the line (`beta\n` + `X` becomes `beta\nXgamma`). In `.env`, YAML, CSV, a Makefile or a commented-out setting both results are valid text, so the damage was silent. The splice semantics are deliberately unchanged; the result now names the file, the line and the missing newline on a dry run and a real write alike, and the schema descriptions and `spec.md` say where the text lands.
