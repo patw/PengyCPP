@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.15.5 — 2026-11-21
 
 - **The chat view follows output again, and scrolling back now stays where you put it.** Same defect as the Python edition: the view inferred "keep following?" from the scrollbar after each render, but setHtml() replaces the document, resets the bar and keeps moving the maximum over several layout passes by itself, so a reset was read as "the user scrolled up" and every render after it restored a stale pixel offset while new output arrived below. Intent now comes from real input events only (wheel, the view's scroll keys, scrollbar actions and drags), the reading position is held by document position plus sub-line offset instead of a pixel offset, a coalesced settle pass re-asserts it while Qt's layout is still moving (rangeChanged re-arms it), returning to the bottom resumes following, and a held scrollbar thumb defers the rebuild instead of being reset under the pointer.
 
