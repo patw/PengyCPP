@@ -192,7 +192,7 @@ when final text is empty. Existing cumulative `chat.usage` remains separate.
 - Syntax-highlighted code blocks via custom CSS
 - Image rendering: pasted images and downloaded images display inline
 - **Reasoning cards** (collapsible) and **notice / error cards** for harness messages
-- Follows new content only while scrolled to the bottom; scrolling up holds position. `revealHits()` (a search jump) marks the search words in the hit messages, anchors the first and holds position until the next send — so every user/assistant `appendMessage` passes its `chat["messages"]` index as `source`
+- Follows new output by default and stays on the last line as it arrives. Scrolling back (wheel, keyboard, scrollbar) holds the reading position, and coming back to the bottom resumes following. Intent comes from real input events only — a re-render must never flip the mode — and the held position is a document position, not a pixel offset, so output growing below it (or an image finishing its load above it) does not drag the view. A scrollbar drag defers re-rendering until the thumb is released. `revealHits()` (a search jump) marks the search words in the hit messages, anchors the first and holds position until the next send — so every user/assistant `appendMessage` passes its `chat["messages"]` index as `source`
 
 ### Right-Bottom Pane (Chat Input)
 - **📎 Attach button** — Opens file picker; accepts text files and images

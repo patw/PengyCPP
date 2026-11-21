@@ -1,4 +1,4 @@
-// ChatView render-cache + auto-scroll pin regression tests.
+// ChatView render-cache + follow-the-feed regression tests.
 // Mirrors PengyR's gui/tests/test_chatview_markdown.cpp.
 //
 // Build: cmake -DCMAKE_BUILD_TESTS=ON .. && cmake --build . --target pengy_chatview_test
@@ -6,6 +6,8 @@
 #include <QString>
 #include <QJsonObject>
 #include <QScrollBar>
+#include <QWheelEvent>
+#include <QAbstractSlider>
 #include <QDir>
 #include <QFile>
 #include <QUrl>
@@ -209,48 +211,122 @@ int main(int argc, char** argv) {
         }
     }
 
-    // setHtml() replaces the whole document and resets the scrollbar to 0.
-    // The old render() decided "am I at the bottom?" by reading sb->value()
-    // *after* that reset — so any render landing while a previous render's
-    // deferred scroll-to-bottom was still pending read value()==0, concluded
-    // the user had scrolled up, and pinned the view to the top of the history.
-    // These guard the explicit m_autoScroll flag that replaced that check.
+    // ── following the feed (regression: "bounces back up to old history") ───
+    // setHtml() replaces the whole document: Qt resets the bar, moves the
+    // maximum over several layout passes, and reports valueChanged() for moves
+    // of its own. Reading intent out of that geometry is what stranded the view
+    // mid-history while output kept arriving. Intent now comes from real input
+    // events only (wheel / keys / scrollbar), and the reading spot is held by
+    // document position. These drive the widget the way a person does, because
+    // a programmatic setValue() must NOT read as a scroll.
     {
         ChatView v;
         v.resize(400, 600);
         v.show();
-        app.processEvents();
-
         for (int i = 0; i < 60; ++i)
             v.appendMessageText("assistant", QString("line %1 ").arg(i).repeated(20), false);
         v.renderNow();
-        app.processEvents();
+        for (int i = 0; i < 4; ++i) app.processEvents();
 
-        requireEqual(v.testAutoScroll() ? "true" : "false", "true", "pin starts true");
-        v.renderNow();
-        app.processEvents();
-        requireEqual(v.testAutoScroll() ? "true" : "false", "true", "pin survives a render");
-
-        v.renderNow();
-        v.renderNow();
-        app.processEvents();
-        requireEqual(v.testAutoScroll() ? "true" : "false", "true", "interleaved render keeps the pin");
-
-        v.verticalScrollBar()->setValue(0);
-        app.processEvents();
-        requireEqual(v.testAutoScroll() ? "true" : "false", "false", "genuine scroll up clears the pin");
-
-        v.renderNow();
-        app.processEvents();
         auto* sb = v.verticalScrollBar();
-        if (sb->value() >= sb->maximum() / 2) {
-            std::cerr << "FAIL: cleared pin yanked to bottom\n"
-                      << "value=" << sb->value() << " max=" << sb->maximum() << std::endl;
+        auto settle = [&app](int rounds = 4) {
+            for (int i = 0; i < rounds; ++i) app.processEvents();
+        };
+        auto wheel = [&app, &v](int notches) {
+            QPointF pos(20, 20);
+            QWheelEvent event(pos, v.viewport()->mapToGlobal(QPoint(20, 20)),
+                              QPoint(0, 0), QPoint(0, 120 * notches),
+                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(v.viewport(), &event);
+        };
+
+        requireEqual(v.testFollow() ? "true" : "false", "true", "follow starts on");
+        requireEqual(QString::number(sb->value()), QString::number(sb->maximum()),
+                     "loaded chat starts at the end");
+
+        // New output keeps the view on the last line.
+        for (int n = 0; n < 3; ++n) {
+            v.appendMessageText("assistant", QString("chunk %1 ").arg(n).repeated(40));
+            settle();
+            if (sb->value() != sb->maximum()) {
+                std::cerr << "FAIL: did not stay pinned to the end\nvalue=" << sb->value()
+                          << " max=" << sb->maximum() << std::endl;
+                std::exit(1);
+            }
+        }
+
+        // A scroll the user did not make (what setHtml() / relayout do) must not
+        // clear the follow flag — that was the bug.
+        sb->setValue(0);
+        settle();
+        requireEqual(v.testFollow() ? "true" : "false", "true", "programmatic scroll keeps following");
+        v.appendMessageText("assistant", QString("more output ").repeated(40));
+        settle();
+        if (sb->value() != sb->maximum()) {
+            std::cerr << "FAIL: programmatic scroll stranded the view\nvalue=" << sb->value()
+                      << " max=" << sb->maximum() << std::endl;
             std::exit(1);
         }
 
+        // A wheel notch towards older output stops following.
+        wheel(+3);
+        settle();
+        requireEqual(v.testFollow() ? "true" : "false", "false", "wheel up stops following");
+
+        // …and the reading spot then holds still while output arrives.
+        const int reading = sb->value();
+        for (int n = 0; n < 4; ++n) {
+            v.appendMessageText("assistant", QString("while reading %1 ").arg(n).repeated(40));
+            settle();
+            if (sb->value() != reading) {
+                std::cerr << "FAIL: view drifted while reading\n" << reading << " -> "
+                          << sb->value() << std::endl;
+                std::exit(1);
+            }
+        }
+
+        // Back at the bottom: "give me the live feed again".
+        sb->triggerAction(QAbstractSlider::SliderToMaximum);
+        settle();
+        requireEqual(v.testFollow() ? "true" : "false", "true", "bottom resumes following");
+        if (sb->value() != sb->maximum()) {
+            std::cerr << "FAIL: resuming did not reach the end\nvalue=" << sb->value()
+                      << " max=" << sb->maximum() << std::endl;
+            std::exit(1);
+        }
+        v.appendMessageText("assistant", QString("live again ").repeated(40));
+        settle();
+        if (sb->value() != sb->maximum()) {
+            std::cerr << "FAIL: did not follow after resuming\nvalue=" << sb->value()
+                      << " max=" << sb->maximum() << std::endl;
+            std::exit(1);
+        }
+
+        // A scrollbar trough click upwards also stops following.
+        sb->triggerAction(QAbstractSlider::SliderPageStepSub);
+        settle();
+        requireEqual(v.testFollow() ? "true" : "false", "false", "page-up click stops following");
+
+        // Holding the thumb defers the rebuild so the drag is not fought.
+        v.verticalScrollBar()->sliderPressed();
+        v.appendMessageText("assistant", QString("arrives mid-drag ").repeated(40));
+        requireEqual(v.testRenderPending() ? "true" : "false", "true", "drag defers the render");
+        v.verticalScrollBar()->sliderReleased();
+        settle();
+        requireEqual(v.testRenderPending() ? "true" : "false", "false", "release catches up");
+
+        // A hidden tab (another tab in front) keeps its place, or the end.
+        v.hide();
+        settle();
+        v.appendMessageText("assistant", QString("produced while hidden ").repeated(40));
+        settle();
+        v.show();
+        settle();
+        requireEqual(v.testFollow() ? "true" : "false", "false", "hidden tab keeps the mode");
+        requireEqual(v.testAnchorHeld() ? "true" : "false", "true", "hidden tab holds an anchor");
+
         v.clear();
-        requireEqual(v.testAutoScroll() ? "true" : "false", "true", "clear resets the pin");
+        requireEqual(v.testFollow() ? "true" : "false", "true", "clear resets follow");
     }
 
     // Search jump: revealHits() marks the words in the hit messages only (not
@@ -290,12 +366,12 @@ int main(int argc, char** argv) {
                       << " max=" << sb->maximum() << std::endl;
             std::exit(1);
         }
-        requireEqual(v.testAutoScroll() ? "true" : "false", "false", "jump stops following");
+        requireEqual(v.testFollow() ? "true" : "false", "false", "jump stops following");
 
         if (v.revealHits({42}, {"nginx"})) { std::cerr << "FAIL: redacted hit reported\n"; std::exit(1); }
         v.revealHits({3}, {"nginx"});
         v.appendMessageText("user", "next", true, 6);
-        requireEqual(v.testAutoScroll() ? "true" : "false", "true", "sending follows again");
+        requireEqual(v.testFollow() ? "true" : "false", "true", "sending follows again");
         requireNotContains(v.testCachedHtml(3), "search-hit", "sending clears the marks");
     }
 

@@ -21,16 +21,29 @@
 #include <QTimer>
 #include <QFontDatabase>
 #include <QFileInfo>
+#include <QKeyEvent>
+#include <QWheelEvent>
+
+namespace {
+// Within this many pixels of the bottom the view counts as "at the end of the
+// feed", so scrolling back to the bottom resumes following.
+constexpr int kBottomMargin = 30;
+}  // namespace
 
 ChatView::ChatView(QWidget* parent) : QTextBrowser(parent) {
     setOpenLinks(false);
     m_theme = makeTheme("system", "default");
     applyTheme(m_theme, m_scale);
-    // setHtml() programmatically resets the scrollbar to 0, which valueChanged
-    // would misread as "the user scrolled to the top." Track genuine user
-    // scrolls only; the m_rendering guard suppresses the spurious reset.
-    connect(verticalScrollBar(), &QScrollBar::valueChanged,
-            this, &ChatView::onScrollChanged);
+    // Intent to stop or resume following comes from real input events only
+    // (wheel / keys / scrollbar): setHtml() resets the bar and moves the
+    // maximum by itself for several layout passes, so valueChanged() is
+    // deliberately not connected.
+    auto* bar = verticalScrollBar();
+    connect(bar, &QAbstractSlider::actionTriggered, this, &ChatView::onScrollAction);
+    connect(bar, &QAbstractSlider::rangeChanged, this, &ChatView::onRangeChanged);
+    connect(bar, &QAbstractSlider::sliderPressed, this, &ChatView::onSliderPressed);
+    connect(bar, &QAbstractSlider::sliderMoved, this, &ChatView::onSliderMoved);
+    connect(bar, &QAbstractSlider::sliderReleased, this, &ChatView::onSliderReleased);
 }
 
 void ChatView::applyTheme(const Theme& theme, int scale) {
@@ -141,7 +154,8 @@ void ChatView::appendMessage(const QString& role, const QJsonValue& content, boo
         if (doRender) {
             // Sending a message ends a search jump: back to following the chat.
             clearHitMarks();
-            m_autoScroll = true;
+            m_follow = true;
+            m_hasAnchor = false;
         }
     } else if (role == "tool_request") {
         // Create a unified tool_block with result = null (not yet available)
@@ -188,7 +202,9 @@ void ChatView::appendMessage(const QString& role, const QJsonValue& content, boo
 }
 
 void ChatView::renderNow() {
-    render();
+    // force: a caller that re-renders on purpose (tab opened, chat redacted)
+    // must not be told to wait for a scrollbar drag to finish.
+    render(true);
 }
 
 void ChatView::clear() {
@@ -202,7 +218,9 @@ void ChatView::clear() {
     m_expandedTools.clear();
     m_expandedReasoning.clear();
     m_hitMarks.clear();
-    m_autoScroll = true;
+    m_follow = true;
+    m_hasAnchor = false;
+    m_renderPending = false;
     QTextBrowser::clear();
 }
 
@@ -310,40 +328,171 @@ void ChatView::contextMenuEvent(QContextMenuEvent* event) {
     }
 }
 
-void ChatView::onScrollChanged(int value) {
-    // Update the pinned-to-bottom flag from a *genuine* user scroll.
-    // Suppressed while m_rendering: setHtml() programmatically resets the bar
-    // to 0, which is not a user action and must not clear our auto-scroll
-    // intent (the bug that made the view snap back up to old history).
-    if (m_rendering) return;
-    auto* sb = verticalScrollBar();
-    m_autoScroll = value >= sb->maximum() - 30;
+// ── follow the feed / hold the reading spot ─────────────────────────────────
+
+void ChatView::wheelEvent(QWheelEvent* event) {
+    // A wheel notch is a genuine scroll, and the base class applies the new
+    // value synchronously, so intent can be read straight afterwards.
+    endDrag();  // a lost slider release must not freeze the view
+    QTextBrowser::wheelEvent(event);
+    noteUserScroll();
 }
 
-void ChatView::render() {
-    auto* sb = verticalScrollBar();
-    int prev = sb->value();
-    // setHtml() rebuilds the document and resets the scrollbar to the top.
-    // Guard valueChanged for the setHtml + position-restore so that spurious
-    // reset-to-0 isn't read as "the user scrolled up." The deferred
-    // scroll-to-bottom below runs *after* the guard lifts, so its
-    // valueChanged correctly re-arms m_autoScroll.
-    m_rendering = true;
-    setHtml(buildHtml());
-    if (m_autoScroll) {
-        m_rendering = false;
-        // maximum() is stale until Qt lays out the new document, so defer.
-        QTimer::singleShot(0, this, &ChatView::scrollToBottom);
-    } else {
-        sb->setValue(prev);
-        m_rendering = false;
+void ChatView::keyPressEvent(QKeyEvent* event) {
+    endDrag();
+    QTextBrowser::keyPressEvent(event);
+    switch (event->key()) {
+    case Qt::Key_Up: case Qt::Key_Down:
+    case Qt::Key_PageUp: case Qt::Key_PageDown:
+    case Qt::Key_Home: case Qt::Key_End: case Qt::Key_Space:
+        noteUserScroll();
+        break;
+    default:
+        break;
     }
 }
 
-void ChatView::scrollToBottom() {
-    // Skipped if a search jump (revealHits) landed since this was queued, as
-    // it does right after a chat is opened from a search result.
-    if (m_autoScroll) verticalScrollBar()->setValue(verticalScrollBar()->maximum());
+void ChatView::onScrollAction(int action) {
+    // Scrollbar arrows / trough clicks. Fires *before* the new value is applied,
+    // so the resulting position is only known on the next tick. An upward
+    // action stops following immediately — otherwise a render landing in that
+    // gap would drag the view back to the bottom and undo the click.
+    // QAbstractSlider::SliderAction: SingleStepSub=2, PageStepSub=4,
+    // SliderToMinimum=5 (the value is an int here for the same reason).
+    if (action == 2 || action == 4 || action == 5) {
+        m_follow = false;
+        captureAnchor();
+    }
+    QTimer::singleShot(0, this, [this] { noteUserScroll(); });
+}
+
+void ChatView::onSliderPressed() {
+    // Holding the thumb: do not rebuild the document under it. setHtml()
+    // resets the bar mid-drag, which both fights the drag (the thumb jumps
+    // away from the pointer) and loses the drag's own value. Catch up once the
+    // user lets go.
+    m_dragging = true;
+}
+
+void ChatView::onSliderMoved(int value) {
+    // sliderMoved() carries the value the drag is heading for, so it can be
+    // judged without waiting for the bar to settle.
+    noteUserScroll(value);
+}
+
+void ChatView::onSliderReleased() {
+    endDrag();
+    noteUserScroll();
+}
+
+void ChatView::endDrag() {
+    if (!m_dragging) return;
+    m_dragging = false;
+    if (m_renderPending) {
+        m_renderPending = false;
+        render();
+    }
+}
+
+void ChatView::noteUserScroll(int value) {
+    // A real input event moved the viewport: (re)decide whether to follow.
+    // Following resumes as soon as the user brings the view back to the bottom
+    // — "give me the live feed again" — and stops the moment they move away.
+    auto* bar = verticalScrollBar();
+    const int position = value < 0 ? bar->value() : value;
+    m_follow = position >= bar->maximum() - kBottomMargin;
+    if (m_follow) {
+        m_hasAnchor = false;
+        scheduleSettle();   // close the last few pixels
+    } else {
+        captureAnchor();
+    }
+}
+
+void ChatView::captureAnchor() {
+    int position = 0, offset = 0;
+    if (!anchorTop(position, offset)) return;  // hidden: keep hideEvent's anchor
+    m_anchorPosition = position;
+    m_anchorOffset = offset;
+    m_hasAnchor = true;
+}
+
+bool ChatView::anchorTop(int& position, int& offset) const {
+    // Document position and sub-line offset of the character at the top of the
+    // viewport. False without a laid-out viewport (a hidden tab), where the
+    // geometry means nothing and must not be recorded.
+    if (!isVisible() || viewport()->height() <= 0) return false;
+    const QTextCursor cursor = cursorForPosition(QPoint(0, 0));
+    position = cursor.position();
+    offset = cursorRect(cursor).y();
+    return true;
+}
+
+void ChatView::applyAnchor(int position, int offset) {
+    QTextCursor cursor(document());
+    cursor.setPosition(position);
+    const int delta = cursorRect(cursor).y() - offset;
+    if (delta) {
+        auto* bar = verticalScrollBar();
+        bar->setValue(bar->value() + delta);
+    }
+}
+
+void ChatView::scheduleSettle() {
+    // Re-assert the scroll position once Qt has finished laying out. setHtml()
+    // relayouts asynchronously and the scrollbar maximum changes over several
+    // passes (measured in the Python edition: 0 -> 2986 -> 3307 -> 3266 for one
+    // append), so a jump to the bottom issued immediately afterwards lands on a
+    // stale maximum and leaves the view short of the end.
+    if (m_settleQueued) return;
+    m_settleQueued = true;
+    QTimer::singleShot(0, this, [this] { settle(); });
+}
+
+void ChatView::settle() {
+    m_settleQueued = false;
+    if (m_dragging) return;  // the user owns the bar right now
+    auto* bar = verticalScrollBar();
+    if (m_follow) {
+        if (bar->value() != bar->maximum()) bar->setValue(bar->maximum());
+    } else if (m_hasAnchor) {
+        applyAnchor(m_anchorPosition, m_anchorOffset);
+    }
+}
+
+void ChatView::onRangeChanged(int, int) {
+    // The document is still settling (images resolving, tables reflowing):
+    // re-anchor to the position already decided instead of trusting the
+    // maximum seen one tick ago.
+    if (m_follow || m_hasAnchor) scheduleSettle();
+}
+
+void ChatView::showEvent(QShowEvent* event) {
+    QTextBrowser::showEvent(event);
+    scheduleSettle();
+}
+
+void ChatView::resizeEvent(QResizeEvent* event) {
+    // Qt re-lays the document out at the new width: keep following the end, or
+    // hold the reading spot, instead of letting the resize decide.
+    QTextBrowser::resizeEvent(event);
+    scheduleSettle();
+}
+
+void ChatView::render(bool force) {
+    if (m_dragging && !force) {
+        m_renderPending = true;  // rebuilt on slider release
+        return;
+    }
+    // Record the reading spot *before* the document is replaced: the character
+    // that was at the top of the viewport is what has to stay there. A pixel
+    // offset is not enough — appending output can resize anything above it (an
+    // image finishing its load, a tool card collapsing), which moves the offset
+    // but not the character.
+    if (m_follow) m_hasAnchor = false;
+    else captureAnchor();
+    setHtml(buildHtml());
+    scheduleSettle();
 }
 
 // ── search hits ─────────────────────────────────────────────────────────────
@@ -359,21 +508,22 @@ bool ChatView::revealHits(const QList<int>& sources, const QStringList& terms) {
     }
     if (m_hitMarks.isEmpty()) return false;
     // Stay put on later renders instead of snapping back to the bottom.
-    m_autoScroll = false;
+    m_follow = false;
+    m_hasAnchor = false;
     render();
     // The anchor's position is only known once Qt has laid out the new
-    // document, and this must run after any pending scroll-to-bottom.
+    // document, and this must run after any pending settle.
     QTimer::singleShot(0, this, &ChatView::scrollToHit);
     return true;
 }
 
 void ChatView::scrollToHit() {
-    m_rendering = true;
     scrollToAnchor("pengy-hit");
     // A little of the previous message above it, so the hit isn't flush
     // against the top edge.
     verticalScrollBar()->setValue(verticalScrollBar()->value() - 24);
-    m_rendering = false;
+    // Hold this spot (not the bottom) on the renders that follow.
+    captureAnchor();
 }
 
 void ChatView::clearHitMarks() {

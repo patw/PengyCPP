@@ -49,7 +49,9 @@ public:
         invalidate(idx);
     }
     int testCacheSize() const { return m_htmlCache.size(); }
-    bool testAutoScroll() const { return m_autoScroll; }
+    bool testFollow() const { return m_follow; }
+    bool testAnchorHeld() const { return m_hasAnchor; }
+    bool testRenderPending() const { return m_renderPending; }
     QList<int> testHitMarks() const { return m_hitMarks.keys(); }
     QString testCachedHtml(int idx) const { return m_htmlCache.value(idx); }
     QVariant testLoadImage(const QUrl& url) { return loadResource(QTextDocument::ImageResource, url); }
@@ -61,14 +63,28 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     QVariant loadResource(int type, const QUrl& url) override;
+    void wheelEvent(QWheelEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
+    void showEvent(QShowEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private slots:
     void onImageFetched(const QString& url, const QByteArray& data);
-    void onScrollChanged(int value);
+    void onScrollAction(int action);
+    void onRangeChanged(int minimum, int maximum);
+    void onSliderPressed();
+    void onSliderMoved(int value);
+    void onSliderReleased();
 
 private:
-    void render();
-    void scrollToBottom();
+    void render(bool force = false);
+    void settle();
+    void scheduleSettle();
+    void endDrag();
+    void noteUserScroll(int value = -1);
+    void captureAnchor();
+    bool anchorTop(int& position, int& offset) const;
+    void applyAnchor(int position, int offset);
     void scrollToHit();
     void clearHitMarks();
     QString buildHtml();
@@ -110,11 +126,17 @@ private:
     QSet<QString> m_imagePending;            // urls currently being fetched
     QMutex m_imageMutex;
 
-    // Auto-scroll tracking. setHtml() replaces the whole document and resets
-    // the scrollbar to the top, so sb->value() right after a render is 0 —
-    // *not* a reliable "the user scrolled here" signal. We keep an explicit
-    // m_autoScroll flag updated only by genuine user scrolling (see
-    // onScrollChanged), and guard the spurious reset with m_rendering.
-    bool m_autoScroll = true;
-    bool m_rendering = false;
+    // Follow-the-feed state.  Intent comes from real input events only (wheel,
+    // keys, scrollbar drag): setHtml() replaces the document, reports moves of
+    // its own, and keeps moving the maximum for several layout passes
+    // afterwards, so the scrollbar is not evidence of what the user wants.
+    bool m_follow = true;
+    // While not following: document position + sub-line offset of the character
+    // at the top of the viewport, re-applied after each render.
+    bool m_hasAnchor = false;
+    int m_anchorPosition = 0;
+    int m_anchorOffset = 0;
+    bool m_settleQueued = false;
+    bool m_dragging = false;        // user is holding the scrollbar thumb
+    bool m_renderPending = false;   // a render was deferred by that drag
 };
