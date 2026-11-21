@@ -81,6 +81,7 @@ private:
     void settle();
     void scheduleSettle();
     void endDrag();
+    void flushPendingScroll();
     void noteUserScroll(int value = -1);
     void captureAnchor();
     bool anchorTop(int& position, int& offset) const;

@@ -315,6 +315,57 @@ int main(int argc, char** argv) {
         settle();
         requireEqual(v.testRenderPending() ? "true" : "false", "false", "release catches up");
 
+        // ── burst: several renders before the deferred scroll work runs ──────
+        // A real turn emits cards back to back. render() used to re-read the
+        // viewport for each one, but setHtml() had already reset the bar, so the
+        // anchor became the document start and the view jumped to the very top.
+        {
+            ChatView b;
+            b.resize(400, 600);
+            b.show();
+            for (int i = 0; i < 40; ++i)
+                b.appendMessageText("assistant", QString("line %1 ").arg(i).repeated(20), false);
+            b.renderNow();
+            auto settleB = [&app](int rounds = 6) {
+                for (int i = 0; i < rounds; ++i) app.processEvents();
+            };
+            settleB();
+            auto* sbb = b.verticalScrollBar();
+            // A real wheel notch, so the setup does not depend on when Qt applies
+            // an action triggered from code.
+            QPointF pos(20, 20);
+            QWheelEvent up(pos, b.viewport()->mapToGlobal(QPoint(20, 20)),
+                           QPoint(0, 0), QPoint(0, 120 * 6),
+                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(b.viewport(), &up);
+            settleB();
+            const int reading = sbb->value();
+            if (reading <= 0 || reading >= sbb->maximum()) {
+                std::cerr << "FAIL: could not scroll back to set up the burst test (value="
+                          << reading << " max=" << sbb->maximum() << ")\n";
+                std::exit(1);
+            }
+            for (int n = 0; n < 3; ++n) {
+                QJsonObject req{{"tool_call_id", QString("b%1").arg(n)},
+                                {"name", "bash"}, {"args", QJsonObject()}};
+                b.appendMessage("tool_request", req);
+                QJsonObject res{{"tool_call_id", QString("b%1").arg(n)},
+                                {"content", QString("out\n").repeated(40)},
+                                {"declined", false}};
+                b.appendMessage("tool_result", res);
+                b.appendMessageText("assistant", QString("narration %1 ").arg(n).repeated(30));
+            }
+            settleB();
+            const int drift = sbb->value() - reading;
+            if (sbb->value() == 0 || drift < -60 || drift > 60) {
+                std::cerr << "FAIL: a burst of output moved the reading spot\n"
+                          << "reading=" << reading << " after burst=" << sbb->value()
+                          << " max=" << sbb->maximum() << "\n";
+                std::exit(1);
+            }
+            requireEqual(b.testFollow() ? "true" : "false", "false", "burst keeps the mode");
+        }
+
         // A hidden tab (another tab in front) keeps its place, or the end.
         v.hide();
         settle();

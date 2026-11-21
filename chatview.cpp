@@ -332,14 +332,18 @@ void ChatView::contextMenuEvent(QContextMenuEvent* event) {
 
 void ChatView::wheelEvent(QWheelEvent* event) {
     // A wheel notch is a genuine scroll, and the base class applies the new
-    // value synchronously, so intent can be read straight afterwards.
+    // value synchronously, so intent can be read straight afterwards. The
+    // settle runs first so the notch lands on the position the reader is
+    // actually on — a render leaves the bar at the top until that runs.
     endDrag();  // a lost slider release must not freeze the view
+    flushPendingScroll();
     QTextBrowser::wheelEvent(event);
     noteUserScroll();
 }
 
 void ChatView::keyPressEvent(QKeyEvent* event) {
     endDrag();
+    flushPendingScroll();
     QTextBrowser::keyPressEvent(event);
     switch (event->key()) {
     case Qt::Key_Up: case Qt::Key_Down:
@@ -359,6 +363,8 @@ void ChatView::onScrollAction(int action) {
     // gap would drag the view back to the bottom and undo the click.
     // QAbstractSlider::SliderAction: SingleStepSub=2, PageStepSub=4,
     // SliderToMinimum=5 (the value is an int here for the same reason).
+    endDrag();
+    flushPendingScroll();
     if (action == 2 || action == 4 || action == 5) {
         m_follow = false;
         captureAnchor();
@@ -371,6 +377,8 @@ void ChatView::onSliderPressed() {
     // resets the bar mid-drag, which both fights the drag (the thumb jumps
     // away from the pointer) and loses the drag's own value. Catch up once the
     // user lets go.
+    endDrag();
+    flushPendingScroll();
     m_dragging = true;
 }
 
@@ -381,8 +389,17 @@ void ChatView::onSliderMoved(int value) {
 }
 
 void ChatView::onSliderReleased() {
-    endDrag();
+    // Read intent and the reading spot while the bar still holds the drag's
+    // value: the catch-up render in endDrag() resets it.
     noteUserScroll();
+    endDrag();
+}
+
+void ChatView::flushPendingScroll() {
+    // A render leaves the bar at the top until the settle runs. Scrolling from
+    // there — or capturing the reading spot there — sent the view to the top of
+    // the chat: the wheel moved from 0 and the anchor became the document start.
+    if (m_settleQueued) settle();
 }
 
 void ChatView::endDrag() {
@@ -484,13 +501,12 @@ void ChatView::render(bool force) {
         m_renderPending = true;  // rebuilt on slider release
         return;
     }
-    // Record the reading spot *before* the document is replaced: the character
-    // that was at the top of the viewport is what has to stay there. A pixel
-    // offset is not enough — appending output can resize anything above it (an
-    // image finishing its load, a tool card collapsing), which moves the offset
-    // but not the character.
     if (m_follow) m_hasAnchor = false;
-    else captureAnchor();
+    // Not following: keep the anchor already held. NEVER re-read the viewport
+    // here — setHtml() below resets the bar to the top, so a second render in
+    // the same burst (a turn emits several cards back to back) would capture the
+    // document start and park the view there. The reading spot is captured when
+    // the user moves the bar and nowhere else.
     setHtml(buildHtml());
     scheduleSettle();
 }
