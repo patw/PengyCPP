@@ -98,6 +98,16 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
     m_displayName = new QLineEdit(cfg.displayName);
     m_displayName->setToolTip("Name shown on your own chat messages. Empty uses your login name.");
     uiForm->addRow(labelWithTip("Display name:", "Name shown on your own chat messages. Empty uses your login name."), m_displayName);
+    // The label fields are the whole rendered string, glyph included; the view
+    // adds nothing. Blank restores the shipped default.
+    m_userLabel = new QLineEdit(cfg.userLabel);
+    m_userLabel->setToolTip("Whole label for your messages, emoji included. {username} is your display name. Empty restores the default.");
+    uiForm->addRow(labelWithTip("Your label:", "Whole label for your messages, emoji included. {username} is your display name. Empty restores the default."), m_userLabel);
+
+    m_assistantLabel = new QLineEdit(cfg.assistantLabel);
+    m_assistantLabel->setToolTip("Whole label for the assistant. {hostname} becomes ' (host)' when chat labels name the machine. Empty restores the default.");
+    uiForm->addRow(labelWithTip("Assistant label:", "Whole label for the assistant, emoji included. {hostname} becomes ' (host)' when chat labels name the machine. Empty restores the default."), m_assistantLabel);
+
 
     m_showNodeLabel = new QCheckBox("Name the answering machine in the assistant label");
     m_showNodeLabel->setChecked(cfg.showNodeInLabel);
@@ -421,6 +431,8 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
         m_config.themeMode         = m_themeMode->currentData().toString();
         m_config.themeAccent       = m_themeAccent->currentData().toString();
         m_config.displayName       = m_displayName->text().trimmed();
+        m_config.userLabel         = m_userLabel->text().trimmed();
+        m_config.assistantLabel    = m_assistantLabel->text().trimmed();
         m_config.showNodeInLabel   = m_showNodeLabel->isChecked();
         m_config.llmTimeout        = m_llmTimeout->value();
         m_config.toolTimeout       = m_toolTimeout->value();

@@ -60,21 +60,35 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Role labels: defaults are the shipped strings, MainWindow's derivation
-    // replaces them, and a label is config-sourced text that must be escaped.
+    // Role labels: the view appends no glyph of its own, so the shipped defaults
+    // carry theirs, a derived label is drawn verbatim, and a label is
+    // config-sourced text that must be escaped.
     {
+        const QString userGlyph = QString::fromUtf8("\xf0\x9f\xa7\x91");
+        const QString botGlyph = QString::fromUtf8("\xf0\x9f\xa4\x96");
         ChatView labelled;
         labelled.appendMessageText("user", "hi");
         labelled.appendMessageText("assistant", "hello");
-        requireContains(labelled.testBuildHtml(), "class='role-user'>You",
-                        "default human label");
-        requireContains(labelled.testBuildHtml(), "class='role-assistant'>Assistant",
-                        "default agent label");
+        requireContains(labelled.testBuildHtml(),
+                        QString("class='role-user'>You %1<").arg(userGlyph),
+                        "default human label carries its glyph");
+        requireContains(labelled.testBuildHtml(),
+                        QString("class='role-assistant'>Pengy %1<").arg(botGlyph),
+                        "default agent label carries its glyph");
         labelled.applyIdentity("Pat", "Pengy (behopc)");
-        requireContains(labelled.testBuildHtml(), "class='role-user'>Pat &#x1F9D1;",
-                        "human label follows config, label-first");
-        requireContains(labelled.testBuildHtml(), "class='role-assistant'>Pengy (behopc) &#x1F916;",
-                        "agent label names the node");
+        // Exactly the strings handed in: nothing appended, so an emoji-free
+        // label is a settings edit, not a code edit.
+        requireContains(labelled.testBuildHtml(), "class='role-user'>Pat<",
+                        "human label drawn verbatim");
+        requireContains(labelled.testBuildHtml(), "class='role-assistant'>Pengy (behopc)<",
+                        "agent label drawn verbatim");
+        requireNotContains(labelled.testBuildHtml(), userGlyph, "no glyph is appended by the view");
+        requireNotContains(labelled.testBuildHtml(), botGlyph, "no glyph is appended by the view");
+        // Glyph-first and glyph-free are both expressible in the string.
+        labelled.applyIdentity(QString("%1 Pat").arg(userGlyph), "Pengy");
+        requireContains(labelled.testBuildHtml(),
+                        QString("class='role-user'>%1 Pat<").arg(userGlyph),
+                        "glyph-first label works");
         labelled.applyIdentity("<b>Pat</b>", "Assistant");
         requireNotContains(labelled.testBuildHtml(), "class='role-user'><b>Pat",
                            "label is HTML-escaped, not injected");

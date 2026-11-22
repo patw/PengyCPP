@@ -45,11 +45,17 @@ struct Config {
     // Settings → Extras tab shows and edits this, and an explicit ~/skills is
     // normalised back to empty so it never pins a future default.
     QString skillsDir;
-    // Chat role labels. displayName is the human side; empty falls back to the
-    // login name. showNodeInLabel names the answering machine, which matters because
-    // the same chats are opened on several machines. Labels are derived at render
-    // time and never written into a chat file.
-    QString displayName;
+    // Chat role labels. The label is the whole string the renderer draws: no
+    // glyph is appended by the view, so the emoji lives in the string and removing
+    // it is a settings edit. {username} and {hostname} expand the way they do in
+    // the system-message template: displayName supplies {username} (empty =
+    // login name) and showNodeInLabel decides whether {hostname} expands to
+    // ' (host)' or to nothing -- it matters because the same chats are opened on
+    // several machines. Labels are derived at render time and never written into
+    // a chat file.
+    QString displayName = "You";
+    QString userLabel;
+    QString assistantLabel;
     bool showNodeInLabel = true;
     int  imageMaxDimension   = 4096;
     double imageMaxMb        = 4.5;

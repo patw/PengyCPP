@@ -115,9 +115,10 @@ private:
     int m_scale = 100;
     QString m_cachedCss;  // rebuilt only in applyTheme()
     // Role labels for the user/assistant lines, set by MainWindow from config.
-    // Defaults are the strings Pengy shipped with.
-    QString m_userLabel = "You";
-    QString m_assistantLabel = "Assistant";
+    // The fallback is the shipped label including its glyph: the view appends
+    // nothing of its own, so the glyph is part of the string.
+    QString m_userLabel = QString::fromUtf8("You \xf0\x9f\xa7\x91");
+    QString m_assistantLabel = QString::fromUtf8("Pengy \xf0\x9f\xa4\x96");
 
     QJsonArray m_messages;
     // Rendered HTML per message, parallel to m_messages. A null QString means

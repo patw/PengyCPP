@@ -629,7 +629,7 @@ QString ChatView::renderMessage(const QJsonObject& msg, int idx) const {
             }
         }
         return QString(
-            "<p class='role-user'>%1 &#x1F9D1;</p>"
+            "<p class='role-user'>%1</p>"
             "<div class='attachment-gallery'>%2</div>"
             "<p style='margin:2px 0 10px 0;white-space:pre-wrap;'>%3</p>"
         ).arg(escapeHtml(m_userLabel), gallery, m_hitMarks.contains(idx)
@@ -644,7 +644,7 @@ QString ChatView::renderMessage(const QJsonObject& msg, int idx) const {
             parts += renderReasoningBlock(msg["reasoning_content"].toString(), idx);
         }
         parts += QString(
-            "<p class='role-assistant'>%1 &#x1F916;</p>"
+            "<p class='role-assistant'>%1</p>"
             "<div style='margin:2px 0 10px 0;'>%2</div>"
         ).arg(escapeHtml(m_assistantLabel), m_hitMarks.contains(idx) ? markSearchTerms(markdownToHtml(content), m_hitMarks.value(idx))
                                        : markdownToHtml(content));

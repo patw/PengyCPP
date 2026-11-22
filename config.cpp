@@ -96,6 +96,8 @@ QJsonObject Config::toJson() const {
     o["download_max_mb"]       = downloadMaxMb;
     o["skills_dir"]            = skillsDir;
     o["display_name"]          = displayName;
+    o["user_label"]            = userLabel;
+    o["assistant_label"]       = assistantLabel;
     o["show_node_in_label"]    = showNodeInLabel;
     o["image_max_dimension"] = imageMaxDimension;
     o["image_max_mb"]        = imageMaxMb;
@@ -145,6 +147,8 @@ Config Config::fromJson(const QJsonObject& o) {
     if (o.contains("download_max_mb"))       c.downloadMaxMb       = o["download_max_mb"].toInt(100);
     if (o.contains("skills_dir"))            c.skillsDir           = o["skills_dir"].toString();
     if (o.contains("display_name"))          c.displayName         = o["display_name"].toString();
+    if (o.contains("user_label"))            c.userLabel           = o["user_label"].toString();
+    if (o.contains("assistant_label"))       c.assistantLabel      = o["assistant_label"].toString();
     if (o.contains("show_node_in_label"))    c.showNodeInLabel     = o["show_node_in_label"].toBool(true);
     if (o.contains("image_max_dimension")) c.imageMaxDimension = o["image_max_dimension"].toInt(4096);
     if (o.contains("image_max_mb"))        c.imageMaxMb        = o["image_max_mb"].toDouble(4.5);
@@ -284,21 +288,36 @@ QString configRenderSystemMessage(const QString& tmpl) {
 }
 
 QPair<QString, QString> configChatIdentity(const Config& cfg) {
+    // Shipped templates: the glyphs live here, not in the view, so deleting one
+    // is a settings edit. A blank (or whitespace-only) template restores these.
+    static const QString kUserGlyph = QString::fromUtf8("\xf0\x9f\xa7\x91");
+    static const QString kAssistantGlyph = QString::fromUtf8("\xf0\x9f\xa4\x96");
+    const QString defaultUser = QStringLiteral("{username} ") + kUserGlyph;
+    const QString defaultAssistant = QStringLiteral("Pengy{hostname} ") + kAssistantGlyph;
+
     // Same login-name convention this file already uses for {username}.
     QString human = cfg.displayName.trimmed();
     if (human.isEmpty())
         human = qEnvironmentVariable("USER", qEnvironmentVariable("USERNAME", "You"));
     if (human.isEmpty()) human = "You";
-    QString assistant = "Pengy";
+
+    // {hostname} expands to ' (host)' only when asked; a template that leaves the
+    // token out never names the machine -- no hidden appending.
+    QString hostSlot;
     if (cfg.showNodeInLabel) {
-        // Same hostname resolution as configRenderSystemMessage above.
         QString hostname;
         QFile f("/etc/hostname");
         if (f.open(QIODevice::ReadOnly)) hostname = QString::fromUtf8(f.readAll()).trimmed();
         if (hostname.isEmpty()) hostname = QSysInfo::machineHostName();
-        if (!hostname.isEmpty()) assistant = QString("%1 (%2)").arg(assistant, hostname);
+        if (!hostname.isEmpty()) hostSlot = QStringLiteral(" (%1)").arg(hostname);
     }
-    return {human, assistant};
+
+    const auto expand = [&](const QString& tmpl, const QString& fallback) {
+        QString use = tmpl.trimmed().isEmpty() ? fallback : tmpl;
+        use.replace("{username}", human).replace("{hostname}", hostSlot);
+        return use.trimmed();
+    };
+    return {expand(cfg.userLabel, defaultUser), expand(cfg.assistantLabel, defaultAssistant)};
 }
 
 std::pair<QString,quint64> compactionPolicy(const Config& c,const QString& model) {
