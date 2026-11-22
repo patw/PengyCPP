@@ -386,6 +386,15 @@ static QString takeNewest() { return {}; }
 static void clear() {}
 static QStringList previews(int) { return {}; }
 
+/// Windows has no capture to suspend, so a prompt has nothing to guard. Kept as
+/// the same name/RAII shape so the call sites (#ifdef Q_OS_UNIX or not) compile
+/// unchanged -- MSVC caught this missing the first time.
+struct PromptGuard {
+    PromptGuard() = default;
+    PromptGuard(const PromptGuard&) = delete;
+    PromptGuard& operator=(const PromptGuard&) = delete;
+};
+
 #endif
 
 } // namespace TypeAhead
