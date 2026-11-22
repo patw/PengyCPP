@@ -48,12 +48,12 @@ struct Config {
     // Chat role labels. The label is the whole string the renderer draws: no
     // glyph is appended by the view, so the emoji lives in the string and removing
     // it is a settings edit. {username} and {hostname} expand the way they do in
-    // the system-message template: displayName supplies {username} (empty =
-    // login name) and showNodeInLabel decides whether {hostname} expands to
-    // ' (host)' or to nothing -- it matters because the same chats are opened on
-    // several machines. Labels are derived at render time and never written into
-    // a chat file.
-    QString displayName = "You";
+    // the system-message template. {username} is the login name, so there is no
+    // separate display name: a name is written into the label itself, which keeps
+    // this at two fields, one per role. showNodeInLabel decides whether {hostname}
+    // expands to ' (host)' or to nothing -- it matters because the same chats are
+    // opened on several machines. Labels are derived at render time and never
+    // written into a chat file; a blank field restores the shipped default.
     QString userLabel;
     QString assistantLabel;
     bool showNodeInLabel = true;
@@ -76,6 +76,12 @@ QString configRenderSystemMessage(const QString& tmpl);
 /// (human label, assistant label) for the chat role labels, derived from this
 /// node's config. Display-only: nothing is stored in the chat file.
 QPair<QString, QString> configChatIdentity(const Config& cfg);
+
+/// The shipped default for each label field. Settings shows these in the fields so
+/// the default shape is visible, and saving one back stores empty rather than
+/// pinning today's default into the config file.
+QString configDefaultUserLabel();
+QString configDefaultAssistantLabel();
 void    setConfigDir(const QString& path);
 QString pengyConfigDirPath();
 

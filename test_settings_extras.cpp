@@ -132,6 +132,47 @@ private slots:
         QCOMPARE(registry, QUrl("https://skills.catbee.ca"));
         QCOMPARE(dialog.result(), int(QDialog::Rejected));
     }
+
+    // Chat labels: the boxes open showing the full default string, so the shape is
+    // visible and editable in place, and saving that default back stores empty
+    // rather than pinning today's default into the config file. The expected strings
+    // are literals here, not calls into the implementation -- the point is the text
+    // a person sees.
+    void labelFieldsOpenPrefilledWithTheDefault() {
+        QTemporaryDir tmp;
+        const QString defaultUser = QStringLiteral("You ") + QString::fromUtf8("\xf0\x9f\xa7\x91");
+        const QString defaultAssistant = QStringLiteral("Pengy{hostname} ") + QString::fromUtf8("\xf0\x9f\xa4\x96");
+        SettingsDialog dialog(config(tmp.filePath("skills")));
+        auto* user = dialog.findChild<QLineEdit*>("userLabel");
+        auto* assistant = dialog.findChild<QLineEdit*>("assistantLabel");
+        QVERIFY(user);
+        QVERIFY(assistant);
+        QCOMPARE(user->text(), defaultUser);
+        QCOMPARE(assistant->text(), defaultAssistant);
+
+        // Saving the prefilled defaults stores empty.
+        QTest::mouseClick(button(dialog, "OK"), Qt::LeftButton);
+#ifdef PENGY_RUST_EDITION
+        QCOMPARE(dialog.config()["user_label"].toString(), QString());
+        QCOMPARE(dialog.config()["assistant_label"].toString(), QString());
+#else
+        QCOMPARE(dialog.config().userLabel, QString());
+        QCOMPARE(dialog.config().assistantLabel, QString());
+#endif
+
+        // An edited label is stored verbatim.
+        SettingsDialog edited(config(tmp.filePath("skills")));
+        edited.findChild<QLineEdit*>("userLabel")->setText("Pat");
+        edited.findChild<QLineEdit*>("assistantLabel")->setText("Pengy");
+        QTest::mouseClick(button(edited, "OK"), Qt::LeftButton);
+#ifdef PENGY_RUST_EDITION
+        QCOMPARE(edited.config()["user_label"].toString(), QStringLiteral("Pat"));
+        QCOMPARE(edited.config()["assistant_label"].toString(), QStringLiteral("Pengy"));
+#else
+        QCOMPARE(edited.config().userLabel, QStringLiteral("Pat"));
+        QCOMPARE(edited.config().assistantLabel, QStringLiteral("Pengy"));
+#endif
+    }
 };
 QTEST_MAIN(TestSettingsExtras)
 #include "test_settings_extras.moc"

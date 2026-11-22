@@ -95,7 +95,6 @@ QJsonObject Config::toJson() const {
     o["tool_output_max_chars"] = toolOutputMaxChars;
     o["download_max_mb"]       = downloadMaxMb;
     o["skills_dir"]            = skillsDir;
-    o["display_name"]          = displayName;
     o["user_label"]            = userLabel;
     o["assistant_label"]       = assistantLabel;
     o["show_node_in_label"]    = showNodeInLabel;
@@ -146,7 +145,6 @@ Config Config::fromJson(const QJsonObject& o) {
     if (o.contains("tool_output_max_chars")) c.toolOutputMaxChars = o["tool_output_max_chars"].toInt(250000);
     if (o.contains("download_max_mb"))       c.downloadMaxMb       = o["download_max_mb"].toInt(100);
     if (o.contains("skills_dir"))            c.skillsDir           = o["skills_dir"].toString();
-    if (o.contains("display_name"))          c.displayName         = o["display_name"].toString();
     if (o.contains("user_label"))            c.userLabel           = o["user_label"].toString();
     if (o.contains("assistant_label"))       c.assistantLabel      = o["assistant_label"].toString();
     if (o.contains("show_node_in_label"))    c.showNodeInLabel     = o["show_node_in_label"].toBool(true);
@@ -287,19 +285,27 @@ QString configRenderSystemMessage(const QString& tmpl) {
     return result;
 }
 
-QPair<QString, QString> configChatIdentity(const Config& cfg) {
-    // Shipped templates: the glyphs live here, not in the view, so deleting one
-    // is a settings edit. A blank (or whitespace-only) template restores these.
-    static const QString kUserGlyph = QString::fromUtf8("\xf0\x9f\xa7\x91");
-    static const QString kAssistantGlyph = QString::fromUtf8("\xf0\x9f\xa4\x96");
-    const QString defaultUser = QStringLiteral("{username} ") + kUserGlyph;
-    const QString defaultAssistant = QStringLiteral("Pengy{hostname} ") + kAssistantGlyph;
+QString configDefaultUserLabel() {
+    // "You" is a literal here, not {username}: the label field is the whole string,
+    // and the login name is reached by writing {username} into it.
+    return QStringLiteral("You ") + QString::fromUtf8("\xf0\x9f\xa7\x91");
+}
 
-    // Same login-name convention this file already uses for {username}.
-    QString human = cfg.displayName.trimmed();
-    if (human.isEmpty())
-        human = qEnvironmentVariable("USER", qEnvironmentVariable("USERNAME", "You"));
-    if (human.isEmpty()) human = "You";
+QString configDefaultAssistantLabel() {
+    return QStringLiteral("Pengy{hostname} ") + QString::fromUtf8("\xf0\x9f\xa4\x96");
+}
+
+QPair<QString, QString> configChatIdentity(const Config& cfg) {
+    // Shipped defaults: the glyphs live here, not in the view, so deleting one
+    // is a settings edit. A blank (or whitespace-only) field restores these.
+    const QString defaultUser = configDefaultUserLabel();
+    const QString defaultAssistant = configDefaultAssistantLabel();
+
+    // {username} is the login name, the same value the system prompt uses. There is
+    // no separate display name: it would only ever fill a placeholder in the very
+    // label field next to it, so a name is written into the label itself.
+    QString human = qEnvironmentVariable("USER", qEnvironmentVariable("USERNAME", "You"));
+    if (human.trimmed().isEmpty()) human = "You";
 
     // {hostname} expands to ' (host)' only when asked; a template that leaves the
     // token out never names the machine -- no hidden appending.
@@ -317,7 +323,13 @@ QPair<QString, QString> configChatIdentity(const Config& cfg) {
         use.replace("{username}", human).replace("{hostname}", hostSlot);
         return use.trimmed();
     };
-    return {expand(cfg.userLabel, defaultUser), expand(cfg.assistantLabel, defaultAssistant)};
+    // A label that expands to nothing (say, "{hostname}" with the host hidden)
+    // must not render a label-less chat, so the shipped default fills in.
+    QString user = expand(cfg.userLabel, defaultUser);
+    QString assistant = expand(cfg.assistantLabel, defaultAssistant);
+    if (user.isEmpty()) user = defaultUser;
+    if (assistant.isEmpty()) assistant = defaultAssistant;
+    return {user, assistant};
 }
 
 std::pair<QString,quint64> compactionPolicy(const Config& c,const QString& model) {

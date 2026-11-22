@@ -95,18 +95,18 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
 
     // Chat role labels are derived at render time from these two; nothing is written
     // into chat files, so existing chats change label with no migration.
-    m_displayName = new QLineEdit(cfg.displayName);
-    m_displayName->setToolTip("Name shown on your own chat messages. Empty uses your login name.");
-    uiForm->addRow(labelWithTip("Display name:", "Name shown on your own chat messages. Empty uses your login name."), m_displayName);
-    // The label fields are the whole rendered string, glyph included; the view
-    // adds nothing. Blank restores the shipped default.
-    m_userLabel = new QLineEdit(cfg.userLabel);
-    m_userLabel->setToolTip("Whole label for your messages, emoji included. {username} is your display name. Empty restores the default.");
-    uiForm->addRow(labelWithTip("Your label:", "Whole label for your messages, emoji included. {username} is your display name. Empty restores the default."), m_userLabel);
+    // The fields are prefilled with the string that ships as the default -- the value
+    // used when the field is empty -- so the default shape is visible and editable in
+    // place, with {username} and {hostname} spelled out.
+    m_userLabel = new QLineEdit(cfg.userLabel.isEmpty() ? configDefaultUserLabel() : cfg.userLabel);
+    m_userLabel->setObjectName(QStringLiteral("userLabel"));
+    m_userLabel->setToolTip("Whole label for your messages, emoji included. {username} is your login name. Saving the default text restores it as the default.");
+    uiForm->addRow(labelWithTip("Your label:", "Whole label for your messages, emoji included. {username} is your login name. Saving the default text restores it as the default."), m_userLabel);
 
-    m_assistantLabel = new QLineEdit(cfg.assistantLabel);
-    m_assistantLabel->setToolTip("Whole label for the assistant. {hostname} becomes ' (host)' when chat labels name the machine. Empty restores the default.");
-    uiForm->addRow(labelWithTip("Assistant label:", "Whole label for the assistant, emoji included. {hostname} becomes ' (host)' when chat labels name the machine. Empty restores the default."), m_assistantLabel);
+    m_assistantLabel = new QLineEdit(cfg.assistantLabel.isEmpty() ? configDefaultAssistantLabel() : cfg.assistantLabel);
+    m_assistantLabel->setObjectName(QStringLiteral("assistantLabel"));
+    m_assistantLabel->setToolTip("Whole label for the assistant. {hostname} becomes ' (host)' when chat labels name the machine. Saving the default text restores it as the default.");
+    uiForm->addRow(labelWithTip("Assistant label:", "Whole label for the assistant, emoji included. {hostname} becomes ' (host)' when chat labels name the machine. Saving the default text restores it as the default."), m_assistantLabel);
 
 
     m_showNodeLabel = new QCheckBox("Name the answering machine in the assistant label");
@@ -430,9 +430,14 @@ SettingsDialog::SettingsDialog(const Config& cfg, QWidget* parent)
         m_config.uiScale           = m_uiScale->currentData().toInt();
         m_config.themeMode         = m_themeMode->currentData().toString();
         m_config.themeAccent       = m_themeAccent->currentData().toString();
-        m_config.displayName       = m_displayName->text().trimmed();
-        m_config.userLabel         = m_userLabel->text().trimmed();
-        m_config.assistantLabel    = m_assistantLabel->text().trimmed();
+        // Saving the default text stores empty, so a future change to the shipped
+        // default is not pinned by a config file that happens to repeat it.
+        const QString userLabelText = m_userLabel->text().trimmed();
+        const QString assistantLabelText = m_assistantLabel->text().trimmed();
+        m_config.userLabel = (userLabelText == configDefaultUserLabel())
+            ? QString() : userLabelText;
+        m_config.assistantLabel = (assistantLabelText == configDefaultAssistantLabel())
+            ? QString() : assistantLabelText;
         m_config.showNodeInLabel   = m_showNodeLabel->isChecked();
         m_config.llmTimeout        = m_llmTimeout->value();
         m_config.toolTimeout       = m_toolTimeout->value();

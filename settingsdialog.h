@@ -46,7 +46,6 @@ private:
     QComboBox*  m_model;
     QPushButton* m_fetchBtn;
     QLineEdit*  m_userAgent;
-    QLineEdit*  m_displayName;
     QLineEdit*  m_userLabel;
     QLineEdit*  m_assistantLabel;
     QCheckBox*  m_showNodeLabel;
