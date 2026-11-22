@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.16.0 — 2026-11-22
 
 - **Chat role labels say who is speaking, and every part of the label is a setting.** Issue #3 (kodekrash), adopted as proposed: labels are resolved at render time from this node's config, nothing is written to a chat file, and an `actor` field on a message stays out of scope. Same gaps as the Python edition: `{username}` is a login name, and node identity existed nowhere in Pengy. `ChatView` used to emit `label + " &#x1F9D1;"`, so deleting the emoji was a code change; a label is now the whole string the transcript draws, expanded by `configChatIdentity()` with `{username}` / `{hostname}` (the same vocabulary the system message uses, `{hostname}` becoming ` (host)` only when "Chat labels" names the machine) and drawn escaped and verbatim. So deleting the emoji, moving it (`"🤖 Pengy"`) and renaming the agent are all settings edits, and label order is standardised on label-first (`Pat 🧑`) to match the Python edition.
 
