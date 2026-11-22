@@ -1404,10 +1404,11 @@ function renderQueue() {
     : processing
       ? 'sends when this turn ends — ↑ edit newest · ↓ edit oldest'
       : 'Enter to send — ↑ edit newest · ↓ edit oldest';
-  const lines = [`⏳ Queued (${queuedMessages.length}) · ${hint}`];
+  const lines = [`⏳ Queued ${queuedMessages.length} · ${hint}`];
   queuedMessages.forEach((m, i) => {
     const first = (m.content || '').split('\n')[0].slice(0, 70);
-    const label = first || `[${m.files.length} file(s)]`;
+    const n = m.files.length;
+    const label = first || `[${n} file${n === 1 ? '' : 's'}]`;
     lines.push(`${i + 1}. ${label}`);
   });
   // textContent, never innerHTML: the text comes from the user's own message.
