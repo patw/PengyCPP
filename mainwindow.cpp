@@ -3,6 +3,11 @@
 #include "chathistory.h"
 #include "chatview.h"
 #include "chatinput.h"
+#include <QMimeData>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDragLeaveEvent>
+#include <QDropEvent>
 #include "chatworker.h"
 #include "settingsdialog.h"
 #include "tasksdialog.h"
@@ -168,6 +173,40 @@ void MainWindow::setupUi() {
     mainSplitter->setStretchFactor(1, 1);
     mainSplitter->setSizes({300, 800});
     mainLayout->addWidget(mainSplitter);
+
+    // Accept drops anywhere in the window, not just on the input box.
+    setAcceptDrops(true);
+}
+
+// ── Window-wide drag & drop ────────────────────────────────────────
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
+    if (m_chatInput && ChatInputWidget::canAcceptDrag(event->mimeData())) {
+        m_chatInput->showDropCue(true);
+        event->acceptProposedAction();
+    } else {
+        event->ignore();
+    }
+}
+
+void MainWindow::dragMoveEvent(QDragMoveEvent* event) {
+    if (m_chatInput && ChatInputWidget::canAcceptDrag(event->mimeData()))
+        event->acceptProposedAction();
+    else
+        event->ignore();
+}
+
+void MainWindow::dragLeaveEvent(QDragLeaveEvent* event) {
+    if (m_chatInput) m_chatInput->showDropCue(false);
+    event->accept();
+}
+
+void MainWindow::dropEvent(QDropEvent* event) {
+    if (m_chatInput) m_chatInput->showDropCue(false);
+    if (m_chatInput && m_chatInput->handleDrop(event->mimeData()))
+        event->acceptProposedAction();
+    else
+        event->ignore();
 }
 
 // ── Theme ─────────────────────────────────────────────────────────

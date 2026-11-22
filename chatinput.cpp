@@ -11,6 +11,7 @@
 #include <QImage>
 #include <QPixmap>
 #include <QTemporaryFile>
+#include <QFile>
 #include <QStandardPaths>
 #include <QDir>
 #include <QDragEnterEvent>
@@ -20,6 +21,53 @@
 #include <QDropEvent>
 #include <QFileInfo>
 #include <QUrl>
+
+namespace {
+
+/// Files a drag actually carries, filtered to ones that still exist.
+QStringList localFilePaths(const QMimeData* mime) {
+    QStringList paths;
+    if (!mime || !mime->hasUrls()) return paths;
+    for (const QUrl& url : mime->urls()) {
+        if (!url.isLocalFile()) continue;
+        const QString path = url.toLocalFile();
+        if (QFileInfo(path).isFile()) paths.append(path);
+    }
+    return paths;
+}
+
+/// Save an image carried by a paste or a drag to a temp file; empty when the
+/// payload carries none.  Browsers, chat clients and screenshot tools hand
+/// images over as raw image data with no file URL, so a URL-only drop handler
+/// ignores them silently; some sources supply both forms, so callers try
+/// localFilePaths() first and fall back to this.
+QString imageFromMime(const QMimeData* source) {
+    if (!source || !source->hasImage()) return QString();
+    // macOS commonly supplies an NSImage as a QPixmap QVariant, whereas
+    // Linux normally supplies a QImage.  Asking QVariant directly for a
+    // QImage loses the former, yielding an empty temporary PNG.
+    const QVariant imageData = source->imageData();
+    QImage image;
+    if (imageData.canConvert<QPixmap>())
+        image = imageData.value<QPixmap>().toImage();
+    if (image.isNull() && imageData.canConvert<QImage>())
+        image = imageData.value<QImage>();
+    if (image.isNull()) return QString();
+    QString tmpDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    QTemporaryFile tmpFile(tmpDir + "/pengy_clip_XXXXXX.png");
+    tmpFile.setAutoRemove(false);
+    if (!tmpFile.open()) return QString();
+    const QString path = tmpFile.fileName();
+    tmpFile.close();
+    if (!image.save(path, "PNG")) {
+        // A failed save used to leave the empty file created above behind.
+        QFile::remove(path);
+        return QString();
+    }
+    return path;
+}
+
+} // namespace
 
 // ── InputEdit (subclassed QTextEdit with image paste) ──────────────
 
@@ -66,31 +114,10 @@ void InputEdit::resizeEvent(QResizeEvent* event) {
 }
 
 void InputEdit::insertFromMimeData(const QMimeData* source) {
-    // Check for image first
-    if (source->hasImage()) {
-        // macOS commonly supplies an NSImage as a QPixmap QVariant, whereas
-        // Linux normally supplies a QImage.  Asking QVariant directly for a
-        // QImage loses the former, yielding an empty temporary PNG.
-        const QVariant imageData = source->imageData();
-        QImage image;
-        if (imageData.canConvert<QPixmap>())
-            image = imageData.value<QPixmap>().toImage();
-        if (image.isNull() && imageData.canConvert<QImage>())
-            image = imageData.value<QImage>();
-        if (!image.isNull()) {
-            // Save to temp file
-            QString tmpDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-            QTemporaryFile tmpFile(tmpDir + "/pengy_clip_XXXXXX.png");
-            tmpFile.setAutoRemove(false);
-            if (tmpFile.open()) {
-                QString path = tmpFile.fileName();
-                tmpFile.close();
-                if (image.save(path, "PNG")) {
-                    emit imagePasted(path);
-                    return;
-                }
-            }
-        }
+    const QString path = imageFromMime(source);
+    if (!path.isEmpty()) {
+        emit imagePasted(path);
+        return;
     }
     // Fall back to normal text paste
     QTextEdit::insertFromMimeData(source);
@@ -103,27 +130,23 @@ void InputEdit::setFileDragging(bool active) {
 }
 
 void InputEdit::dragEnterEvent(QDragEnterEvent* event) {
-    for (const QUrl& url : event->mimeData()->urls()) {
-        if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isFile()) {
-            setFileDragging(true);
-            event->acceptProposedAction();
-            return;
-        }
+    if (ChatInputWidget::canAcceptDrag(event->mimeData())) {
+        setFileDragging(true);
+        event->acceptProposedAction();
+    } else {
+        setFileDragging(false);
+        event->ignore();
     }
-    setFileDragging(false);
-    event->ignore();
 }
 
 void InputEdit::dragMoveEvent(QDragMoveEvent* event) {
-    for (const QUrl& url : event->mimeData()->urls()) {
-        if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isFile()) {
-            setFileDragging(true);
-            event->acceptProposedAction();
-            return;
-        }
+    if (ChatInputWidget::canAcceptDrag(event->mimeData())) {
+        setFileDragging(true);
+        event->acceptProposedAction();
+    } else {
+        setFileDragging(false);
+        event->ignore();
     }
-    setFileDragging(false);
-    event->ignore();
 }
 
 void InputEdit::dragLeaveEvent(QDragLeaveEvent* event) {
@@ -133,17 +156,22 @@ void InputEdit::dragLeaveEvent(QDragLeaveEvent* event) {
 
 void InputEdit::dropEvent(QDropEvent* event) {
     setFileDragging(false);
-    QStringList paths;
-    for (const QUrl& url : event->mimeData()->urls()) {
-        if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isFile())
-            paths.append(url.toLocalFile());
-    }
-    if (paths.isEmpty()) {
-        event->ignore();
+    const QStringList paths = localFilePaths(event->mimeData());
+    if (!paths.isEmpty()) {
+        emit filesDropped(paths);
+        event->acceptProposedAction();
         return;
     }
-    emit filesDropped(paths);
-    event->acceptProposedAction();
+    // A picture dragged out of a browser, a chat client or a screenshot tool
+    // arrives as image data with no file URL: the paste path already knows how
+    // to save it, so the drag goes through the same door.
+    const QString image = imageFromMime(event->mimeData());
+    if (!image.isEmpty()) {
+        emit imagePasted(image);
+        event->acceptProposedAction();
+        return;
+    }
+    event->ignore();
 }
 
 bool InputEdit::eventFilter(QObject* obj, QEvent* event) {
@@ -202,6 +230,24 @@ ChatInputWidget::ChatInputWidget(QWidget* parent) : QWidget(parent) {
     m_dropHint->setAccessibleName("Drop files to attach");
     m_dropHint->hide();
     layout->addWidget(m_dropHint);
+}
+
+bool ChatInputWidget::canAcceptDrag(const QMimeData* mime) {
+    return !localFilePaths(mime).isEmpty() || (mime && mime->hasImage());
+}
+
+bool ChatInputWidget::handleDrop(const QMimeData* mime) {
+    const QStringList paths = localFilePaths(mime);
+    if (!paths.isEmpty()) {
+        attachFiles(paths);
+        return true;
+    }
+    const QString image = imageFromMime(mime);
+    if (!image.isEmpty()) {
+        onImagePasted(image);
+        return true;
+    }
+    return false;
 }
 
 void ChatInputWidget::showDropCue(bool active) {

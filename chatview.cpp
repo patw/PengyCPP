@@ -32,6 +32,11 @@ constexpr int kBottomMargin = 30;
 
 ChatView::ChatView(QWidget* parent) : QTextBrowser(parent) {
     setOpenLinks(false);
+    // QTextBrowser enables drops by default, and a read-only one declines them,
+    // so drops already bubble up to MainWindow.  Turn it off explicitly: that
+    // fallback is Qt-internal, and an editable transcript would otherwise start
+    // swallowing drops meant for the composer.
+    setAcceptDrops(false);
     m_theme = makeTheme("system", "default");
     applyTheme(m_theme, m_scale);
     // Intent to stop or resume following comes from real input events only

@@ -8,6 +8,10 @@
 #include <QTabWidget>
 #include <QMap>
 #include <QVector>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDragLeaveEvent>
+#include <QDropEvent>
 
 class ChatHistoryWidget;
 class ChatView;
@@ -32,6 +36,16 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
     void closeEvent(QCloseEvent* event) override;
+
+protected:
+    // Window-wide drop target.  Qt hands a drag to the deepest widget that
+    // accepts it, so the composer keeps priority and these are the fallback for
+    // the rest of the window: the transcript, the sidebar, the tab bar, the
+    // splitter gutters.  Every decision here is the composer's own rule.
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dragMoveEvent(QDragMoveEvent* event) override;
+    void dragLeaveEvent(QDragLeaveEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
 
 private slots:
     void createNewChat();

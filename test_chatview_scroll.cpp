@@ -52,6 +52,13 @@ static void requireEqual(const QString& got, const QString& want, const char* la
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     ChatView view;
+    // The transcript must never claim a drop meant for the composer.  A read-only
+    // QTextBrowser declines drops today, but that is Qt-internal behaviour, so the
+    // flag is turned off explicitly.
+    if (view.acceptDrops()) {
+        std::cerr << "FAIL: transcript claims drops" << std::endl;
+        return 1;
+    }
 
     // Inline images and attachment thumbnails open a larger, dismissible Qt preview.
     {

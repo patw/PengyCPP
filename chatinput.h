@@ -17,6 +17,17 @@ public:
     explicit ChatInputWidget(QWidget* parent = nullptr);
     void applyTheme(const Theme& theme, int scale = 100);
 
+    /// The composer's accept rule, shared with the window-wide drop target so a
+    /// drop aimed anywhere in the window is judged by exactly the rules a drop
+    /// aimed at the input box gets.  Static: it reads only the payload.
+    static bool canAcceptDrag(const QMimeData* mime);
+
+    /// Attach a dropped payload.  True if anything was taken.
+    bool handleDrop(const QMimeData* mime);
+
+    /// Toggle the "drop to attach" affordance for the current drag.
+    void showDropCue(bool active);
+
 signals:
     void messageSent(const QString& text, const QStringList& images);
 
@@ -25,7 +36,6 @@ private slots:
     void pickFile();
     void onImagePasted(const QString& path);
     void attachFiles(const QStringList& paths);
-    void showDropCue(bool active);
 
 private:
     void addChip(const QString& path);

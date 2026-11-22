@@ -90,5 +90,52 @@ int main(int argc, char** argv) {
     check(emissions == 1, "one send");
     check(message == "[File: notes.md]\n```\nhello from file\n```\n\nquestion", "text file once");
     check(images == QStringList{image}, "image forwarded once");
+
+    // A picture dragged out of a browser, a chat client or a screenshot tool
+    // arrives as raw image data with no file URL; the URL-only handler ignored
+    // every one of those drops.
+    QMimeData imageMime;
+    QImage swatch(4, 4, QImage::Format_RGB32);
+    swatch.fill(0x3366FF);
+    imageMime.setImageData(swatch);
+    QDragEnterEvent imageEnter(QPoint(5, 5), Qt::CopyAction, &imageMime,
+                               Qt::LeftButton, Qt::NoModifier);
+    edit->dragEnterEventForTest(&imageEnter);
+    check(imageEnter.isAccepted() && !hint->isHidden(), "raw image hover shows hint");
+    QDropEvent imageDrop(QPointF(5, 5), Qt::CopyAction, &imageMime,
+                         Qt::LeftButton, Qt::NoModifier);
+    edit->dropEventForTest(&imageDrop);
+    check(imageDrop.isAccepted(), "raw image drop accepted");
+    check(edit->toPlainText().isEmpty(), "image data does not touch the draft");
+    check(hint->isHidden() && !edit->property("fileDragActive").toBool(),
+          "image drop restores normal composer");
+    edit->setPlainText("second");
+    QMetaObject::invokeMethod(&widget, "onSubmit", Qt::DirectConnection);
+    check(emissions == 2, "second send");
+    check(images.size() == 1 && images.first().endsWith(".png") && QFile::exists(images.first()),
+          "dropped image saved to a PNG and forwarded");
+
+    // The rules the window-wide drop target on MainWindow delegates to.
+    QMimeData fileMime;
+    fileMime.setUrls({QUrl::fromLocalFile(text)});
+    QMimeData webMime;
+    webMime.setUrls({QUrl("https://example.com/file.txt")});
+    QMimeData dirMime;
+    dirMime.setUrls({QUrl::fromLocalFile(dir.path())});
+    check(ChatInputWidget::canAcceptDrag(&fileMime), "window accepts local files");
+    check(ChatInputWidget::canAcceptDrag(&imageMime), "window accepts raw image drags");
+    check(!ChatInputWidget::canAcceptDrag(&webMime), "window refuses web URLs");
+    check(!ChatInputWidget::canAcceptDrag(&dirMime), "window refuses directories");
+    check(!ChatInputWidget::canAcceptDrag(nullptr), "window refuses an empty payload");
+    check(!widget.handleDrop(&webMime), "handleDrop takes nothing from a web URL");
+    check(!widget.handleDrop(&dirMime), "handleDrop takes nothing from a directory");
+    check(widget.handleDrop(&fileMime), "handleDrop attaches a local file");
+    check(widget.handleDrop(&imageMime), "handleDrop attaches dropped image data");
+    edit->setPlainText("third");
+    QMetaObject::invokeMethod(&widget, "onSubmit", Qt::DirectConnection);
+    check(emissions == 3, "third send");
+    check(images.size() == 1 && images.first().endsWith(".png"),
+          "window-level drop forwarded its image");
+    check(message.contains("[File: notes.md]"), "window-level drop embedded the text file");
     return 0;
 }
