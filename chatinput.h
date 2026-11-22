@@ -28,6 +28,19 @@ public:
     /// Toggle the "drop to attach" affordance for the current drag.
     void showDropCue(bool active);
 
+    /// Bytes one attached text file may contribute to the prompt.  Attached text
+    /// goes into the prompt verbatim, so it is paid for in context: the budget is
+    /// a share of the model's context window, and MainWindow sets it from config.
+    /// The default assumes the common 256K window (see text_attach.py in the
+    /// Python edition for the measurement behind the constants).
+    void setEmbedBudgetBytes(int bytes);
+    int embedBudgetBytes() const { return m_embedBudgetBytes; }
+    static int embedBudgetForContext(qulonglong contextTokens);
+
+    /// A text file above this size is not prompt input: refuse it at attach time
+    /// rather than let the request fail at the endpoint.
+    static bool oversizedForPrompt(qulonglong sizeBytes);
+
 signals:
     void messageSent(const QString& text, const QStringList& images);
 
@@ -53,6 +66,7 @@ private:
     QLabel* m_dropHint;
     QStringList m_attachments;
     QMimeDatabase m_mimeDb;
+    int m_embedBudgetBytes = 224000;  // 256K window * 3.5 bytes/token * 25%
 };
 
 /// Subclassed QTextEdit that intercepts clipboard image paste

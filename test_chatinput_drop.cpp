@@ -137,5 +137,40 @@ int main(int argc, char** argv) {
     check(images.size() == 1 && images.first().endsWith(".png"),
           "window-level drop forwarded its image");
     check(message.contains("[File: notes.md]"), "window-level drop embedded the text file");
+
+    // Attached text is paid for in context: a per-file budget derived from the
+    // model's context window, and a hard refusal above 1 MB.
+    check(ChatInputWidget::embedBudgetForContext(256000) == 224000, "256K window budgets 224000 bytes");
+    check(ChatInputWidget::embedBudgetForContext(1000000) == 875000, "1M window budgets 875000 bytes");
+    check(ChatInputWidget::embedBudgetForContext(0) == 224000, "unknown window assumes 256K");
+    check(ChatInputWidget::embedBudgetForContext(8000000) == 1024 * 1024, "budget is capped at 1 MB");
+    check(ChatInputWidget::embedBudgetForContext(1) == 32 * 1024, "budget has a 32 KB floor");
+    check(!ChatInputWidget::oversizedForPrompt(1024ull * 1024ull), "1 MB is attachable");
+    check(ChatInputWidget::oversizedForPrompt(1024ull * 1024ull + 1ull), "above 1 MB is refused");
+
+    const QString mid = dir.filePath("mid.txt");
+    {
+        QFile mf(mid);
+        check(mf.open(QIODevice::WriteOnly), "create mid-size file");
+        mf.write(QByteArray(100000, 'z'));
+        mf.close();
+    }
+    widget.setEmbedBudgetBytes(40000);
+    check(widget.embedBudgetBytes() == 40000, "budget setter keeps an in-range value");
+    widget.setEmbedBudgetBytes(10);
+    check(widget.embedBudgetBytes() == 32 * 1024, "budget setter clamps to the floor");
+    widget.setEmbedBudgetBytes(40000);
+    QMimeData midMime;
+    midMime.setUrls({QUrl::fromLocalFile(mid)});
+    check(widget.handleDrop(&midMime), "mid-size file attaches");
+    edit->setPlainText("fourth");
+    QMetaObject::invokeMethod(&widget, "onSubmit", Qt::DirectConnection);
+    check(emissions == 4, "fourth send");
+    check(message.contains("truncated") && message.contains("40000 of 100000 bytes"),
+          "embedded text is capped and says so");
+    int zRun = 0;
+    for (const QChar& c : message) if (c == 'z') ++zRun;
+    check(zRun <= 40000, "the whole file is not in the prompt");
+    check(message.contains("fourth"), "the draft survives the truncation note");
     return 0;
 }

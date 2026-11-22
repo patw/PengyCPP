@@ -67,7 +67,30 @@ QString imageFromMime(const QMimeData* source) {
     return path;
 }
 
+/// Bytes-to-tokens is not a constant across tokenizers, so the conversion is
+/// the pessimistic side: measured on the fleet engine at 4.13 bytes/token for
+/// prose and 3.97 for source, and denser tokenizers exist.  Budget math uses
+/// tokens * 7 / 8, which is exactly 3.5 bytes/token * a 25% share of context.
+constexpr qulonglong kUnknownContextTokens = 256000;
+constexpr qint64 kMaxFileBytes = 1024 * 1024;
+constexpr qint64 kMinEmbedBytes = 32 * 1024;
+constexpr qint64 kMaxEmbedBytes = 1024 * 1024;
+
 } // namespace
+
+int ChatInputWidget::embedBudgetForContext(qulonglong contextTokens) {
+    const qulonglong tokens = contextTokens ? contextTokens : kUnknownContextTokens;
+    const qint64 budget = qint64(tokens) * 7 / 8;
+    return int(qBound(kMinEmbedBytes, budget, kMaxEmbedBytes));
+}
+
+bool ChatInputWidget::oversizedForPrompt(qulonglong sizeBytes) {
+    return qint64(sizeBytes) > kMaxFileBytes;
+}
+
+void ChatInputWidget::setEmbedBudgetBytes(int bytes) {
+    m_embedBudgetBytes = int(qBound(kMinEmbedBytes, qint64(bytes), kMaxEmbedBytes));
+}
 
 // ── InputEdit (subclassed QTextEdit with image paste) ──────────────
 
@@ -326,13 +349,23 @@ void ChatInputWidget::pickFile() {
 
 void ChatInputWidget::attachFiles(const QStringList& paths) {
     QStringList unsupported;
+    QStringList oversized;
     for (const QString& path : paths) {
         if (!QFileInfo(path).isFile() || (!isTextFile(path) && !isImageFile(path))) {
             unsupported.append(QFileInfo(path).fileName());
+        } else if (isTextFile(path) && oversizedForPrompt(QFileInfo(path).size())) {
+            oversized.append(QString("%1 (%2 MB)")
+                                 .arg(QFileInfo(path).fileName())
+                                 .arg(QFileInfo(path).size() / (1024.0 * 1024.0), 0, 'f', 1));
         } else if (!m_attachments.contains(path)) {
             m_attachments.append(path);
             addChip(path);
         }
+    }
+    if (!oversized.isEmpty()) {
+        QMessageBox::warning(this, "File Too Large",
+            QString("Not attached, over the %1 KB limit:\n%2")
+                .arg(kMaxFileBytes / 1024).arg(oversized.join("\n")));
     }
     if (!unsupported.isEmpty()) {
         QMessageBox::warning(this, "Cannot Attach File",
@@ -424,10 +457,19 @@ void ChatInputWidget::onSubmit() {
         } else {
             QFile f(path);
             if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-                QString content = QString::fromUtf8(f.readAll());
+                QByteArray raw = f.readAll();
                 f.close();
+                const qint64 total = raw.size();
+                const bool capped = total > m_embedBudgetBytes;
+                if (capped) raw.truncate(m_embedBudgetBytes);
+                QString content = QString::fromUtf8(raw);
+                const QString note = capped
+                    ? QString("\n[... %1 of %2 bytes embedded; the rest is truncated, "
+                              "not omitted silently]")
+                          .arg(m_embedBudgetBytes).arg(total)
+                    : QString();
                 QString fname = path.section('/', -1);
-                parts.append(QString("[File: %1]\n```\n%2\n```").arg(fname, content));
+                parts.append(QString("[File: %1]\n```\n%2%3\n```").arg(fname, content, note));
             } else {
                 QString fname = path.section('/', -1);
                 parts.append(QString("[File: %1 — error reading file]").arg(fname));

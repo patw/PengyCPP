@@ -57,6 +57,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setupUi();
     applyTheme();
 
+    // Attached text is paid for in context, so the per-file budget follows the
+    // context window configured for the model in play.
+    const qulonglong window = m_config.contextWindows.value(m_config.model)
+                                  .toVariant().toULongLong();
+    m_chatInput->setEmbedBudgetBytes(ChatInputWidget::embedBudgetForContext(
+        window ? window : m_config.contextWindow));
+
     Tools::setUserAgent(m_config.userAgent);
     Tools::setTimeout(m_config.toolTimeout);
     Tools::setToolOutputMaxChars(m_config.toolOutputMaxChars);
