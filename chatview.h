@@ -33,6 +33,10 @@ public:
     void renderNow();
     void clear();
     void applyTheme(const Theme& theme, int scale = 100);
+    // Human / assistant role labels, derived from config by MainWindow. The
+    // defaults are the strings Pengy shipped with, so a ChatView used without
+    // MainWindow renders exactly as before.
+    void applyIdentity(const QString& user, const QString& assistant);
 
 #ifdef PENGY_UNIT_TEST
     QString testMarkdownToHtml(const QString& md) const { return markdownToHtml(md); }
@@ -110,6 +114,10 @@ private:
     Theme m_theme;
     int m_scale = 100;
     QString m_cachedCss;  // rebuilt only in applyTheme()
+    // Role labels for the user/assistant lines, set by MainWindow from config.
+    // Defaults are the strings Pengy shipped with.
+    QString m_userLabel = "You";
+    QString m_assistantLabel = "Assistant";
 
     QJsonArray m_messages;
     // Rendered HTML per message, parallel to m_messages. A null QString means

@@ -45,6 +45,12 @@ struct Config {
     // Settings → Extras tab shows and edits this, and an explicit ~/skills is
     // normalised back to empty so it never pins a future default.
     QString skillsDir;
+    // Chat role labels. displayName is the human side; empty falls back to the
+    // login name. showNodeInLabel names the answering machine, which matters because
+    // the same chats are opened on several machines. Labels are derived at render
+    // time and never written into a chat file.
+    QString displayName;
+    bool showNodeInLabel = true;
     int  imageMaxDimension   = 4096;
     double imageMaxMb        = 4.5;
     int  imageQuality        = 85;
@@ -60,6 +66,10 @@ struct Config {
 Config  configLoad();
 bool    configSave(const Config& cfg);
 QString configRenderSystemMessage(const QString& tmpl);
+
+/// (human label, assistant label) for the chat role labels, derived from this
+/// node's config. Display-only: nothing is stored in the chat file.
+QPair<QString, QString> configChatIdentity(const Config& cfg);
 void    setConfigDir(const QString& path);
 QString pengyConfigDirPath();
 

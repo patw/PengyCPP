@@ -60,6 +60,28 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Role labels: defaults are the shipped strings, MainWindow's derivation
+    // replaces them, and a label is config-sourced text that must be escaped.
+    {
+        ChatView labelled;
+        labelled.appendMessageText("user", "hi");
+        labelled.appendMessageText("assistant", "hello");
+        requireContains(labelled.testBuildHtml(), "class='role-user'>You",
+                        "default human label");
+        requireContains(labelled.testBuildHtml(), "class='role-assistant'>Assistant",
+                        "default agent label");
+        labelled.applyIdentity("Pat", "Pengy (behopc)");
+        requireContains(labelled.testBuildHtml(), "class='role-user'>Pat &#x1F9D1;",
+                        "human label follows config, label-first");
+        requireContains(labelled.testBuildHtml(), "class='role-assistant'>Pengy (behopc) &#x1F916;",
+                        "agent label names the node");
+        labelled.applyIdentity("<b>Pat</b>", "Assistant");
+        requireNotContains(labelled.testBuildHtml(), "class='role-user'><b>Pat",
+                           "label is HTML-escaped, not injected");
+        requireContains(labelled.testBuildHtml(), "&lt;b&gt;Pat",
+                        "escaped label still renders");
+    }
+
     // Inline images and attachment thumbnails open a larger, dismissible Qt preview.
     {
         QTemporaryDir temp;

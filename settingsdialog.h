@@ -46,6 +46,8 @@ private:
     QComboBox*  m_model;
     QPushButton* m_fetchBtn;
     QLineEdit*  m_userAgent;
+    QLineEdit*  m_displayName;
+    QCheckBox*  m_showNodeLabel;
     QTextEdit*  m_systemMsg;
     QComboBox*  m_toolConfirm;
     QComboBox*  m_reasoningEffort;

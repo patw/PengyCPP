@@ -67,6 +67,17 @@ void ChatView::applyTheme(const Theme& theme, int scale) {
     if (!m_messages.isEmpty()) render();
 }
 
+void ChatView::applyIdentity(const QString& user, const QString& assistant) {
+    // Labels belong to the view and the node, never to the chat file; see
+    // configChatIdentity() for the derivation. Cached HTML is dropped because a
+    // label is part of every user and assistant card.
+    if (user == m_userLabel && assistant == m_assistantLabel) return;
+    m_userLabel = user;
+    m_assistantLabel = assistant;
+    invalidateAll();
+    if (!m_messages.isEmpty()) render();
+}
+
 QString ChatView::buildCss() const {
     QString fixed = QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
     return QString(R"CSS(
@@ -618,10 +629,10 @@ QString ChatView::renderMessage(const QJsonObject& msg, int idx) const {
             }
         }
         return QString(
-            "<p class='role-user'>&#x1F9D1; You</p>"
-            "<div class='attachment-gallery'>%1</div>"
-            "<p style='margin:2px 0 10px 0;white-space:pre-wrap;'>%2</p>"
-        ).arg(gallery, m_hitMarks.contains(idx)
+            "<p class='role-user'>%1 &#x1F9D1;</p>"
+            "<div class='attachment-gallery'>%2</div>"
+            "<p style='margin:2px 0 10px 0;white-space:pre-wrap;'>%3</p>"
+        ).arg(escapeHtml(m_userLabel), gallery, m_hitMarks.contains(idx)
                     ? markSearchTerms(escapeHtml(msg["content"].toString()), m_hitMarks.value(idx))
                     : escapeHtml(msg["content"].toString()));
 
@@ -633,9 +644,9 @@ QString ChatView::renderMessage(const QJsonObject& msg, int idx) const {
             parts += renderReasoningBlock(msg["reasoning_content"].toString(), idx);
         }
         parts += QString(
-            "<p class='role-assistant'>&#x1F916; Assistant</p>"
-            "<div style='margin:2px 0 10px 0;'>%1</div>"
-        ).arg(m_hitMarks.contains(idx) ? markSearchTerms(markdownToHtml(content), m_hitMarks.value(idx))
+            "<p class='role-assistant'>%1 &#x1F916;</p>"
+            "<div style='margin:2px 0 10px 0;'>%2</div>"
+        ).arg(escapeHtml(m_assistantLabel), m_hitMarks.contains(idx) ? markSearchTerms(markdownToHtml(content), m_hitMarks.value(idx))
                                        : markdownToHtml(content));
         return parts;
 

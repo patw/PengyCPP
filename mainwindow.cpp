@@ -236,9 +236,12 @@ void MainWindow::applyTheme() {
             "QPushButton:hover { background-color:%2; }").arg(theme["danger"], theme["danger_hover"]));
     }
     // Re-theme all open tab chat views
+    const QPair<QString, QString> identity = configChatIdentity(m_config);
     for (auto& session : m_openTabs) {
-        if (session.chatView)
+        if (session.chatView) {
             session.chatView->applyTheme(theme, m_runtimeUiScale);
+            session.chatView->applyIdentity(identity.first, identity.second);
+        }
     }
     for (int i = 0; i < m_tabWidget->count(); ++i) {
         if (auto* button = qobject_cast<QToolButton*>(m_tabWidget->tabBar()->tabButton(i, QTabBar::RightSide))) {
@@ -316,6 +319,9 @@ TabSession* MainWindow::addTab(const QJsonObject& chat, bool switchTo) {
     // Apply theme FIRST so renderNow() uses the correct colours
     Theme theme = makeTheme(m_config.themeMode, m_config.themeAccent);
     chatView->applyTheme(theme, m_runtimeUiScale);
+    // Labels come from this node's config, not from the chat.
+    const QPair<QString, QString> identity = configChatIdentity(m_config);
+    chatView->applyIdentity(identity.first, identity.second);
 
     // Render existing messages
     QJsonArray messages = chat["messages"].toArray();

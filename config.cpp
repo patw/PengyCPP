@@ -95,6 +95,8 @@ QJsonObject Config::toJson() const {
     o["tool_output_max_chars"] = toolOutputMaxChars;
     o["download_max_mb"]       = downloadMaxMb;
     o["skills_dir"]            = skillsDir;
+    o["display_name"]          = displayName;
+    o["show_node_in_label"]    = showNodeInLabel;
     o["image_max_dimension"] = imageMaxDimension;
     o["image_max_mb"]        = imageMaxMb;
     o["image_quality"]       = imageQuality;
@@ -142,6 +144,8 @@ Config Config::fromJson(const QJsonObject& o) {
     if (o.contains("tool_output_max_chars")) c.toolOutputMaxChars = o["tool_output_max_chars"].toInt(250000);
     if (o.contains("download_max_mb"))       c.downloadMaxMb       = o["download_max_mb"].toInt(100);
     if (o.contains("skills_dir"))            c.skillsDir           = o["skills_dir"].toString();
+    if (o.contains("display_name"))          c.displayName         = o["display_name"].toString();
+    if (o.contains("show_node_in_label"))    c.showNodeInLabel     = o["show_node_in_label"].toBool(true);
     if (o.contains("image_max_dimension")) c.imageMaxDimension = o["image_max_dimension"].toInt(4096);
     if (o.contains("image_max_mb"))        c.imageMaxMb        = o["image_max_mb"].toDouble(4.5);
     if (o.contains("image_quality"))       c.imageQuality      = o["image_quality"].toInt(85);
@@ -277,6 +281,24 @@ QString configRenderSystemMessage(const QString& tmpl) {
     result.replace("{hostname}", hostname);
     result.replace("{osinfo}",   osinfo);
     return result;
+}
+
+QPair<QString, QString> configChatIdentity(const Config& cfg) {
+    // Same login-name convention this file already uses for {username}.
+    QString human = cfg.displayName.trimmed();
+    if (human.isEmpty())
+        human = qEnvironmentVariable("USER", qEnvironmentVariable("USERNAME", "You"));
+    if (human.isEmpty()) human = "You";
+    QString assistant = "Pengy";
+    if (cfg.showNodeInLabel) {
+        // Same hostname resolution as configRenderSystemMessage above.
+        QString hostname;
+        QFile f("/etc/hostname");
+        if (f.open(QIODevice::ReadOnly)) hostname = QString::fromUtf8(f.readAll()).trimmed();
+        if (hostname.isEmpty()) hostname = QSysInfo::machineHostName();
+        if (!hostname.isEmpty()) assistant = QString("%1 (%2)").arg(assistant, hostname);
+    }
+    return {human, assistant};
 }
 
 std::pair<QString,quint64> compactionPolicy(const Config& c,const QString& model) {
