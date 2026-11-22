@@ -37,6 +37,7 @@
 #include "attachments.h"
 #include "provider_messages.h"
 #include "image_utils.h"
+#include "cli/inputqueue.h"
 #include <QTcpServer>
 #include <QCryptographicHash>
 #include <QElapsedTimer>
@@ -467,8 +468,52 @@ private slots:
         QCOMPARE(pengyConfigDirPath(), m_xdgDir.path() + "/pengy");
     }
 
-    void cleanupTestCase() {
-        qunsetenv("XDG_CONFIG_HOME");
+    // The CLI's queue of messages typed while a turn runs: FIFO for sending, LIFO
+    // for recall, and a held flag that parks it after Ctrl-C. The thread and the
+    // prompt wiring live in cli/main.cpp; this is the state machine they share.
+    void cliInputQueueSemantics() {
+        InputQueue q;
+        QVERIFY(q.isEmpty());
+        QVERIFY(!q.isHeld());
+        QVERIFY(q.takeOldest().isNull());
+        QVERIFY(q.takeNewest().isNull());
+
+        q.enqueue("first");
+        q.enqueue("second");
+        q.enqueue("third");
+        QCOMPARE(q.len(), 3);
+        QCOMPARE(q.takeOldest(), QString("first"));   // a finished turn sends this
+        QCOMPARE(q.takeNewest(), QString("third"));   // Up recalls this
+        QCOMPARE(q.takeOldest(), QString("second"));
+        QVERIFY(q.isEmpty());
+
+        // A stray Enter queues nothing.
+        q.enqueue("");
+        q.enqueue("   \n ");
+        QVERIFY(q.isEmpty());
+
+        // Parked by Ctrl-C; typing again un-parks.
+        q.enqueue("parked");
+        q.setHeld(true);
+        QVERIFY(q.isHeld());
+        q.enqueue("fresh");
+        QVERIFY(!q.isHeld());
+        q.setHeld(true);
+        q.clear();
+        QVERIFY(q.isEmpty());
+        QVERIFY(!q.isHeld());
+
+        // Previews: first line only, elided, marked.
+        q.enqueue("read the logs\nand then summarise");
+        q.enqueue(QString(200, 'x'));
+        const QStringList p = q.previews(20);
+        QCOMPARE(p.at(0), QString("read the logs"));
+        QCOMPARE(p.at(1).size(), 20);
+        QVERIFY(p.at(1).endsWith(QChar(0x2026)));
+        QCOMPARE(q.previews(0).at(1).size(), 200);
+    }
+
+    void cleanupTestCase() {        qunsetenv("XDG_CONFIG_HOME");
     }
 
     void init() {

@@ -85,6 +85,13 @@
     padding-bottom: max(0.6rem, env(safe-area-inset-bottom, 0px)); }
   @media (min-width: 576px) { .input-area { padding: 0.75rem 1rem; } }
   #messageInput { resize: none; max-height: 180px; overflow-y: auto; font-size: 16px; }
+  /* The queue strip: messages typed while a turn is running. pre-line so a
+     textContent string keeps its line breaks without any innerHTML. */
+  #queueStrip {
+    white-space: pre-line; font-size: 0.8rem; line-height: 1.35;
+    padding: 4px 8px; margin-bottom: 4px;
+    border: 1px solid var(--bs-border-color); border-radius: 6px;
+    background: var(--bs-tertiary-bg); }
   .markdown-body { line-height: 1.6; }
   .markdown-body p { margin-bottom: 0.5rem; }
   .markdown-body p:last-child { margin-bottom: 0; }
@@ -203,6 +210,7 @@
                 title="Jump to latest" aria-label="Jump to latest">
           <i class="bi bi-arrow-down"></i>
         </button>
+        <div id="queueStrip" class="d-none" aria-live="polite"></div>
         <form id="form-send" class="d-flex gap-2" novalidate>
           <input type="file" id="fileInput" style="display:none" multiple
                  onchange="handleFiles(this.files)">
@@ -374,6 +382,11 @@ const CUMULATIVE_TOKENS = {{CUMULATIVE_TOKENS}};
 
 // ── State ──────────────────────────────────────────────────────────
 let es = null, processing = false, currentTurnDiv = null;
+// Messages typed while a turn was running, oldest first. Mirrors the desktop
+// windows' MessageQueue: shown in #queueStrip, drained one per finished turn,
+// parked (not spent) when the user presses Stop.
+let queuedMessages = [];   // {content, files}
+let queueHeld = false;
 let sseCursor = sessionStorage.getItem('pengy_sse_cursor_' + CHAT_ID) || '';
 let thinkingEl = null;
 let confirmModal, questionModal, sudoModal, renameModal, tasksModal;
@@ -416,8 +429,24 @@ document.addEventListener('DOMContentLoaded', () => {
   form.addEventListener('submit', e => {
     e.preventDefault();
     const msg = ta.value.trim();
-    if (processing) return;
-    if (!msg && pendingFiles.length === 0) return;
+    if (processing) {
+      // A turn is running: hold the message instead of dropping it. Enter on an
+      // empty composer releases the oldest queued message.
+      if (!msg && pendingFiles.length === 0) {
+        releaseQueued();
+        return;
+      }
+      enqueueMessage(msg, pendingFiles.slice());
+      pendingFiles = [];
+      clearFiles();
+      ta.value = ''; ta.style.height = 'auto';
+      return;
+    }
+    if (!msg && pendingFiles.length === 0) {
+      // Idle: Enter releases what is waiting (how a queue parked by Stop restarts).
+      releaseQueued();
+      return;
+    }
     if (msg.startsWith('/') && pendingFiles.length === 0) {
       ta.value = ''; ta.style.height = 'auto';
       handleSlashCommand(msg);
@@ -431,6 +460,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       form.requestSubmit();
+      return;
+    }
+    // Up/Down on an empty composer step through the queue for editing; with a
+    // draft in the box they must stay ordinary cursor keys.
+    if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && ta.value === '') {
+      e.preventDefault();
+      recallQueued(e.key === 'ArrowUp' ? -1 : 1);
     }
   });
   ta.addEventListener('input', function() {
@@ -1293,6 +1329,9 @@ function handleEvent(ev) {
     disconnectSSE();
     sessionStorage.removeItem('pengy_sse_cursor_' + CHAT_ID);
     setProcessing(false);
+    // The turn ended on its own: send what was queued while it ran. (Stop parks
+    // the queue instead, and a failed turn holds it for the user to decide.)
+    releaseQueued();
 
   } else if (ev.type === 'sudo_request') {
     hideThinking();
@@ -1322,19 +1361,91 @@ async function stopGeneration() {
   disconnectSSE();
   hideThinking();
   setProcessing(false);
+  // Stop means stop: park the queue rather than spending it. Enter in an empty
+  // composer releases it.
+  if (queuedMessages.length > 0) {
+    queueHeld = true;
+    renderQueue();
+  }
 }
 
 function setProcessing(on) {
   processing = on;
-  document.getElementById('messageInput').disabled = on;
-  document.getElementById('btn-send').disabled = on;
+  // The composer stays live while a turn runs: Enter now queues instead of
+  // dropping the message.
+  const ta = document.getElementById('messageInput');
+  ta.disabled = false;
+  ta.placeholder = on
+    ? 'Pengy is working — Enter queues your next message'
+    : 'Message… (Enter to send, Shift+Enter for newline, / for commands)';
+  document.getElementById('btn-send').disabled = false;
   document.getElementById('btn-stop').classList.toggle('d-none', !on);
   if (on) {
     acquireWakeLock();
   } else {
     releaseWakeLock();
   }
-  if (!on) document.getElementById('messageInput').focus();
+  if (!on) ta.focus();
+  renderQueue();
+}
+
+// ── Queue of messages typed while a turn runs ────────────────
+
+function renderQueue() {
+  const strip = document.getElementById('queueStrip');
+  if (!strip) return;
+  if (queuedMessages.length === 0) {
+    strip.textContent = '';
+    strip.classList.add('d-none');
+    return;
+  }
+  const hint = queueHeld
+    ? 'held after Stop — Enter to send'
+    : processing
+      ? 'sends when this turn ends — ↑ edit newest · ↓ edit oldest'
+      : 'Enter to send — ↑ edit newest · ↓ edit oldest';
+  const lines = [`⏳ Queued (${queuedMessages.length}) · ${hint}`];
+  queuedMessages.forEach((m, i) => {
+    const first = (m.content || '').split('\n')[0].slice(0, 70);
+    const label = first || `[${m.files.length} file(s)]`;
+    lines.push(`${i + 1}. ${label}`);
+  });
+  // textContent, never innerHTML: the text comes from the user's own message.
+  strip.textContent = lines.join('\n');
+  strip.classList.remove('d-none');
+}
+
+function enqueueMessage(content, files) {
+  if (!content && (!files || files.length === 0)) return;
+  queuedMessages.push({content, files: files || []});
+  queueHeld = false;   // typing while it runs means "send when you are done"
+  renderQueue();
+}
+
+function releaseQueued() {
+  // Not gated on queueHeld: this is the explicit user action (Enter, or a turn
+  // that ended on its own), and it is how a queue parked by Stop gets going again.
+  if (processing || queuedMessages.length === 0) return;
+  queueHeld = false;
+  const next = queuedMessages.shift();
+  renderQueue();
+  pendingFiles = next.files;
+  if (pendingFiles.length > 0) showFilePreview();
+  document.getElementById('messageInput').value = next.content;
+  sendMessage(next.content);
+}
+
+function recallQueued(direction) {
+  if (queuedMessages.length === 0) return;
+  const input = document.getElementById('messageInput');
+  if (input.value.trim() !== '') return;   // a draft keeps the cursor keys
+  const item = direction < 0 ? queuedMessages.pop() : queuedMessages.shift();
+  input.value = item.content;
+  pendingFiles = item.files;
+  if (pendingFiles.length > 0) showFilePreview();
+  renderQueue();
+  input.focus();
+  input.dispatchEvent(new Event('input'));   // re-run the autosize listener
 }
 
 {{SEARCH_HITS_JS}}

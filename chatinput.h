@@ -41,8 +41,38 @@ public:
     /// rather than let the request fail at the endpoint.
     static bool oversizedForPrompt(qulonglong sizeBytes);
 
+    /// Render the queue of messages typed while a turn runs.
+    ///
+    /// `previews` empty means nothing is waiting (the strip hides). `held` says the
+    /// queue is parked after a Stop; `running` says a turn is in flight. The
+    /// placeholder is set from the same state, so the composer always says whether
+    /// Enter will send or queue.
+    void setQueueState(const QStringList& previews, bool held, bool running);
+
+    /// Put text back in the composer (a queued message recalled for editing).
+    void setComposerText(const QString& text);
+
+    /// Attach files by path -- used to re-attach a recalled message's images.
+    void attachPaths(const QStringList& paths) { attachFiles(paths); }
+
+    /// True when there is nothing to send: no text and no attachments.
+    bool composerEmpty() const;
+
+#ifdef PENGY_UNIT_TEST
+    InputEdit* editForTest() { return m_edit; }
+    QLabel* queueLabelForTest() { return m_queueLabel; }
+    void submitForTest() { onSubmit(); }
+#endif
+
 signals:
     void messageSent(const QString& text, const QStringList& images);
+
+    /// Up (-1) / Down (+1) pressed on an empty composer: recall a queued message.
+    void queueRecallRequested(int direction);
+
+    /// Enter on an empty composer. MainWindow releases the oldest queued message
+    /// if one is waiting, so a parked queue can be drained without retyping it.
+    void emptySubmit();
 
 private slots:
     void onSubmit();
@@ -63,7 +93,9 @@ private:
     InputEdit* m_edit;
     QPushButton* m_attachBtn;
     QWidget* m_chipsRow;
+    QLabel* m_queueLabel;
     QLabel* m_dropHint;
+    bool m_turnRunning = false;
     QStringList m_attachments;
     QMimeDatabase m_mimeDb;
     int m_embedBudgetBytes = 224000;  // 256K window * 3.5 bytes/token * 25%
@@ -83,6 +115,7 @@ public:
 
 signals:
     void submitPressed();
+    void queueRecall(int direction);
     void imagePasted(const QString& path);
     void filesDropped(const QStringList& paths);
     void fileDragActive(bool active);

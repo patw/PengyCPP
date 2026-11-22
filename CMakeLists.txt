@@ -170,6 +170,17 @@ if(Qt6Test_FOUND)
     target_link_libraries(pengy_chatinput_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
     add_test(NAME PengyChatInputTest COMMAND pengy_chatinput_test)
 
+    # Queued composer input: the queue state machine (pure logic, no widgets).
+    add_executable(pengy_messagequeue_test test_messagequeue.cpp)
+    target_link_libraries(pengy_messagequeue_test PRIVATE Qt6::Core)
+    add_test(NAME PengyMessageQueueTest COMMAND pengy_messagequeue_test)
+
+    # The composer's queue strip and the Enter/Up/Down keys that drive it.
+    add_executable(pengy_chatinput_queue_test test_chatinput_queue.cpp chatinput.cpp)
+    target_compile_definitions(pengy_chatinput_queue_test PRIVATE PENGY_UNIT_TEST)
+    target_link_libraries(pengy_chatinput_queue_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
+    add_test(NAME PengyChatInputQueueTest COMMAND pengy_chatinput_queue_test)
+
     # Tool-confirmation dialog: geometry (it used to open too small to read) and
     # the meaning of each button, including the tab-scoped "don't ask again".
     add_executable(pengy_toolconfirm_test test_toolconfirm_dialog.cpp toolconfirmdialog.cpp)

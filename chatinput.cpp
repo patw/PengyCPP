@@ -13,6 +13,7 @@
 #include <QTemporaryFile>
 #include <QFile>
 #include <QStandardPaths>
+#include <QTextCursor>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -204,6 +205,16 @@ bool InputEdit::eventFilter(QObject* obj, QEvent* event) {
             emit submitPressed();
             return true;
         }
+        // Up/Down on an *empty* composer step through the messages queued while a
+        // turn runs, so a thought typed mid-turn can be edited instead of being
+        // sent verbatim when the turn ends.  Only an empty composer is
+        // intercepted: with text in it, Up/Down must keep moving the cursor.
+        if ((ke->key() == Qt::Key_Up || ke->key() == Qt::Key_Down)
+            && !(ke->modifiers() & ~Qt::KeypadModifier)
+            && toPlainText().isEmpty()) {
+            emit queueRecall(ke->key() == Qt::Key_Up ? -1 : 1);
+            return true;
+        }
     }
     return QTextEdit::eventFilter(obj, event);
 }
@@ -215,6 +226,15 @@ ChatInputWidget::ChatInputWidget(QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
+
+    // Queue strip — the messages typed while a turn was running. Above the chips
+    // row so it reads as "what happens next", directly over the composer. Hidden
+    // until something is waiting.
+    m_queueLabel = new QLabel;
+    m_queueLabel->setObjectName("queueLabel");
+    m_queueLabel->setWordWrap(true);
+    m_queueLabel->hide();
+    layout->addWidget(m_queueLabel);
 
     // File chips row — hidden until something is attached
     m_chipsRow = new QWidget;
@@ -241,6 +261,7 @@ ChatInputWidget::ChatInputWidget(QWidget* parent) : QWidget(parent) {
 
     m_edit = new InputEdit;
     connect(m_edit, &InputEdit::submitPressed, this, &ChatInputWidget::onSubmit);
+    connect(m_edit, &InputEdit::queueRecall, this, &ChatInputWidget::queueRecallRequested);
     connect(m_edit, &InputEdit::imagePasted, this, &ChatInputWidget::onImagePasted);
     connect(m_edit, &InputEdit::filesDropped, this, &ChatInputWidget::attachFiles);
     connect(m_edit, &InputEdit::fileDragActive, this, &ChatInputWidget::showDropCue);
@@ -281,10 +302,58 @@ void ChatInputWidget::showDropCue(bool active) {
     m_edit->update();
 }
 
+void ChatInputWidget::setQueueState(const QStringList& previews, bool held, bool running) {
+    // The placeholder is the only always-visible statement of what Enter does, so
+    // it tracks the turn rather than the queue: it must be right even when nothing
+    // is queued yet.
+    if (m_turnRunning != running) {
+        m_turnRunning = running;
+        m_edit->setPlaceholderText(running
+            ? QStringLiteral("Pengy is working — type your next message and press Enter to queue it")
+            : QStringLiteral("Type a message... (Enter to send, Shift+Enter for new line)"));
+    }
+
+    if (previews.isEmpty()) {
+        m_queueLabel->clear();
+        m_queueLabel->hide();
+        return;
+    }
+
+    QString hint;
+    if (held)
+        hint = QStringLiteral("held after Stop — Enter to send");
+    else if (running)
+        hint = QStringLiteral("sends when this turn ends — ↑ edit newest · ↓ edit oldest");
+    else
+        hint = QStringLiteral("Enter to send — ↑ edit newest · ↓ edit oldest");
+
+    QStringList lines;
+    lines << QStringLiteral("⏳ Queued (%1) · %2").arg(previews.size()).arg(hint.toHtmlEscaped());
+    for (int i = 0; i < previews.size(); ++i)
+        lines << QStringLiteral("%1. %2").arg(i + 1).arg(previews.at(i).toHtmlEscaped());
+    m_queueLabel->setText(lines.join(QStringLiteral("<br>")));
+    m_queueLabel->show();
+}
+
+void ChatInputWidget::setComposerText(const QString& text) {
+    m_edit->setPlainText(text);
+    m_edit->moveCursor(QTextCursor::End);
+    m_edit->setFocus();
+}
+
+bool ChatInputWidget::composerEmpty() const {
+    return m_edit->toPlainText().isEmpty() && m_attachments.isEmpty();
+}
+
 void ChatInputWidget::applyTheme(const Theme& theme, int scale) {
     m_theme = theme;
     m_scale = scale;
     if (m_edit) m_edit->applyTheme(theme, scale);
+    if (m_queueLabel) {
+        m_queueLabel->setStyleSheet(QString(
+            "color:%1; background:%2; border:1px solid %3; border-radius:6px; padding:3px 6px;")
+            .arg(theme["fg"], theme["selection"], theme["border"]));
+    }
     m_dropHint->setStyleSheet(QString(
         "color:%1; background:%2; border:1px dashed %1; border-radius:6px; padding:3px;")
         .arg(theme["focus"], theme["selection"]));
@@ -446,7 +515,13 @@ void ChatInputWidget::clearChips() {
 
 void ChatInputWidget::onSubmit() {
     QString text = m_edit->toPlainText().trimmed();
-    if (text.isEmpty() && m_attachments.isEmpty()) return;
+    if (text.isEmpty() && m_attachments.isEmpty()) {
+        // Enter on an empty composer is not a no-op any more: it releases the
+        // oldest queued message (MainWindow decides; a Stop parks the queue, and
+        // this is how it gets going again). Nothing is sent from here.
+        emit emptySubmit();
+        return;
+    }
 
     QStringList parts;
     QStringList images;

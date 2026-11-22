@@ -45,6 +45,7 @@
 #include "../about.h"
 #include "../titlegen.h"
 #include "../chatsearchcore.h"
+#include "inputqueue.h"
 #include "version.h"
 
 // ── Terminal colors ──────────────────────────────────────────────────
@@ -240,9 +241,161 @@ static void renderMarkdownToTerminal(const QString& text) {
 
 // ── Secure password input ────────────────────────────────────────────
 
+// ── Type-ahead captured while a turn runs ────────────────────────────
+//
+// Nothing reads stdin during a turn: the REPL is inside the turn, so the only
+// thing holding what the user types is the terminal's line discipline. That was
+// lossy and unsafe -- a prompt raised mid-turn (tool confirmation, question,
+// sudo) read that buffered text as its answer, and because a blank line meant
+// "1 = Execute", pressing Enter twice while waiting ran the next write tool.
+//
+// So during a turn this namespace owns stdin: a thread polls fd 0, completes
+// lines, and the turn's 100 ms cancel poll announces them and queues them. Every
+// prompt calls suspend() first, which stops the thread and flushes a half-typed
+// line, so a prompt only ever sees what was typed at that prompt.
+namespace TypeAhead {
+
+#ifdef Q_OS_UNIX
+
+static std::mutex          g_mutex;
+static InputQueue          g_queue;    // accepted, waiting to be sent
+static QStringList         g_pending;  // captured, not yet announced
+static std::atomic<bool>   g_active{false};
+static std::atomic<bool>   g_stop{false};
+static std::atomic<bool>   g_held{false};  // parked by Ctrl-C
+static std::thread         g_thread;       // valid only while g_active
+
+static bool isTty() { return ::isatty(STDIN_FILENO) == 1; }
+
+static void captureLoop() {
+    char buf[4096];
+    QString partial;
+    while (!g_stop.load()) {
+        pollfd pfd{STDIN_FILENO, POLLIN, 0};
+        const int rc = ::poll(&pfd, 1, 100);
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (rc == 0) continue;  // timeout: re-check the stop flag
+        const ssize_t n = ::read(STDIN_FILENO, buf, sizeof buf);
+        if (n <= 0) break;      // EOF or read error
+        partial += QString::fromUtf8(buf, int(n));
+        int nl;
+        while ((nl = partial.indexOf('\n')) >= 0) {
+            QString line = partial.left(nl);
+            partial.remove(0, nl + 1);
+            if (line.endsWith('\r')) line.chop(1);
+            if (line.trimmed().isEmpty()) continue;  // a stray Enter queues nothing
+            std::lock_guard<std::mutex> lock(g_mutex);
+            g_pending.append(line);
+        }
+    }
+}
+
+static void start() {
+    if (!isTty() || g_active.exchange(true)) return;
+    g_stop.store(false);
+    g_thread = std::thread(captureLoop);
+}
+
+/// Stop capturing and return whatever arrived but was not yet collected.
+static QStringList stop() {
+    if (!g_active.exchange(false)) return {};
+    g_stop.store(true);
+    if (g_thread.joinable()) g_thread.join();
+    std::lock_guard<std::mutex> lock(g_mutex);
+    QStringList out = g_pending;
+    g_pending.clear();
+    return out;
+}
+
+static void enqueue(const QString& line) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_queue.enqueue(line);  // blank input ignored; also un-parks
+    g_held.store(false);
+}
+
+/// Stop capturing for a blocking prompt and drop a half-typed line: it is not an
+/// answer to the question about to be asked. Returns whether capture was active.
+static bool suspend() {
+    if (!g_active.load()) return false;
+    const QStringList leftovers = stop();
+    for (const QString& line : leftovers) enqueue(line);
+    ::tcflush(STDIN_FILENO, TCIFLUSH);
+    return true;
+}
+
+static void resume(bool wasActive) { if (wasActive) start(); }
+
+/// RAII guard for a blocking prompt: suspends capture on construction and resumes
+/// on destruction, so an early return cannot leave the turn deaf to type-ahead.
+struct PromptGuard {
+    const bool wasActive;
+    PromptGuard() : wasActive(suspend()) {}
+    ~PromptGuard() { resume(wasActive); }
+    PromptGuard(const PromptGuard&) = delete;
+    PromptGuard& operator=(const PromptGuard&) = delete;
+};
+
+/// Drain captured lines so the caller can announce and enqueue them. Does not
+/// queue them itself: the caller announces, and doing both would double-queue.
+static QStringList collect() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    QStringList out = g_pending;
+    g_pending.clear();
+    return out;
+}
+
+static int len() { std::lock_guard<std::mutex> lock(g_mutex); return g_queue.len(); }
+static bool isHeld() { return g_held.load(); }
+static void setHeld(bool held) { g_held.store(held); }
+
+static QString takeOldest() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_queue.takeOldest();
+}
+static QString takeNewest() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_queue.takeNewest();
+}
+static void clear() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_queue.clear();
+    g_held.store(false);
+}
+static QStringList previews(int maxChars) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_queue.previews(maxChars);
+}
+
+#else  // no tty capture on Windows: every call is a no-op
+
+static bool isTty() { return false; }
+static void start() {}
+static QStringList stop() { return {}; }
+static void enqueue(const QString&) {}
+static bool suspend() { return false; }
+static void resume(bool) {}
+static QStringList collect() { return {}; }
+static int len() { return 0; }
+static bool isHeld() { return false; }
+static void setHeld(bool) {}
+static QString takeOldest() { return {}; }
+static QString takeNewest() { return {}; }
+static void clear() {}
+static QStringList previews(int) { return {}; }
+
+#endif
+
+} // namespace TypeAhead
+
 static QString readPassword(const QString& promptStr) {
     out(promptStr);
 #ifdef Q_OS_UNIX
+    // A password prompt must not read type-ahead either: a queued message would
+    // otherwise be submitted as the sudo password.
+    TypeAhead::PromptGuard promptGuard;
     termios old{}, noecho{};
     tcgetattr(STDIN_FILENO, &old);
     noecho = old;
@@ -537,11 +690,48 @@ static QString g_histPath;
 
 #ifdef Q_OS_UNIX
 
+#ifdef PENGY_GNU_READLINE
+// ── Queue recall on an empty line ────────────────────────────────────
+//
+// Up/Down on an *empty* line pull a message queued during the turn back for
+// editing; on a non-empty line they fall through to readline, so cursor keys and
+// history behave exactly as before. GNU readline only (libedit has no
+// rl_bind_keyseq) -- elsewhere /queue is the way in.
+static int recallFallback(const char* name, int count, int key) {
+    rl_command_func_t* fn = rl_named_function(name);
+    return fn ? fn(count, key) : 0;
+}
+
+static int recallNewest(int count, int key) {
+    if (rl_line_buffer[0] != '\0') return recallFallback("previous-history", count, key);
+    const QString text = TypeAhead::takeNewest();
+    if (text.isNull()) return recallFallback("previous-history", count, key);
+    const QByteArray utf8 = text.toUtf8();
+    rl_insert_text(utf8.constData());
+    rl_redisplay();
+    return 0;
+}
+
+static int recallOldest(int count, int key) {
+    if (rl_line_buffer[0] != '\0') return recallFallback("next-history", count, key);
+    const QString text = TypeAhead::takeOldest();
+    if (text.isNull()) return recallFallback("next-history", count, key);
+    const QByteArray utf8 = text.toUtf8();
+    rl_insert_text(utf8.constData());
+    rl_redisplay();
+    return 0;
+}
+#endif
+
 static void initReadline() {
     QString dataDir = QDir::homePath() + "/.local/state/pengy";
     QDir().mkpath(dataDir);
     g_histPath = dataDir + "/cli_history";
     rl_attempted_completion_function = nullptr;
+#ifdef PENGY_GNU_READLINE
+    rl_bind_keyseq("\\e[A", recallNewest);
+    rl_bind_keyseq("\\e[B", recallOldest);
+#endif
     read_history(g_histPath.toUtf8().constData());
     stifle_history(1000);
 }
@@ -594,6 +784,7 @@ static QString readline_qstring(const char* prompt_str, bool* eof = nullptr) {
     return line;
 }
 #endif
+
 
 // ── CLI application ──────────────────────────────────────────────────
 
@@ -679,19 +870,69 @@ public:
 
         initReadline();
         for (;;) {
+            // A message typed while the last turn ran goes out before we ask for
+            // anything: that is the whole point of queueing it. A queue parked by
+            // Ctrl-C stays put until the user releases it.
+            if (TypeAhead::len() > 0 && !TypeAhead::isHeld()) {
+                const QString queued = TypeAhead::takeOldest();
+                err(dim("→ sending queued message: " + truncate(queued, 60)));
+                dispatch(queued);
+                continue;
+            }
             QString title = truncate(chat["title"].toString(), 30);
-            QString promptLine = title + " › You> ";
+            QString queueNote;
+            if (TypeAhead::len() > 0)
+                queueNote = QString(" (%1 queued%2)")
+                                .arg(TypeAhead::len())
+                                .arg(TypeAhead::isHeld() ? ", held" : "");
+            QString promptLine = title + " › You" + queueNote + "> ";
             QString line = readline_qstring(promptLine.toUtf8().constData());
             if (line.isNull()) break;
             line = line.trimmed();
-            if (line.isEmpty()) continue;
-            if (!handleCommand(line)) runLlm(line);
+            if (line.isEmpty()) {
+                // Enter on an empty line releases the oldest queued message instead
+                // of doing nothing -- how a queue parked by Ctrl-C gets going again.
+                if (TypeAhead::len() > 0) {
+                    TypeAhead::setHeld(false);
+                    dispatch(TypeAhead::takeOldest());
+                }
+                continue;
+            }
+            dispatch(line);
         }
         saveReadlineHistory();
         outln();
     }
 
 private:
+    /// One REPL line: a slash command or a message. Capturing runs for the
+    /// duration, so what is typed while the turn is in flight is queued rather
+    /// than dropped, and never lands in a prompt (prompts suspend it themselves).
+    void dispatch(const QString& line) {
+        TypeAhead::start();
+        if (!handleCommand(line)) runLlm(line);
+        announceQueued(TypeAhead::stop());
+    }
+
+    /// Add captured lines to the queue and say so (stderr: stdout is the answer).
+    void announceQueued(const QStringList& lines) {
+        for (const QString& line : lines) {
+            TypeAhead::enqueue(line);
+            err(dim(QString("  ⇢ queued %1: %2")
+                        .arg(TypeAhead::len())
+                        .arg(truncate(line, 60))));
+        }
+    }
+
+    /// Called from the turn's 100 ms cancel poll: the only place a turn can notice
+    /// type-ahead while the model is still thinking.
+    void pumpTypeAhead() {
+        const QStringList lines = TypeAhead::collect();
+        if (lines.isEmpty()) return;
+        if (m_outputMode == "pretty") out("\r\033[K");
+        announceQueued(lines);
+        if (m_outputMode == "pretty") out(dim("Thinking..."));
+    }
     // ── LLM run ─────────────────────────────────────────────────────
 
     void runLlm(const QString& rawInput, bool noSave = false) {
@@ -780,7 +1021,7 @@ private:
             params,
             [this](const QJsonObject& ev) { onEvent(ev); },
             [this]() -> std::pair<bool,bool> { return onConfirm(); },
-            [this]() -> bool { return m_abortRun || SigWatch::pending() != 0; },
+            [this]() -> bool { pumpTypeAhead(); return m_abortRun || SigWatch::pending() != 0; },
             [this](const QJsonArray& questions) -> QStringList { return onQuestion(questions); }
         );
         const int interrupted = SigWatch::pending();
@@ -806,6 +1047,9 @@ private:
                 SigWatch::die(interrupted);
             }
             outln(dim("Interrupted."));
+            // Ctrl-C means stop: park what was typed while this turn ran rather
+            // than spending it on the next one. Enter releases it, Up edits it.
+            TypeAhead::setHeld(true);
         }
     }
 
@@ -1022,6 +1266,9 @@ private:
         outln();
         outln(cyan(bold("--- The assistant needs your input ---")));
 
+        // The whole form is a prompt: nothing typed during the turn may be read as
+        // an answer to any of it.
+        TypeAhead::PromptGuard promptGuard;
         QStringList answers;
         for (int qi = 0; qi < questions.size(); ++qi) {
             const QJsonObject q = questions[qi].toObject();
@@ -1039,7 +1286,8 @@ private:
                           .arg(opt["label"].toString(),
                                dim("— " + opt["description"].toString())));
             }
-            outln(dim("  (blank = 1, 'c' = cancel, or type your own answer)"));
+            outln(dim("  (1-%1, 'c' = cancel, or type your own answer)")
+                      .arg(options.size()));
 
             for (;;) {
                 const QByteArray prompt =
@@ -1050,9 +1298,10 @@ private:
                     return QStringList();
                 }
                 if (c.isEmpty()) {
-                    if (options.isEmpty()) continue;
-                    answers.append(options[0].toObject()["label"].toString());
-                    break;
+                    // Enter alone is not an answer: it used to pick option 1, which
+                    // is how a stray keystroke answered a question the model asked.
+                    outln(dim(QString("  Choose 1-%1.").arg(options.size())));
+                    continue;
                 }
                 bool isNumber = false;
                 const int idx = c.toInt(&isNumber) - 1;
@@ -1093,6 +1342,9 @@ private:
               bold("[2]") + " Yes to all this turn   " +
               bold("[3]") + " Decline   " +
               bold("[4]") + " Abort run");
+        // A prompt never consumes type-ahead: capture is suspended (and a
+        // half-typed line dropped) for as long as the question is on screen.
+        TypeAhead::PromptGuard promptGuard;
         for (;;) {
             bool eof = false;
             QString c = readline_qstring("Choice [1]: ", &eof).trimmed();
@@ -1107,10 +1359,14 @@ private:
                 m_abortRun = true;
                 return {false, false};
             }
-            if (c.isEmpty() || c == "1") return {true, false};
+            if (c == "1") return {true, false};
             if (c == "2") return {true, true};
             if (c == "3") return {false, false};
-            outln(red("Please enter 1, 2, 3, or 4."));
+            // Enter alone must never mean "run the tool": hammering Enter while
+            // waiting used to approve the next write.  Ask again instead.
+            outln(c.isEmpty()
+                      ? dim("Press 1 to execute, 3 to decline.")
+                      : red("Please enter 1, 2, 3, or 4."));
         }
     }
 
@@ -1271,6 +1527,9 @@ private:
 
         } else if (cmd == "/tasks") {
             cmdTasks();
+
+        } else if (cmd == "/queue") {
+            cmdQueue(arg);
 
         } else if (cmd == "/task") {
             cmdTask(arg);
@@ -1524,6 +1783,30 @@ private:
     }
 
     // List saved prompt-template Tasks (shared with the GUI's Tasks dialog).
+    /// `/queue [clear]` -- what was typed while the last turn ran.
+    void cmdQueue(const QString& arg) {
+        if (arg.trimmed().compare("clear", Qt::CaseInsensitive) == 0) {
+            const int n = TypeAhead::len();
+            TypeAhead::clear();
+            outln(dim(QString("Cleared %1 queued message(s).").arg(n)));
+            return;
+        }
+        if (TypeAhead::len() == 0) {
+            outln(dim("No queued messages. Type while a turn runs and Enter queues it; "
+                      "Up on an empty line pulls the newest back for editing."));
+            return;
+        }
+        outln();
+        outln(bold("Queued messages") + " " + dim("(oldest first)") +
+              (TypeAhead::isHeld() ? " " + yellow("held after Ctrl-C") : QString()));
+        const QStringList previews = TypeAhead::previews(72);
+        for (int i = 0; i < previews.size(); ++i)
+            outln(QString("  %1%2.%3 %4").arg(dim(QString()), QString::number(i + 1),
+                                              QString(), previews[i]));
+        outln(dim("Enter on an empty line sends the oldest · Up edits the newest · "
+                  "Down the oldest · /queue clear drops them all"));
+    }
+
     void cmdTasks() {
         QJsonArray tasks = tasksLoad();
         if (tasks.isEmpty()) {
@@ -1602,6 +1885,7 @@ private:
             {"/compact",             "Elide old tool results in current chat"},
             {"/redact [n]",          "Delete the last n messages (default 1) — repeatable up to the top"},
             {"/tasks",               "List saved prompt-template Tasks"},
+            {"/queue [clear]",       "Show (or clear) messages queued while a turn ran"},
             {"/task <n>",            "Run a Task by its /tasks index, prompting for any %placeholders%"},
             {"/list",                "List all chats"},
             {"/load <n> [msg#]",     "Load chat by number; msg# (from /search) prints that message"},

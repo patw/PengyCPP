@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QTimer>
+#include "messagequeue.h"
 #include <QPushButton>
 #include <QTabWidget>
 #include <QMap>
@@ -29,6 +30,9 @@ struct TabSession {
     bool        toolRunning   = false;
     int         promptTokens     = 0;
     int         completionTokens = 0;
+    /// Messages typed while this tab's turn was running. Memory only: a message
+    /// that was never sent must not appear in chats.json as if it had been.
+    MessageQueue queue;
 };
 
 class MainWindow : public QMainWindow {
@@ -90,6 +94,15 @@ private:
     void renderMessage(ChatView* view, const QJsonObject& msg, int index);
     static QJsonObject assistantDisplayMessage(const QJsonObject& msg);
     void processResponse(TabSession* session, const QJsonArray& apiMessages);
+    // ── Message queue (typed while a turn runs) ───────────────────
+    // sendMessage() queues instead of cancelling an in-flight turn; startTurn()
+    // is the old sendMessage body and always begins a turn.
+    void startTurn(TabSession* session, const QString& text, const QStringList& images);
+    void enqueueForTurn(TabSession* session, const QString& text, const QStringList& images);
+    void refreshQueueUi(TabSession* session);
+    void releaseQueued(TabSession* session);
+    void recallQueued(TabSession* session, int direction);
+    bool sessionBusy(TabSession* session) const;
     void handleToolConfirm(TabSession* session, const QJsonObject& toolRequest);
     void handleFinalResponse(TabSession* session, const QJsonObject& response);
     void showTurnError(TabSession* session, const QString& text);
